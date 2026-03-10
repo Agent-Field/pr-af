@@ -30,10 +30,10 @@ class BudgetConfig(BaseModel):
         default_factory=lambda: {
             "intake": 0.05,
             "anatomy": 0.15,
-            "planning": 0.15,
+            "meta_selectors": 0.30,  # 3 parallel lenses
             "review": 0.90,  # Most budget goes here
+            "adversary": 0.40,  # Parallel batches
             "cross_ref": 0.30,
-            "adversary": 0.25,
             "coverage": 0.10,
             "synthesis": 0.00,  # Code, no LLM cost
             "output": 0.00,  # Code, no LLM cost

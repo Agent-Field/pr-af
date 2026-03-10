@@ -15,6 +15,7 @@ from ..schemas.pipeline import (
     DiffStats,
     FileChange,
     IntakeResult,
+    MetaDimensionResult,
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
@@ -427,6 +428,196 @@ async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", h
     return plan_result.parsed.model_dump() if plan_result.parsed else {"dimensions": [], "cross_ref_hints": []}
 
 
+# ---------------------------------------------------------------------------
+# Meta-Dimension Selectors (3 parallel lenses)
+# Each produces ReviewDimensions through its specific analytical lens.
+# The orchestrator spawns all 3 in parallel, collects results, deduplicates.
+# ---------------------------------------------------------------------------
+
+
+def _build_meta_context(intake: dict, anatomy: dict) -> str:
+    """Build shared context string for all meta-selectors."""
+    import json as _json
+
+    intake_result = IntakeResult.model_validate(intake)
+    anatomy_result = AnatomyResult.model_validate(anatomy)
+
+    return _json.dumps(
+        {
+            "intake": {
+                "pr_type": intake_result.pr_type,
+                "complexity": intake_result.complexity,
+                "pr_summary": intake_result.pr_summary,
+                "areas_touched": intake_result.areas_touched,
+                "risk_signals": intake_result.risk_signals,
+            },
+            "clusters": _cluster_descriptions(anatomy_result.clusters),
+            "risk_surfaces": anatomy_result.risk_surfaces,
+            "pr_narrative": anatomy_result.pr_narrative,
+            "file_paths": [f.path for f in anatomy_result.files[:30]],
+        },
+        default=str,
+    )
+
+
+@router.reasoner()
+async def meta_semantic(intake: dict, anatomy: dict, depth: str = "standard") -> dict:
+    """Semantic lens: What does this code DO differently?
+
+    Focuses on logic, behavior, API contracts, concurrency, security, error handling.
+    Asks: "If I run the old code and the new code side by side, where do they diverge?"
+    """
+    context = _build_meta_context(intake, anatomy)
+
+    result = await router.app.harness(
+        f"You are a principal engineer designing review dimensions through the SEMANTIC lens.\n\n"
+        f"## Your Lens: SEMANTIC — What does this code DO differently?\n\n"
+        f"You are responsible for generating review dimensions that investigate the "
+        f"BEHAVIORAL and LOGICAL aspects of this change. Think about:\n\n"
+        f"- **Logic changes**: Does the new code produce different results than the old code "
+        f"for ANY input? Not just the happy path — edge cases, error conditions, boundary values.\n"
+        f"- **API contract changes**: Do callers still get what they expect? Return types, "
+        f"error types, side effects, ordering guarantees.\n"
+        f"- **Concurrency & state**: Thread safety, shared mutable state, lock ordering, "
+        f"resource lifecycle changes.\n"
+        f"- **Security implications**: Authentication bypass, authorization checks, input "
+        f"validation changes, secret handling.\n"
+        f"- **Error handling**: Are exceptions caught the same way? Are error codes preserved? "
+        f"Are there silent swallows or unhandled paths?\n"
+        f"- **Data flow**: Does data pass through the same transformations? Are there type "
+        f"coercions, format changes, or encoding differences?\n\n"
+        f"## What NOT to Include\n\n"
+        f"Do NOT generate dimensions about:\n"
+        f"- Code style, naming, formatting (that's Systemic)\n"
+        f"- Type signatures, calling conventions, decorator mechanics (that's Mechanical)\n"
+        f"- Pattern consistency, architectural fit (that's Systemic)\n\n"
+        f"## Dimension Craft\n\n"
+        f"Each dimension must be a SPECIFIC investigation question, not a generic category.\n"
+        f"Good: 'Does the migration from sync to async preserve error propagation to callers?'\n"
+        f"Bad: 'Check for concurrency issues'\n\n"
+        f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
+        f"target_files, context_files, and priority (higher = more critical).\n\n"
+        f"Depth '{depth}' means: quick=1-2 dimensions, standard=2-3, deep=3-5\n"
+        f"If the PR has no semantic risk, return ZERO dimensions. Do not pad.\n\n"
+        f"Also provide a rationale explaining your dimension choices and a confidence "
+        f"score (0-1) for how completely your dimensions cover the semantic risk surface.\n\n"
+        f"{context}",
+        schema=MetaDimensionResult,
+    )
+    parsed = result.parsed if result.parsed else MetaDimensionResult(lens="semantic", dimensions=[])
+    parsed.lens = "semantic"
+    return parsed.model_dump()
+
+
+@router.reasoner()
+async def meta_mechanical(intake: dict, anatomy: dict, depth: str = "standard") -> dict:
+    """Mechanical lens: Does this code WORK correctly at the language level?
+
+    Focuses on types, signatures, calling conventions, decorator effects,
+    framework interactions. Asks: "Will this code compile/run without errors?"
+    """
+    context = _build_meta_context(intake, anatomy)
+
+    result = await router.app.harness(
+        f"You are a principal engineer designing review dimensions through the MECHANICAL lens.\n\n"
+        f"## Your Lens: MECHANICAL — Does this code WORK correctly?\n\n"
+        f"You are responsible for generating review dimensions that investigate whether "
+        f"the code is STRUCTURALLY correct at the language and framework level. Think about:\n\n"
+        f"- **Type correctness**: Do function return types match what callers expect? "
+        f"Are there implicit type coercions that will fail at runtime? Does `list[dict]` "
+        f"flow where `str` is expected?\n"
+        f"- **Signature compatibility**: If a function's parameters changed, do ALL callers "
+        f"(direct and indirect) still pass the right arguments? Are there default values "
+        f"that mask breakage?\n"
+        f"- **Decorator/middleware effects**: When a decorator injects parameters (like "
+        f"thread-local storage), are all call paths aware? Does calling a method directly "
+        f"vs through a dispatcher change what parameters it receives?\n"
+        f"- **Framework contract compliance**: Does this code satisfy the framework's "
+        f"expectations? Correct method signatures for overrides, proper hook registration, "
+        f"required return types for middleware chains.\n"
+        f"- **Import/dependency resolution**: Are all imports valid? Are there circular "
+        f"dependencies? Are optional dependencies guarded?\n"
+        f"- **Runtime mechanics**: Will this code actually execute without AttributeError, "
+        f"TypeError, KeyError, ImportError? Trace the exact runtime behavior.\n\n"
+        f"## What NOT to Include\n\n"
+        f"Do NOT generate dimensions about:\n"
+        f"- Whether the logic is correct (that's Semantic)\n"
+        f"- Code quality or patterns (that's Systemic)\n"
+        f"- Business logic validation (that's Semantic)\n\n"
+        f"## Dimension Craft\n\n"
+        f"Each dimension must target a SPECIFIC mechanical concern.\n"
+        f"Good: 'Do all callers of `process_item()` pass the new `context` parameter "
+        f"added in this PR?'\n"
+        f"Bad: 'Check for type errors'\n\n"
+        f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
+        f"target_files, context_files, and priority (higher = more critical).\n\n"
+        f"Depth '{depth}' means: quick=1-2 dimensions, standard=2-3, deep=3-5\n"
+        f"If the PR has no mechanical risk, return ZERO dimensions. Do not pad.\n\n"
+        f"Also provide a rationale explaining your dimension choices and a confidence "
+        f"score (0-1) for how completely your dimensions cover the mechanical risk surface.\n\n"
+        f"{context}",
+        schema=MetaDimensionResult,
+    )
+    parsed = result.parsed if result.parsed else MetaDimensionResult(lens="mechanical", dimensions=[])
+    parsed.lens = "mechanical"
+    return parsed.model_dump()
+
+
+@router.reasoner()
+async def meta_systemic(intake: dict, anatomy: dict, depth: str = "standard") -> dict:
+    """Systemic lens: How does this code FIT the codebase?
+
+    Focuses on patterns, complexity, readability, architectural coherence,
+    test coverage. Asks: "Does this change make the codebase better or worse?"
+    """
+    context = _build_meta_context(intake, anatomy)
+
+    result = await router.app.harness(
+        f"You are a principal engineer designing review dimensions through the SYSTEMIC lens.\n\n"
+        f"## Your Lens: SYSTEMIC — How does this code FIT?\n\n"
+        f"You are responsible for generating review dimensions that investigate whether "
+        f"this change is ARCHITECTURALLY sound and consistent with the codebase. Think about:\n\n"
+        f"- **Pattern consistency**: Does this change follow established patterns in the "
+        f"codebase, or does it introduce a new pattern where one already exists? If it "
+        f"introduces a new pattern, is it justified?\n"
+        f"- **Complexity impact**: Does this change increase cyclomatic complexity? "
+        f"Are there deeply nested conditionals, god functions, or tangled dependencies?\n"
+        f"- **Abstraction quality**: Are the right things abstracted? Is there unnecessary "
+        f"indirection, or conversely, inline code that should be extracted?\n"
+        f"- **Test coverage alignment**: Are the changes tested? Do tests cover the "
+        f"interesting edge cases, or just the happy path? Are there test patterns that "
+        f"should be followed?\n"
+        f"- **Documentation debt**: Are public APIs documented? Are complex algorithms "
+        f"explained? Are there misleading comments that weren't updated?\n"
+        f"- **Dependency hygiene**: Are new dependencies justified? Are there lighter "
+        f"alternatives? Is the dependency well-maintained?\n"
+        f"- **Migration completeness**: If this is part of a larger migration, is it "
+        f"complete or does it leave the codebase in a mixed state?\n\n"
+        f"## What NOT to Include\n\n"
+        f"Do NOT generate dimensions about:\n"
+        f"- Whether the logic produces correct results (that's Semantic)\n"
+        f"- Whether the code will run without type/import errors (that's Mechanical)\n"
+        f"- Specific bug hunting (that's Semantic/Mechanical)\n\n"
+        f"## Dimension Craft\n\n"
+        f"Each dimension must target a SPECIFIC systemic concern.\n"
+        f"Good: 'Does the new `UserService` class follow the existing service pattern "
+        f"(stateless, injected deps, interface-first)?'\n"
+        f"Bad: 'Check code quality'\n\n"
+        f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
+        f"target_files, context_files, and priority (higher = more critical).\n\n"
+        f"Depth '{depth}' means: quick=0-1 dimensions, standard=1-2, deep=2-3\n"
+        f"Systemic concerns are LOWER priority than Semantic and Mechanical. "
+        f"If the PR is a focused bugfix with no architectural impact, return ZERO dimensions.\n\n"
+        f"Also provide a rationale explaining your dimension choices and a confidence "
+        f"score (0-1) for how completely your dimensions cover the systemic risk surface.\n\n"
+        f"{context}",
+        schema=MetaDimensionResult,
+    )
+    parsed = result.parsed if result.parsed else MetaDimensionResult(lens="systemic", dimensions=[])
+    parsed.lens = "systemic"
+    return parsed.model_dump()
+
+
 @router.reasoner()
 async def review_dimension(
     review_prompt: str,
@@ -498,6 +689,32 @@ async def review_dimension(
         f"- **nitpick**: Naming, style, readability, documentation. Truly cosmetic.\n\n"
         f"If you're unsure whether something is critical or important, provide your reasoning "
         f"in the `body` field and let the confidence score reflect your uncertainty.\n\n"
+        f"## False-Positive Prevention (CRITICAL)\n\n"
+        f"Before reporting ANY finding, you MUST pass these three gates:\n\n"
+        f"### Gate 1: Reachability Proof\n"
+        f"Trace the EXACT call path from a real entry point to the buggy code. "
+        f"If you cannot construct a concrete scenario where the bug triggers, "
+        f"it is NOT a finding — it is speculation. Ask yourself:\n"
+        f"- Can this code path actually be reached in production?\n"
+        f"- Are there upstream guards, validators, or type checks that prevent the bad state?\n"
+        f"- Is the 'broken' behavior actually intentional (defensive coding, legacy compat)?\n\n"
+        f"### Gate 2: Evidence Chain\n"
+        f"Every finding MUST have a step-by-step evidence chain in the `evidence` field:\n"
+        f"```\n"
+        f"Step 1: [Entry point] calls [function] with [specific args]\n"
+        f"Step 2: [function] passes [value] to [downstream]\n"
+        f"Step 3: [downstream] expects [type/value] but receives [actual]\n"
+        f"Step 4: This causes [specific failure mode]\n"
+        f"```\n"
+        f"If you cannot write this chain, the finding is not well-evidenced enough to report.\n\n"
+        f"### Gate 3: Confidence Self-Assessment\n"
+        f"Rate your confidence honestly. Only report findings with confidence >= 0.6.\n"
+        f"- 0.9-1.0: You traced the full path and verified the failure mode\n"
+        f"- 0.7-0.8: Strong evidence but some assumptions about runtime state\n"
+        f"- 0.6: Reasonable evidence, worth flagging for human review\n"
+        f"- Below 0.6: Do NOT report. You are guessing.\n\n"
+        f"**Zero tolerance for speculative findings.** Three well-proven findings are worth "
+        f"infinitely more than ten speculative ones. When in doubt, DROP the finding.\n\n"
         f"## Output Quality\n\n"
         f"For each finding, use proper GitHub Markdown:\n"
         f"- **body**: Explain the issue clearly. Use `inline code` for identifiers. "

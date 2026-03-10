@@ -205,3 +205,31 @@ class AdversaryResult(BaseModel):
     reason: str
     severity_adjustment: str = "none"  # boost | discount | none
     hidden_trap: str | None = None  # If verdict is missed_trap, the trap description
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 → Phase 7: Meta-Dimension Selection Results
+# Format: Structured JSON (consumed by meta-selector orchestration)
+# ---------------------------------------------------------------------------
+
+
+class MetaDimensionResult(BaseModel):
+    """Output of a meta-dimension selector (Semantic, Mechanical, or Systemic).
+
+    Each meta-selector produces a list of ReviewDimension objects plus
+    a confidence assessment of completeness for its lens.
+    """
+
+    lens: str  # "semantic" | "mechanical" | "systemic"
+    dimensions: list[ReviewDimension]  # The generated review dimensions
+    confidence: float = 0.7  # How complete this lens's coverage is (0-1)
+    rationale: str = ""  # Brief explanation of dimension choices
+
+
+class MetaSelectorConfig(BaseModel):
+    """Configuration for meta-dimension selectors. Passed per-call via API."""
+
+    enabled_lenses: list[str] = Field(default_factory=lambda: ["semantic", "mechanical", "systemic"])
+    confidence_threshold: float = 0.6  # Minimum confidence for a finding to pass Level 2 filter
+    adversary_batch_size: int = 5  # How many findings per parallel adversary batch
+    max_adversary_batches: int = 4  # Hard cap on parallel adversary instances

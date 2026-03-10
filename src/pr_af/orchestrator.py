@@ -27,6 +27,9 @@ from .reasoners.harnesses import (
     coverage_gate,
     cross_ref_phase,
     intake_phase,
+    meta_mechanical,
+    meta_semantic,
+    meta_systemic,
     planning_phase,
     review_dimension,
 )
@@ -44,6 +47,8 @@ from .schemas.pipeline import (
     AnatomyResult,
     CrossRefInteraction,
     IntakeResult,
+    MetaDimensionResult,
+    MetaSelectorConfig,
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
@@ -81,10 +86,10 @@ class ReviewOrchestrator:
     PHASE_ORDER = (
         "intake",
         "anatomy",
-        "planning",
+        "meta_selectors",
         "review",
-        "cross_ref",
         "adversary",
+        "cross_ref",
         "coverage",
         "synthesis",
         "output",
@@ -102,9 +107,11 @@ class ReviewOrchestrator:
         self.agent_invocations = 0
         self.budget_exhausted = False
 
+        self.meta_config = MetaSelectorConfig()
         self.pr_data: GitHubPRData | None = None
         self.intake_result: IntakeResult | None = None
         self.anatomy_result: AnatomyResult | None = None
+        self.meta_selector_results: list[MetaDimensionResult] = []
         self.coverage_iterations = 0
         self.cross_ref_count = 0
         self.adversary_confirmed_count = 0
@@ -127,10 +134,10 @@ class ReviewOrchestrator:
         self.anatomy_result = anatomy
         print(f"[PR-AF] Anatomy complete: {len(anatomy.files)} files, {len(anatomy.clusters)} clusters", flush=True)
 
-        print("[PR-AF] Phase 3: PLANNING", flush=True)
-        plan = await self._run_planning(intake, anatomy, review_depth)
+        print("[PR-AF] Phase 3: META-SELECTORS (3 parallel lenses)", flush=True)
+        plan = await self._run_meta_selectors(intake, anatomy, review_depth)
 
-        print(f"[PR-AF] Planning complete: {len(plan.dimensions)} dimensions", flush=True)
+        print(f"[PR-AF] Meta-selectors complete: {len(plan.dimensions)} dimensions", flush=True)
 
         print("[PR-AF] Phase 4+5: REVIEW (parallel) + LAYER", flush=True)
         findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
@@ -249,6 +256,106 @@ class ReviewOrchestrator:
 
         return plan
 
+    async def _run_meta_selectors(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
+        if self._budget_or_timeout_exhausted("meta_selectors"):
+            raise BudgetExhausted("Budget exhausted before meta-selectors")
+
+        lenses = self.meta_config.enabled_lenses
+        lens_map = {
+            "semantic": meta_semantic,
+            "mechanical": meta_mechanical,
+            "systemic": meta_systemic,
+        }
+
+        async def run_lens(lens_name: str) -> MetaDimensionResult:
+            fn = lens_map[lens_name]
+            result_raw = await fn(
+                intake=intake.model_dump(),
+                anatomy=anatomy.model_dump(),
+                depth=review_depth,
+            )
+            self.agent_invocations += 1
+            self._register_cost("meta_selectors", self._extract_cost(result_raw))
+            return MetaDimensionResult.model_validate(result_raw)
+
+        tasks = [run_lens(lens) for lens in lenses if lens in lens_map]
+        meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
+        self.meta_selector_results = meta_results
+
+        all_dimensions: list[ReviewDimension] = []
+        for meta in meta_results:
+            for dim in meta.dimensions:
+                dim = dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
+                all_dimensions.append(dim)
+
+        all_dimensions = self._dedup_cross_meta(all_dimensions)
+
+        depth_profile = DEPTH_PROFILES.get(review_depth)
+        if depth_profile and len(all_dimensions) > depth_profile.max_dimensions:
+            all_dimensions.sort(key=lambda d: d.priority, reverse=True)
+            all_dimensions = all_dimensions[: depth_profile.max_dimensions]
+
+        print(
+            f"[PR-AF] Meta-selectors: "
+            f"{' + '.join(f'{m.lens}({len(m.dimensions)})' for m in meta_results)} "
+            f"= {sum(len(m.dimensions) for m in meta_results)} total "
+            f"→ {len(all_dimensions)} after dedup",
+            flush=True,
+        )
+
+        return ReviewPlan(dimensions=all_dimensions, cross_ref_hints=[])
+
+    def _dedup_cross_meta(self, dimensions: list[ReviewDimension]) -> list[ReviewDimension]:
+        seen_targets: dict[str, ReviewDimension] = {}
+        deduped: list[ReviewDimension] = []
+
+        for dim in dimensions:
+            key_str = "|".join(sorted(dim.target_files))
+            if key_str in seen_targets:
+                existing = seen_targets[key_str]
+                if dim.priority > existing.priority:
+                    deduped = [d for d in deduped if d.id != existing.id]
+                    deduped.append(dim)
+                    seen_targets[key_str] = dim
+            else:
+                seen_targets[key_str] = dim
+                deduped.append(dim)
+
+        return deduped
+
+    async def _run_parallel_adversary(self, findings: list[ReviewFinding]) -> list[AdversaryResult]:
+        if not findings or self._budget_or_timeout_exhausted("adversary"):
+            return []
+
+        batch_size = self.meta_config.adversary_batch_size
+        max_batches = self.meta_config.max_adversary_batches
+        ai_confidence = self.intake_result.ai_generated if self.intake_result else 0.0
+
+        batches: list[list[ReviewFinding]] = []
+        for i in range(0, len(findings), batch_size):
+            batches.append(findings[i : i + batch_size])
+            if len(batches) >= max_batches:
+                break
+
+        async def run_batch(batch: list[ReviewFinding]) -> list[AdversaryResult]:
+            if self._budget_or_timeout_exhausted("adversary"):
+                return []
+            adversary_raw = await adversary_phase(
+                findings=[f.model_dump() for f in batch],
+                ai_generated_confidence=ai_confidence,
+            )
+            self.agent_invocations += 1
+            self._register_cost("adversary", self._extract_cost(adversary_raw))
+            return self._extract_adversary_results(adversary_raw)
+
+        batch_results = await asyncio.gather(*[run_batch(b) for b in batches])
+
+        all_results: list[AdversaryResult] = []
+        for batch_result in batch_results:
+            all_results.extend(batch_result)
+
+        return all_results
+
     async def _run_parallel_review(
         self,
         plan: ReviewPlan,
@@ -331,26 +438,22 @@ class ReviewOrchestrator:
                 break
             all_findings.extend(batch)
 
-        cross_refs: list[CrossRefInteraction] = []
         adversary_results: list[AdversaryResult] = []
+        if all_findings and not self._budget_or_timeout_exhausted("adversary"):
+            adversary_results = await self._run_parallel_adversary(all_findings)
 
-        if all_findings and not self._budget_or_timeout_exhausted("cross_ref"):
+        challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
+        confirmed_findings = [f for f in all_findings if f.title not in challenged_titles]
+
+        cross_refs: list[CrossRefInteraction] = []
+        if confirmed_findings and not self._budget_or_timeout_exhausted("cross_ref"):
             cross_raw = await cross_ref_phase(
-                findings=[f.model_dump() for f in all_findings],
+                findings=[f.model_dump() for f in confirmed_findings],
                 cross_ref_hints=plan.cross_ref_hints,
             )
             self.agent_invocations += 1
             self._register_cost("cross_ref", self._extract_cost(cross_raw))
             cross_refs = self._extract_cross_refs(cross_raw)
-
-        if all_findings and not self._budget_or_timeout_exhausted("adversary"):
-            adversary_raw = await adversary_phase(
-                findings=[f.model_dump() for f in all_findings],
-                ai_generated_confidence=self.intake_result.ai_generated if self.intake_result else 0.0,
-            )
-            self.agent_invocations += 1
-            self._register_cost("adversary", self._extract_cost(adversary_raw))
-            adversary_results = self._extract_adversary_results(adversary_raw)
 
         return all_findings, cross_refs, adversary_results
 
@@ -401,23 +504,20 @@ class ReviewOrchestrator:
                     break
                 findings.extend(batch)
 
-            if findings and not self._budget_or_timeout_exhausted("cross_ref"):
+            if findings and not self._budget_or_timeout_exhausted("adversary"):
+                adversary_results = await self._run_parallel_adversary(findings)
+
+            challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
+            confirmed_findings = [f for f in findings if f.title not in challenged_titles]
+
+            if confirmed_findings and not self._budget_or_timeout_exhausted("cross_ref"):
                 cross_raw = await cross_ref_phase(
-                    findings=[f.model_dump() for f in findings],
+                    findings=[f.model_dump() for f in confirmed_findings],
                     cross_ref_hints=plan.cross_ref_hints,
                 )
                 self.agent_invocations += 1
                 self._register_cost("cross_ref", self._extract_cost(cross_raw))
                 cross_refs = self._extract_cross_refs(cross_raw)
-
-            if findings and not self._budget_or_timeout_exhausted("adversary"):
-                adversary_raw = await adversary_phase(
-                    findings=[f.model_dump() for f in findings],
-                    ai_generated_confidence=self.intake_result.ai_generated if self.intake_result else 0.0,
-                )
-                self.agent_invocations += 1
-                self._register_cost("adversary", self._extract_cost(adversary_raw))
-                adversary_results = self._extract_adversary_results(adversary_raw)
 
         return findings, cross_refs, adversary_results
 
@@ -995,6 +1095,17 @@ class ReviewOrchestrator:
     def _build_review_details(self, findings: list[ScoredFinding], plan: ReviewPlan | None) -> list[str]:
         lines: list[str] = []
         detail_parts: list[str] = []
+
+        if self.meta_selector_results:
+            detail_parts.append(f"**Meta-Dimension Lenses ({len(self.meta_selector_results)}):**")
+            detail_parts.append("")
+            for meta in self.meta_selector_results:
+                dim_count = len(meta.dimensions)
+                conf_pct = int(meta.confidence * 100)
+                detail_parts.append(
+                    f"- **{meta.lens.title()}** — {dim_count} dimension(s), {conf_pct}% coverage confidence"
+                )
+            detail_parts.append("")
 
         if plan and plan.dimensions:
             detail_parts.append(f"**Dimensions Analyzed ({len(plan.dimensions)}):**")
