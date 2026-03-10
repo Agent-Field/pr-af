@@ -1,0 +1,402 @@
+[
+    {
+        "id": 3850511973,
+        "node_id": "PRR_kwDOAIOmMM7lgiZl",
+        "user": {
+            "login": "yocalebo",
+            "id": 30729806,
+            "node_id": "MDQ6VXNlcjMwNzI5ODA2",
+            "avatar_url": "https://avatars.githubusercontent.com/u/30729806?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/yocalebo",
+            "html_url": "https://github.com/yocalebo",
+            "followers_url": "https://api.github.com/users/yocalebo/followers",
+            "following_url": "https://api.github.com/users/yocalebo/following{/other_user}",
+            "gists_url": "https://api.github.com/users/yocalebo/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/yocalebo/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/yocalebo/subscriptions",
+            "organizations_url": "https://api.github.com/users/yocalebo/orgs",
+            "repos_url": "https://api.github.com/users/yocalebo/repos",
+            "events_url": "https://api.github.com/users/yocalebo/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/yocalebo/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "CHANGES_REQUESTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3850511973",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "CONTRIBUTOR",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3850511973"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-02-24T21:03:44Z",
+        "commit_id": "2ced671986f6cadbd599d54b2b780f85c320fb1d"
+    },
+    {
+        "id": 3867975352,
+        "node_id": "PRR_kwDOAIOmMM7mjJ64",
+        "user": {
+            "login": "claude[bot]",
+            "id": 209825114,
+            "node_id": "BOT_kgDODIGtWg",
+            "avatar_url": "https://avatars.githubusercontent.com/in/1236702?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/claude%5Bbot%5D",
+            "html_url": "https://github.com/apps/claude",
+            "followers_url": "https://api.github.com/users/claude%5Bbot%5D/followers",
+            "following_url": "https://api.github.com/users/claude%5Bbot%5D/following{/other_user}",
+            "gists_url": "https://api.github.com/users/claude%5Bbot%5D/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/claude%5Bbot%5D/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/claude%5Bbot%5D/subscriptions",
+            "organizations_url": "https://api.github.com/users/claude%5Bbot%5D/orgs",
+            "repos_url": "https://api.github.com/users/claude%5Bbot%5D/repos",
+            "events_url": "https://api.github.com/users/claude%5Bbot%5D/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/claude%5Bbot%5D/received_events",
+            "type": "Bot",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "No bugs found, but this PR touches encryption-sensitive code paths across 8 files and depends on unreleased truenas_pylibzfs changes (PR #145). Worth a human review given the scope and security sensitivity.\n\n\n<details>\n<summary>Extended reasoning...</summary>\n\n### Overview\n\nThis PR replaces the deprecated py-libzfs with truenas_pylibzfs for ZFS dataset encryption methods (`load_key`, `check_key`, `change_key`, `change_encryption_root`, `bulk_check`). The old `zfs_/dataset_encryption.py` (which ran in a process pool) is deleted, and new standalone functions are added in `zfs/dataset_encryption.py`. Service wrappers are added to `resource_crud.py` using `@pass_thread_local_storage` to provide thread-safe libzfs handles. Callers across KMIP, pool dataset encryption info/lock/operations are updated accordingly. The `pbkdf2iters` default and minimum are raised from 350,000 to 1,300,000 with a `from_previous` migration hook.\n\n### Security risks\n\nThis PR directly handles encryption key loading, verification, and rotation for ZFS datasets. While the code patterns look correct (proper error handling, thread-local libzfs handles, no key material logged), the security-critical nature of these operations means any subtle behavioral difference between the old py-libzfs and new truenas_pylibzfs implementations could have serious consequences (failed unlocks, key verification bypass, etc.).\n\n### Level of scrutiny\n\nHigh scrutiny warranted. This is production-critical encryption infrastructure code. The changes span 8 files and replace the underlying ZFS library for all encryption operations. The `from_previous` migration for `pbkdf2iters` is a breaking API change that requires careful review.\n\n### Other factors\n\n- The PR description states it depends on unreleased truenas_pylibzfs changes (PR #145) and the author is \"waiting for next nightly to test\", suggesting the PR is not yet fully validated.\n- A reviewer (yocalebo) previously raised an architectural concern about libzfs handle management that appears to have been addressed by using `tls.lzh` instead of opening new handles, and the comment is resolved.\n- The removal of the generic `bulk_process` job (which dispatched by method name) in favor of the specific `bulk_check` function is a positive safety improvement.\n- No test changes are included, which is expected since integration tests would cover this, but it means correctness depends on the nightly test run the author mentioned.\n\n</details>",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3867975352",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "NONE",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3867975352"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-02-27T16:50:36Z",
+        "commit_id": "f20e1d231d9276a131dead5ea78803ef8fab52ad"
+    },
+    {
+        "id": 3876201194,
+        "node_id": "PRR_kwDOAIOmMM7nCiLq",
+        "user": {
+            "login": "yocalebo",
+            "id": 30729806,
+            "node_id": "MDQ6VXNlcjMwNzI5ODA2",
+            "avatar_url": "https://avatars.githubusercontent.com/u/30729806?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/yocalebo",
+            "html_url": "https://github.com/yocalebo",
+            "followers_url": "https://api.github.com/users/yocalebo/followers",
+            "following_url": "https://api.github.com/users/yocalebo/following{/other_user}",
+            "gists_url": "https://api.github.com/users/yocalebo/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/yocalebo/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/yocalebo/subscriptions",
+            "organizations_url": "https://api.github.com/users/yocalebo/orgs",
+            "repos_url": "https://api.github.com/users/yocalebo/repos",
+            "events_url": "https://api.github.com/users/yocalebo/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/yocalebo/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "This needs to be cleaned up and polished.",
+        "state": "CHANGES_REQUESTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3876201194",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "CONTRIBUTOR",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3876201194"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-02T13:29:42Z",
+        "commit_id": "f20e1d231d9276a131dead5ea78803ef8fab52ad"
+    },
+    {
+        "id": 3883749924,
+        "node_id": "PRR_kwDOAIOmMM7nfVIk",
+        "user": {
+            "login": "yocalebo",
+            "id": 30729806,
+            "node_id": "MDQ6VXNlcjMwNzI5ODA2",
+            "avatar_url": "https://avatars.githubusercontent.com/u/30729806?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/yocalebo",
+            "html_url": "https://github.com/yocalebo",
+            "followers_url": "https://api.github.com/users/yocalebo/followers",
+            "following_url": "https://api.github.com/users/yocalebo/following{/other_user}",
+            "gists_url": "https://api.github.com/users/yocalebo/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/yocalebo/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/yocalebo/subscriptions",
+            "organizations_url": "https://api.github.com/users/yocalebo/orgs",
+            "repos_url": "https://api.github.com/users/yocalebo/repos",
+            "events_url": "https://api.github.com/users/yocalebo/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/yocalebo/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3883749924",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "CONTRIBUTOR",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3883749924"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T16:34:32Z",
+        "commit_id": "3f933a880207082b67be6b664f5f79b6b7472f08"
+    },
+    {
+        "id": 3883759592,
+        "node_id": "PRR_kwDOAIOmMM7nfXfo",
+        "user": {
+            "login": "yocalebo",
+            "id": 30729806,
+            "node_id": "MDQ6VXNlcjMwNzI5ODA2",
+            "avatar_url": "https://avatars.githubusercontent.com/u/30729806?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/yocalebo",
+            "html_url": "https://github.com/yocalebo",
+            "followers_url": "https://api.github.com/users/yocalebo/followers",
+            "following_url": "https://api.github.com/users/yocalebo/following{/other_user}",
+            "gists_url": "https://api.github.com/users/yocalebo/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/yocalebo/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/yocalebo/subscriptions",
+            "organizations_url": "https://api.github.com/users/yocalebo/orgs",
+            "repos_url": "https://api.github.com/users/yocalebo/repos",
+            "events_url": "https://api.github.com/users/yocalebo/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/yocalebo/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3883759592",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "CONTRIBUTOR",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3883759592"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T16:35:58Z",
+        "commit_id": "3f933a880207082b67be6b664f5f79b6b7472f08"
+    },
+    {
+        "id": 3884004701,
+        "node_id": "PRR_kwDOAIOmMM7ngTVd",
+        "user": {
+            "login": "yocalebo",
+            "id": 30729806,
+            "node_id": "MDQ6VXNlcjMwNzI5ODA2",
+            "avatar_url": "https://avatars.githubusercontent.com/u/30729806?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/yocalebo",
+            "html_url": "https://github.com/yocalebo",
+            "followers_url": "https://api.github.com/users/yocalebo/followers",
+            "following_url": "https://api.github.com/users/yocalebo/following{/other_user}",
+            "gists_url": "https://api.github.com/users/yocalebo/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/yocalebo/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/yocalebo/subscriptions",
+            "organizations_url": "https://api.github.com/users/yocalebo/orgs",
+            "repos_url": "https://api.github.com/users/yocalebo/repos",
+            "events_url": "https://api.github.com/users/yocalebo/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/yocalebo/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "APPROVED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884004701",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "CONTRIBUTOR",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884004701"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T17:19:31Z",
+        "commit_id": "8db5fce3a922f1296d588f6c7f0532e6d6e465f0"
+    },
+    {
+        "id": 3884111323,
+        "node_id": "PRR_kwDOAIOmMM7ngtXb",
+        "user": {
+            "login": "claude[bot]",
+            "id": 209825114,
+            "node_id": "BOT_kgDODIGtWg",
+            "avatar_url": "https://avatars.githubusercontent.com/in/1236702?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/claude%5Bbot%5D",
+            "html_url": "https://github.com/apps/claude",
+            "followers_url": "https://api.github.com/users/claude%5Bbot%5D/followers",
+            "following_url": "https://api.github.com/users/claude%5Bbot%5D/following{/other_user}",
+            "gists_url": "https://api.github.com/users/claude%5Bbot%5D/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/claude%5Bbot%5D/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/claude%5Bbot%5D/subscriptions",
+            "organizations_url": "https://api.github.com/users/claude%5Bbot%5D/orgs",
+            "repos_url": "https://api.github.com/users/claude%5Bbot%5D/repos",
+            "events_url": "https://api.github.com/users/claude%5Bbot%5D/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/claude%5Bbot%5D/received_events",
+            "type": "Bot",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884111323",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "NONE",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884111323"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T17:36:39Z",
+        "commit_id": "8db5fce3a922f1296d588f6c7f0532e6d6e465f0"
+    },
+    {
+        "id": 3884281546,
+        "node_id": "PRR_kwDOAIOmMM7nhW7K",
+        "user": {
+            "login": "claude[bot]",
+            "id": 209825114,
+            "node_id": "BOT_kgDODIGtWg",
+            "avatar_url": "https://avatars.githubusercontent.com/in/1236702?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/claude%5Bbot%5D",
+            "html_url": "https://github.com/apps/claude",
+            "followers_url": "https://api.github.com/users/claude%5Bbot%5D/followers",
+            "following_url": "https://api.github.com/users/claude%5Bbot%5D/following{/other_user}",
+            "gists_url": "https://api.github.com/users/claude%5Bbot%5D/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/claude%5Bbot%5D/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/claude%5Bbot%5D/subscriptions",
+            "organizations_url": "https://api.github.com/users/claude%5Bbot%5D/orgs",
+            "repos_url": "https://api.github.com/users/claude%5Bbot%5D/repos",
+            "events_url": "https://api.github.com/users/claude%5Bbot%5D/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/claude%5Bbot%5D/received_events",
+            "type": "Bot",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884281546",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "NONE",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884281546"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T18:06:52Z",
+        "commit_id": "8db5fce3a922f1296d588f6c7f0532e6d6e465f0"
+    },
+    {
+        "id": 3884518820,
+        "node_id": "PRR_kwDOAIOmMM7niQ2k",
+        "user": {
+            "login": "claude[bot]",
+            "id": 209825114,
+            "node_id": "BOT_kgDODIGtWg",
+            "avatar_url": "https://avatars.githubusercontent.com/in/1236702?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/claude%5Bbot%5D",
+            "html_url": "https://github.com/apps/claude",
+            "followers_url": "https://api.github.com/users/claude%5Bbot%5D/followers",
+            "following_url": "https://api.github.com/users/claude%5Bbot%5D/following{/other_user}",
+            "gists_url": "https://api.github.com/users/claude%5Bbot%5D/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/claude%5Bbot%5D/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/claude%5Bbot%5D/subscriptions",
+            "organizations_url": "https://api.github.com/users/claude%5Bbot%5D/orgs",
+            "repos_url": "https://api.github.com/users/claude%5Bbot%5D/repos",
+            "events_url": "https://api.github.com/users/claude%5Bbot%5D/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/claude%5Bbot%5D/received_events",
+            "type": "Bot",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884518820",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "NONE",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884518820"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T19:03:07Z",
+        "commit_id": "bfe3651a785219d1540aacc8df9c98ed8e1de254"
+    },
+    {
+        "id": 3884717354,
+        "node_id": "PRR_kwDOAIOmMM7njBUq",
+        "user": {
+            "login": "creatorcary",
+            "id": 54003261,
+            "node_id": "MDQ6VXNlcjU0MDAzMjYx",
+            "avatar_url": "https://avatars.githubusercontent.com/u/54003261?v=4",
+            "gravatar_id": "",
+            "url": "https://api.github.com/users/creatorcary",
+            "html_url": "https://github.com/creatorcary",
+            "followers_url": "https://api.github.com/users/creatorcary/followers",
+            "following_url": "https://api.github.com/users/creatorcary/following{/other_user}",
+            "gists_url": "https://api.github.com/users/creatorcary/gists{/gist_id}",
+            "starred_url": "https://api.github.com/users/creatorcary/starred{/owner}{/repo}",
+            "subscriptions_url": "https://api.github.com/users/creatorcary/subscriptions",
+            "organizations_url": "https://api.github.com/users/creatorcary/orgs",
+            "repos_url": "https://api.github.com/users/creatorcary/repos",
+            "events_url": "https://api.github.com/users/creatorcary/events{/privacy}",
+            "received_events_url": "https://api.github.com/users/creatorcary/received_events",
+            "type": "User",
+            "user_view_type": "public",
+            "site_admin": false
+        },
+        "body": "",
+        "state": "COMMENTED",
+        "html_url": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884717354",
+        "pull_request_url": "https://api.github.com/repos/truenas/middleware/pulls/18291",
+        "author_association": "CONTRIBUTOR",
+        "_links": {
+            "html": {
+                "href": "https://github.com/truenas/middleware/pull/18291#pullrequestreview-3884717354"
+            },
+            "pull_request": {
+                "href": "https://api.github.com/repos/truenas/middleware/pulls/18291"
+            }
+        },
+        "submitted_at": "2026-03-03T19:50:59Z",
+        "commit_id": "bfe3651a785219d1540aacc8df9c98ed8e1de254"
+    }
+]

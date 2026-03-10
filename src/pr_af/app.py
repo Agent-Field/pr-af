@@ -61,9 +61,9 @@ def _extract_pr_number(pr_url: str) -> int | None:
 def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
     git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
     subprocess.run(
-        ["git", "-C", target_dir, "fetch", "origin", f"pull/{pr_number}/head:pr-review"],
+        ["git", "-C", target_dir, "fetch", "--depth", "1", "origin", f"pull/{pr_number}/head:pr-review"],
         env=git_env,
-        timeout=120,
+        timeout=300,
         capture_output=True,
     )
     subprocess.run(
@@ -98,18 +98,35 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         if gh_token and clone_url.startswith("https://github.com/"):
             clone_url = clone_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
 
+        git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+        clone_timeout = 600  # Large repos (e.g. TrueNAS middleware) need time
+
         if os.path.isdir(target_dir) and os.path.isdir(os.path.join(target_dir, ".git")):
             subprocess.run(
                 ["git", "-C", target_dir, "fetch", "--all"],
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
-                timeout=60,
+                env=git_env,
+                timeout=clone_timeout,
                 capture_output=True,
             )
         else:
+            # Shallow clone: only need enough history to read files, not full history
+            clone_cmd = ["git", "clone", "--depth", "1", "--no-tags", clone_url, target_dir]
+            # If we know the PR number, skip default branch checkout — we'll fetch the PR ref
+            if pr_number:
+                clone_cmd = [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--no-tags",
+                    "--no-checkout",
+                    clone_url,
+                    target_dir,
+                ]
             result = subprocess.run(
-                ["git", "clone", clone_url, target_dir],
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
-                timeout=120,
+                clone_cmd,
+                env=git_env,
+                timeout=clone_timeout,
                 capture_output=True,
                 text=True,
             )

@@ -766,10 +766,13 @@ class ReviewOrchestrator:
                 break
             cluster = candidate_clusters[idx]
             prompt = (
-                "Coverage gap follow-up review. "
-                f"Focus area: {gap}. "
-                f"Inspect files: {', '.join(cluster.files)}. "
-                "Return only concrete findings with file path, line range, and confidence."
+                f"Coverage gap review — this area was missed in the initial review pass.\n\n"
+                f"Gap identified: {gap}\n\n"
+                f"Inspect the target files with the same depth and rigor as a primary review. "
+                f"Look for bugs, logic errors, security issues, and behavioral changes. "
+                f"Pay special attention to how this code interacts with the changes that were "
+                f"already reviewed in other files — the gap exists because this cluster's "
+                f"relationship to the main change wasn't obvious at planning time."
             )
             dimensions.append(
                 ReviewDimension(

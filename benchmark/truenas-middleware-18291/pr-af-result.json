@@ -1,0 +1,1446 @@
+{
+    "execution_id": "exec_20260310_070803_br5g04a4",
+    "run_id": "run_20260310_070803_eqyowmea",
+    "status": "succeeded",
+    "result": {
+        "findings": [
+            {
+                "active_multipliers": [],
+                "body": "The `PoolCreateEncryptionOptions.pbkdf2iters` field has breaking changes that affect API compatibility:\n\n1. **Default value changed**: `350000` \u2192 `1300000`\n2. **Minimum value changed**: `100000` \u2192 `1300000`\n3. **Impact**: Any API call providing a pbkdf2iters value between 100000 and 1299999 will now fail validation with a `validation_error`.\n\nWhile a `from_previous` migration method was added, it only handles data migration from previous versions and does NOT help with new API calls. Clients that were previously providing values like 350000 (the old default) will now receive validation errors.\n\nThis affects:\n- `pool.create` calls with custom encryption_options\n- Any client code that hardcoded the old default or minimum values\n- Backward compatibility for scripts using the old iteration counts",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: pbkdf2iters: int = Field(ge=100000, default=350000)\nv26_0_0:  pbkdf2iters: int = Field(ge=1300000, default=1300000)\n\nThe from_previous method only handles migration:\n```python\n@classmethod\ndef from_previous(cls, value):\n    value['pbkdf2iters'] = max(1300000, value['pbkdf2iters'])\n    return value\n```",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                "id": "f_020",
+                "line_end": 154,
+                "line_start": 139,
+                "score": 0.95,
+                "severity": "critical",
+                "suggestion": "Option 1: Keep minimum at 100000 but change default to 1300000 for new pools:\n```python\npbkdf2iters: int = Field(ge=100000, default=1300000)\n```\n\nOption 2: Document this breaking change explicitly in API release notes and notify client developers.",
+                "tags": [
+                    "breaking-change",
+                    "encryption",
+                    "validation",
+                    "pool-create"
+                ],
+                "title": "Breaking Change: pbkdf2iters minimum and default increased from 350000 to 1300000"
+            },
+            {
+                "active_multipliers": [],
+                "body": "Same critical issue as PoolCreateEncryptionOptions: the `PoolDatasetChangeKeyOptions.pbkdf2iters` field has breaking changes:\n\n1. **Default changed**: `350000` \u2192 `1300000`\n2. **Minimum changed**: `100000` \u2192 `1300000`\n3. **Impact**: API calls to `pool.dataset.change_key` with pbkdf2iters values 100000-1299999 will fail validation.\n\nThis affects dataset key change operations and could break existing client code.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: pbkdf2iters: int = Field(default=350000, ge=100000)\nv26_0_0:  pbkdf2iters: int = Field(default=1300000, ge=1300000)",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool_dataset.py",
+                "id": "f_024",
+                "line_end": 186,
+                "line_start": 170,
+                "score": 0.95,
+                "severity": "critical",
+                "suggestion": "Keep minimum at 100000 for backward compatibility while using new default:\n```python\npbkdf2iters: int = Field(default=1300000, ge=100000)\n```",
+                "tags": [
+                    "breaking-change",
+                    "encryption",
+                    "dataset",
+                    "pbkdf2iters"
+                ],
+                "title": "Breaking Change: PoolDatasetChangeKeyOptions.pbkdf2iters minimum increased to 1300000"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The failover service's `unlock_zfs_datasets` method uses job lock `'failover_dataset_unlock'` (line 553), while the user-facing `pool.dataset.unlock` method uses lock `f'dataset_unlock_{args[0]}'` (dataset_encryption_lock.py:93). These different lock namespaces mean that during a failover event, the automatic unlock can run concurrently with a user-initiated unlock on the same dataset.\n\n**Impact**: This creates a race condition where:\n1. User initiates unlock on dataset 'tank/data'\n2. Failover event occurs, triggering `unlock_zfs_datasets('tank')`\n3. Both jobs run concurrently because they use different locks\n4. Both attempt to call `load_key()` on the same dataset\n5. One succeeds, the other fails with `ZFSKeyAlreadyLoadedException`\n6. The failed operation reports an error, potentially causing the failover to be marked as failed or the user operation to fail unexpectedly\n\n**Root cause**: The process pool previously provided implicit global serialization for all ZFS operations. With direct library calls, this serialization is lost and the job locks are inconsistent.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "process-pool-removal-impact",
+                "dimension_name": "Process Pool Removal Impact on ZFS Encryption Operations",
+                "evidence": "File: failover.py:553 - `@job(lock='failover_dataset_unlock')` uses a global lock for all failover unlocks.\nFile: dataset_encryption_lock.py:93 - `@job(lock=lambda args: f'dataset_unlock_{args[0]}')` uses per-dataset lock.\nThese namespaces don't overlap, allowing concurrent unlock operations on the same dataset.",
+                "file_path": "src/middlewared/middlewared/plugins/failover.py",
+                "id": "f_038",
+                "line_end": 571,
+                "line_start": 553,
+                "score": 0.95,
+                "severity": "critical",
+                "suggestion": "Use the same lock namespace for failover unlock operations. Change the failover unlock job to use `lock=lambda args: f'dataset_unlock_{args[0]}'` to match the user unlock operation. This ensures that only one unlock operation can run on a dataset at a time, regardless of whether it's triggered by failover or user action.",
+                "tags": [
+                    "race-condition",
+                    "failover",
+                    "encryption",
+                    "lock-namespace",
+                    "process-pool"
+                ],
+                "title": "Failover unlock uses different lock namespace than user unlock - allows concurrent operations on same dataset"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `PoolCreateTopologySpecialVdev` type has changed from a restricted model to an alias that includes DRAID types.\n\n**Old definition** (v25_10_2):\n```python\nclass PoolCreateTopologySpecialVdev(BaseModel):\n    type: Literal[\"MIRROR\", \"STRIPE\"]\n    disks: list[str]\n```\n\n**New definition** (v26_0_0):\n```python\nPoolCreateTopologySpecialVdev: TypeAlias = PoolCreateTopologyDataVdev\n# Which is: Annotated[PoolCreateTopologyVdevDRAID | PoolCreateTopologyVdevNonDRAID, ...]\n```\n\n**Impact**: This allows DRAID1/DRAID2/DRAID3 types in special vdevs, which may not be supported by the underlying ZFS implementation or could cause issues with pool creation. This is a significant behavioral change that affects `pool.create` and `pool.update` endpoints.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: class PoolCreateTopologySpecialVdev with type: Literal[\"MIRROR\", \"STRIPE\"]\nv26_0_0:  PoolCreateTopologySpecialVdev: TypeAlias = PoolCreateTopologyDataVdev",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                "id": "f_022",
+                "line_end": 182,
+                "line_start": 180,
+                "score": 0.9,
+                "severity": "critical",
+                "suggestion": "Restore the original restricted type definition for special vdevs unless DRAID support in special vdevs is intentional and tested:\n```python\nclass PoolCreateTopologySpecialVdev(BaseModel):\n    type: Literal[\"MIRROR\", \"STRIPE\"]\n    disks: list[str]\n```",
+                "tags": [
+                    "breaking-change",
+                    "topology",
+                    "special-vdev",
+                    "draid"
+                ],
+                "title": "Breaking Change: PoolCreateTopologySpecialVdev now allows DRAID types"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The **PoolScan** model in v26_0_0 defines all fields as non-nullable (except `end_time`, `pause`, and `total_secs_left`), but the **v25_10_2** dict example shows all fields can be `None`.\n\n**Old contract (v25_10_2/pool.py:66-81):**\n```python\nscan: Annotated[\n    dict,\n    Field(examples=[{\n        'function': None,  # Nullable\n        'state': None,     # Nullable\n        'start_time': None, # Nullable\n        'end_time': None,\n        'percentage': None, # Nullable\n        'bytes_to_process': None, # Nullable\n        'bytes_processed': None,  # Nullable\n        'bytes_issued': None,   # Nullable\n        'pause': None,\n        'errors': None,  # Nullable\n        'total_secs_left': None,\n    }])\n] | None\n```\n\n**New model (v26_0_0/pool_scrub.py:108-130):**\n```python\nclass PoolScan(BaseModel):\n    function: Literal[\"RESILVER\", \"SCRUB\"]  # Required, non-nullable\n    state: Literal[\"SCANNING\", \"FINISHED\", \"CANCELED\"]  # Required\n    start_time: datetime  # Required\n    percentage: float    # Required\n    bytes_to_process: int  # Required\n    bytes_processed: int   # Required\n    bytes_issued: int       # Required\n    errors: int           # Required\n```\n\n**Why this is critical:**\nWhen the ZFS pool has no active scan, the middleware returns a `None` or empty scan object. However, the new PoolScan model doesn't allow `None` values for `function`, `state`, `start_time`, `percentage`, `bytes_to_process`, `bytes_processed`, `bytes_issued`, or `errors`. This will cause **Pydantic validation errors** when the API attempts to serialize pool data with a scan that hasn't started yet or where ZFS returns null values.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "1",
+                "dimension_name": "API Compatibility - PoolScan Model",
+                "evidence": "Step 1: Old scan field at v25_10_2/pool.py:66-81 defines all values as None in example.\nStep 2: New PoolScan at v26_0_0/pool_scrub.py:108-130 defines most fields as required non-nullable types.\nStep 3: PoolScanChangedEvent at line 133-137 uses PoolScan type for 'scan' field.\nStep 4: When ZFS returns a pool with no active scan operation, the scan data will have null values for most fields, causing Pydantic validation to fail.",
+                "file_path": "/workspaces/middleware/src/middlewared/middlewared/api/v26_0_0/pool_scrub.py",
+                "id": "f_037",
+                "line_end": 130,
+                "line_start": 108,
+                "score": 0.9,
+                "severity": "critical",
+                "suggestion": "Add `| None` union types to all fields that were nullable in the old example. Consider whether the entire PoolScan model should be nullable when passed to PoolScanChangedEvent, or if individual fields need to support null:\n\n```python\nclass PoolScan(BaseModel):\n    function: Literal[\"RESILVER\", \"SCRUB\"] | None\n    state: Literal[\"SCANNING\", \"FINISHED\", \"CANCELED\"] | None\n    start_time: datetime | None\n    end_time: datetime | None\n    percentage: float | None\n    bytes_to_process: int | None\n    bytes_processed: int | None\n    bytes_issued: int | None\n    pause: datetime | None\n    errors: int | None\n    total_secs_left: int | None\n```",
+                "tags": [
+                    "api-compatibility",
+                    "pydantic-validation",
+                    "breaking-change"
+                ],
+                "title": "PoolScan model lacks None/null support for required fields"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The code at lines 223-228 uses a direct comparison pattern `e.code == ZFSError.EZFS_CRYPTOFAILED` which is inconsistent with other files in the codebase. Most other files use `ZFSError(e.code) == ZFSError.EZFS_*` to convert the integer code to an enum before comparison.\n\nIf `e.code` returns an integer and `ZFSError.EZFS_CRYPTOFAILED` is an enum member (not an IntEnum), this comparison will always return `False` even when the error code matches, causing the error handling logic to silently fail. The invalid key error will not be properly detected, and users will see generic error messages instead of 'Invalid Key'.\n\n**Inconsistent patterns found:**\n- `dataset_encryption_lock.py:224` uses: `e.code == ZFSError.EZFS_CRYPTOFAILED` (DIRECT)\n- `pool_operations.py:124` uses: `e.code == ZFSError.EZFS_NOENT` (DIRECT)\n- `pool_/info.py:111,168` uses: `e.code == ZFSError.EZFS_NOENT` (DIRECT)\n- `pool_/dataset.py:398` uses: `e.code == ZFSError.EZFS_EXISTS` (DIRECT)\n- `dataset_encryption_info.py:265,279` uses: `ZFSError(e.code) == ZFSError.EZFS_*` (CONVERT)\n- `zfs/query_impl.py:75` uses: `ZFSError(e.code) == ZFSError.EZFS_NOENT` (CONVERT)\n- `zfs/snapshot_*.py` files use: `ZFSError(e.code)` pattern (CONVERT)",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "error-code-mapping",
+                "dimension_name": "ZFSError Enum Mapping Verification",
+                "evidence": "Code in dataset_encryption_lock.py:223-228:\n```python\nexcept ZFSException as e:\n    if e.code == ZFSError.EZFS_CRYPTOFAILED:\n        failed[name]['error'] = 'Invalid Key'\n    else:\n        failed[name]['error'] = str(e)\n```\n\nContrast with dataset_encryption_info.py:265:\n```python\nexcept ZFSException as e:\n    if ZFSError(e.code) != ZFSError.EZFS_NOENT:\n        raise\n```",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                "id": "f_034",
+                "line_end": 228,
+                "line_start": 223,
+                "score": 0.85,
+                "severity": "critical",
+                "suggestion": "Standardize on the pattern `ZFSError(e.code) == ZFSError.EZFS_CRYPTOFAILED` for consistency and safety. This explicitly converts the integer code to an enum before comparison, ensuring correct behavior regardless of whether ZFSError is an IntEnum or a regular Enum. Alternatively, verify that truenas_pylibzfs.ZFSError is an IntEnum (which supports direct integer comparison), and if so, standardize on direct comparison for readability - but only if it's confirmed to be an IntEnum.",
+                "tags": [
+                    "error-handling",
+                    "enum-comparison",
+                    "silent-failure",
+                    "inconsistency"
+                ],
+                "title": "Inconsistent ZFSError comparison pattern may cause silent error handling failure"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "The `push_zfs_keys` method contains a Time-of-Check-Time-of-Use (TOCTOU) race condition in the cache validation logic. At lines 66-67, the code checks `ds['name'] in self.zfs_keys` and then immediately uses `self.zfs_keys[ds['name']]` in the `check_key()` call. Between these two operations, another thread could modify or delete the cache entry via `reset_zfs_key()`, `update_zfs_keys()`, or `clear_sync_pending_zfs_keys()`. With faster direct library calls, this race window is smaller but still exploitable under concurrent load. Additionally, at line 78, the cache is updated with `self.zfs_keys[ds['name']] = ds['encryption_key']` BEFORE the database is updated at line 93. If the `_register_secret_data()` call at line 86 fails, the cache holds a key that was never successfully registered with the KMIP server, leading to cache/database inconsistency.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "kmip-cache-race-conditions",
+                "dimension_name": "KMIP Key Cache Race Conditions",
+                "evidence": "Step 1: Thread A checks `ds['name'] in self.zfs_keys` at line 66 (returns True).\nStep 2: Thread B calls `reset_zfs_key(dataset=ds['name'])` which executes `self.zfs_keys.pop(dataset, None)` at line 186.\nStep 3: Thread A attempts `check_key(tls, ds['name'], key=self.zfs_keys[ds['name']])` at line 67.\nStep 4: KeyError is raised because Thread B removed the entry, OR a stale key is validated that no longer matches the KMIP server state.",
+                "file_path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                "id": "f_000",
+                "line_end": 78,
+                "line_start": 66,
+                "score": 0.712,
+                "severity": "critical",
+                "suggestion": "Use a threading.Lock to protect all `self.zfs_keys` access. For the compound check-then-use pattern, lock the entire block. Additionally, defer cache updates until after successful KMIP operations and database persistence - only update the cache after line 93 confirms the database update succeeded.",
+                "tags": [
+                    "race-condition",
+                    "cache-consistency",
+                    "thread-safety",
+                    "TOCTOU"
+                ],
+                "title": "TOCTOU Race Condition in push_zfs_keys Cache Access"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "The `pull_zfs_keys` method has the same TOCTOU pattern as `push_zfs_keys`. At lines 108-109, the code checks membership in `self.zfs_keys` and then validates the key with `check_key()`. However, at line 111, it retrieves `self.zfs_keys[ds['name']]` again. Between the validation at line 109 and the retrieval at line 111, another thread could modify the cache entry. This means the key being assigned to the `key` variable might differ from the key that was validated, potentially assigning an incorrect or stale key to the database update at line 120.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "kmip-cache-race-conditions",
+                "dimension_name": "KMIP Key Cache Race Conditions",
+                "evidence": "Step 1: Thread A validates `check_key(tls, ds['name'], key=self.zfs_keys[ds['name'])` at line 109 (returns True).\nStep 2: Thread B calls `push_zfs_keys()` which updates `self.zfs_keys[ds['name']]` at line 78 with a different key value.\nStep 3: Thread A executes `key = self.zfs_keys[ds['name']]` at line 111, retrieving the NEW key that was NOT validated.\nStep 4: Database is updated with unvalidated key at line 120, potentially corrupting encryption state.",
+                "file_path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                "id": "f_001",
+                "line_end": 111,
+                "line_start": 108,
+                "score": 0.712,
+                "severity": "critical",
+                "suggestion": "Store the validated key in a local variable immediately after validation to ensure consistency. Use pattern: `cached_key = self.zfs_keys.get(ds['name']); if cached_key and check_key(tls, ds['name'], key=cached_key): key = cached_key`. Protect all cache access with a threading.Lock.",
+                "tags": [
+                    "race-condition",
+                    "cache-consistency",
+                    "thread-safety",
+                    "TOCTOU"
+                ],
+                "title": "TOCTOU Race Condition in pull_zfs_keys Cache Access"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `load_key()` function in `encryption.py` raises custom exceptions `ZFSKeyAlreadyLoadedException` (line 33) and `ZFSNotEncryptedException` (line 31) which are plain Python `Exception` subclasses, NOT `truenas_pylibzfs.ZFSException`.\n\n**The problem:** In `dataset_encryption_lock.py:221-231`, the code specifically catches `ZFSException` to handle crypto failures. However, the new custom exceptions will NOT match this handler and fall through to the generic `except Exception` handler at line 229.\n\n**Impact:**\n- `ZFSKeyAlreadyLoadedException`: May indicate a race condition or partial success, but is treated as a generic failure\n- `ZFSNotEncryptedException`: Indicates the dataset is not encrypted (configuration error), but gets recorded as a generic error string without context",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "exception-handling",
+                "dimension_name": "Exception Type Changes",
+                "evidence": "Step 1: `load_key()` is called at line 222.\nStep 2: If key already loaded, `encryption.py:33` raises `ZFSKeyAlreadyLoadedException` (plain Exception subclass).\nStep 3: The exception does NOT match `ZFSException` at line 223.\nStep 4: It falls to line 229 `except Exception as e`, recording `failed[name]['error'] = str(e)`.\nStep 5: The error is treated as a failure even though the key is actually already loaded.",
+                "file_path": "/workspaces/middleware/src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                "id": "f_016",
+                "line_end": 231,
+                "line_start": 221,
+                "score": 0.63,
+                "severity": "important",
+                "suggestion": "Import and handle the new exception types explicitly:\n1. Import `ZFSKeyAlreadyLoadedException` and `ZFSNotEncryptedException` from `middlewared.plugins.zfs.exceptions`\n2. Add specific handlers before the generic Exception handler:\n```python\nfrom middlewared.plugins.zfs.exceptions import ZFSKeyAlreadyLoadedException, ZFSNotEncryptedException\n\ntry:\n    load_key(tls, name, key=datasets[name]['key'])\nexcept ZFSKeyAlreadyLoadedException:\n    # Key already loaded - treat as success or log informational message\n    unlocked.append(name)\n    continue\nexcept ZFSNotEncryptedException:\n    failed[name]['error'] = 'Dataset is not encrypted'\n    continue\nexcept ZFSException as e:\n    if e.code == ZFSError.EZFS_CRYPTOFAILED:\n        failed[name]['error'] = 'Invalid Key'\n    else:\n        failed[name]['error'] = str(e)\n    continue\nexcept Exception as e:\n    failed[name]['error'] = str(e)\n    continue\n```",
+                "tags": [
+                    "exception-handling",
+                    "race-condition",
+                    "api-contract"
+                ],
+                "title": "ZFSKeyAlreadyLoadedException and ZFSNotEncryptedException not caught by existing handlers"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `scan` field in `PoolEntry` changed from an `Annotated[dict, ...]` type to `PoolScan | None`. This is a significant schema change that affects the API response format.\n\n**Old format**: Generic dict with example fields like `function`, `state`, `start_time`, etc.\n**New format**: Strongly-typed `PoolScan` model imported from `.pool_scrub`\n\n**Impact**:\n- Clients expecting the old dict structure may break when parsing responses\n- The response serialization will now use the `PoolScan` model structure\n- This affects all endpoints returning `PoolEntry` (pool.create, pool.update, pool.query, etc.)\n\n**Risk**: This is a response format change that could break client-side parsing, especially for strongly-typed clients.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: scan: Annotated[dict, Field(examples=[{...}])] | None\nv26_0_0:  scan: PoolScan | None\n\nImport added: from .pool_scrub import PoolScan",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                "id": "f_021",
+                "line_end": 72,
+                "line_start": 55,
+                "score": 0.63,
+                "severity": "important",
+                "suggestion": "Verify that PoolScan model matches the expected dict structure from v25_10_2. Consider adding backward compatibility by supporting both formats or ensuring PoolScan serializes to the same JSON structure.",
+                "tags": [
+                    "response-format",
+                    "pool-entry",
+                    "scan",
+                    "schema-change"
+                ],
+                "title": "PoolEntry.scan type changed from dict to PoolScan model"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `load_key()` function in `encryption.py` has a classic Time-Of-Check-Time-Of-Use (TOCTOU) race condition. It first checks if the key is already loaded (line 32), then loads it (line 34). These are two separate operations, not atomic.\n\n**Race scenario**:\n1. Thread A calls `load_key('tank/data')`\n2. Thread A checks `crypto.info().key_is_loaded` \u2192 returns False\n3. Context switch to Thread B\n4. Thread B calls `load_key('tank/data')`\n5. Thread B checks `crypto.info().key_is_loaded` \u2192 returns False\n6. Thread B calls `crypto.load_key()` \u2192 succeeds\n7. Context switch back to Thread A\n8. Thread A calls `crypto.load_key()` \u2192 may fail or behave unexpectedly\n\n**Process pool context**: When using the process pool, only one operation could run at a time, preventing this race. With direct library calls and `@pass_thread_local_storage`, multiple threads can execute this code concurrently.\n\n**Impact**: The second load_key call will raise `ZFSKeyAlreadyLoadedException`. While this prevents data corruption, it causes unnecessary failures that didn't occur with the process pool's implicit serialization.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "process-pool-removal-impact",
+                "dimension_name": "Process Pool Removal Impact on ZFS Encryption Operations",
+                "evidence": "File: encryption.py:32-34 - The check `if crypto.info().key_is_loaded:` and `crypto.load_key(**kwargs)` are separate non-atomic operations.\nFile: dataset_encryption_lock.py:221-222 - `load_key(tls, name, key=datasets[name]['key'])` is called in a loop without dataset-level locking.",
+                "file_path": "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                "id": "f_039",
+                "line_end": 34,
+                "line_start": 14,
+                "score": 0.63,
+                "severity": "important",
+                "suggestion": "Option 1: Remove the pre-check and handle 'already loaded' as a non-error case (idempotent behavior).\nOption 2: Add a synchronization primitive (threading.Lock) per dataset to serialize load_key operations on the same dataset.\nOption 3: Rely on higher-level locks (job locks) but ensure they cover all code paths consistently.",
+                "tags": [
+                    "race-condition",
+                    "toctou",
+                    "encryption",
+                    "load-key",
+                    "process-pool"
+                ],
+                "title": "TOCTOU race condition in load_key() - key check and load are not atomic"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `PoolCreate.name` field changed from `POOL_NAME` (with whitespace validation) to `NonEmptyString` (no whitespace validation).\n\n**Old validation**:\n- No whitespace characters allowed (regex: `^\\S+$`)\n- Maximum length: 50 characters\n\n**New validation**:\n- Only non-empty string check\n- No whitespace restriction\n- No explicit length limit\n\n**Impact**:\n- API now accepts pool names with whitespace that were previously rejected\n- Pool names >50 chars are now accepted\n- This affects `pool.create` and `pool.import_pool` endpoints\n\n**Note**: The comment mentions \"Incus cannot consume a pool which has whitespaces\" but this validation was removed.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: name: POOL_NAME  # With AfterValidator(match_validator(re.compile(r\"^\\S+$\"), ...))\nv26_0_0:  name: NonEmptyString  # No whitespace validation",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                "id": "f_023",
+                "line_end": 221,
+                "line_start": 220,
+                "score": 0.595,
+                "severity": "important",
+                "suggestion": "If whitespace restriction is still needed for Incus compatibility, restore the POOL_NAME type alias. If Incus now supports whitespace, remove the FIXME comment in the code.",
+                "tags": [
+                    "validation",
+                    "pool-name",
+                    "whitespace",
+                    "incus"
+                ],
+                "title": "Pool name validation relaxed: removed whitespace restriction"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `lock` operation uses a global lock `'dataset_lock'` (line 32), while the `unlock` operation uses per-dataset lock `f'dataset_unlock_{args[0]}'` (line 93). This creates a lock namespace mismatch:\n\n- Lock uses: `'dataset_lock'` (global - all lock operations serialize)\n- Unlock uses: `'dataset_unlock_tank/data'` (per-dataset)\n\n**Race scenario**:\n1. User calls `pool.dataset.lock('tank/data')` - acquires `'dataset_lock'`\n2. Concurrently, user calls `pool.dataset.unlock('tank/data')` - acquires `'dataset_unlock_tank/data'`\n3. Both operations run concurrently because they use different locks\n4. Both attempt to modify the encryption state of 'tank/data'\n\n**Expected behavior**: Lock and unlock on the same dataset should be mutually exclusive.\n**Actual behavior**: Lock and unlock can run concurrently on the same dataset.\n\n**Process pool context**: The process pool previously serialized ALL ZFS operations, preventing this race. With direct calls, this implicit serialization is lost.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "process-pool-removal-impact",
+                "dimension_name": "Process Pool Removal Impact on ZFS Encryption Operations",
+                "evidence": "File: dataset_encryption_lock.py:32 - `@job(lock=lambda args: 'dataset_lock')` uses global lock.\nFile: dataset_encryption_lock.py:93 - `@job(lock=lambda args: f'dataset_unlock_{args[0]}')` uses per-dataset lock.\nFile: dataset_encryption_lock.py:66 - `unload_key` is called inside the lock method.",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                "id": "f_040",
+                "line_end": 33,
+                "line_start": 31,
+                "score": 0.595,
+                "severity": "important",
+                "suggestion": "Use consistent lock namespaces for related operations. Options:\n1. Use per-dataset locks for both: `f'dataset_lock_{args[0]}'` for lock and `f'dataset_unlock_{args[0]}'` for unlock\n2. Use a unified namespace: `f'dataset_encryption_{args[0]}'` for all encryption operations on a dataset\n3. Keep the global lock for lock operations (since unload_key affects children), but ensure unlock respects it during the unload_key phase",
+                "tags": [
+                    "race-condition",
+                    "locking",
+                    "encryption",
+                    "lock-namespace",
+                    "process-pool"
+                ],
+                "title": "Inconsistent lock namespaces allow concurrent lock/unlock on same dataset"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `change_key` operation uses lock `f'dataset_change_key_{args[0]}'` (line 120), while `inherit_parent_encryption_properties` has NO job decorator and thus NO lock (lines 217-218). This allows:\n\n**Race scenario**:\n1. User calls `pool.dataset.change_key('tank/data')` - acquires `'dataset_change_key_tank/data'`\n2. Concurrently, user calls `pool.dataset.inherit_parent_encryption_properties('tank/data')` - no lock required\n3. Both operations run concurrently on the same dataset\n4. Both call `change_key()` and `change_encryption_root()` respectively on the same dataset\n\n**ZFS operation conflict**:\n- `change_key()` calls `crypto.change_key()` in libzfs\n- `change_encryption_root()` calls `crypto.inherit_key()` in libzfs\n- These both modify the dataset's encryption properties and should not run concurrently\n\n**Process pool context**: Previously, the process pool would serialize these operations even without explicit locks. With direct library calls, there's no serialization.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "process-pool-removal-impact",
+                "dimension_name": "Process Pool Removal Impact on ZFS Encryption Operations",
+                "evidence": "File: dataset_encryption_operations.py:120 - change_key uses `@job(lock=lambda args: f'dataset_change_key_{args[0]}')`.\nFile: dataset_encryption_operations.py:217-218 - inherit_parent_encryption_properties has no @job decorator.\nFile: encryption.py:62-90 and 93-106 - Both operations modify encryption state via libzfs.",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py",
+                "id": "f_041",
+                "line_end": 120,
+                "line_start": 118,
+                "score": 0.595,
+                "severity": "important",
+                "suggestion": "Add a job lock to `inherit_parent_encryption_properties` using the same namespace as `change_key`, or use a unified encryption operation lock per dataset. For example:\n```python\n@job(lock=lambda args: f'dataset_encryption_{args[0]}')\n```\nThis would serialize all encryption-modifying operations on the same dataset.",
+                "tags": [
+                    "race-condition",
+                    "locking",
+                    "encryption",
+                    "missing-lock",
+                    "process-pool"
+                ],
+                "title": "change_key and inherit_parent_encryption_properties can run concurrently on same dataset"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `path_in_locked_datasets()` method in `dataset_encryption_info.py` is marked as **\"EXTREMELY hot code path\"** and opens ZFS resources without cleanup.\n\n**The Problem:**\n- This method is called frequently (potentially thousands of times) to check if paths are in locked datasets\n- Line 263: `crypto = tls.lzh.open_resource(name=path).crypto()` creates resource objects\n- Lines 275-276: Same pattern in the fallback path\n- The comment warns \"Do not add more things here\" but doesn't address resource cleanup\n\n**Impact:**\n- High-frequency operations without resource cleanup\n- Resource handles accumulate rapidly\n- May cause performance degradation or resource exhaustion under load\n\n**Process Pool vs Direct Calls:**\n- With process pools: Resources freed when worker process exits (automatic)\n- With direct calls: Resources persist in long-running threads (manual cleanup required)",
+                "confidence": 0.8,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "resource-cleanup",
+                "dimension_name": "Resource Cleanup and Error Recovery",
+                "evidence": "Line 237-238: \"# WARNING: _EXTREMELY_ hot code path. Do not add more\n# things here unless you fully understand the side-effects.\"\n\nLine 263: `crypto = tls.lzh.open_resource(name=path).crypto()`\nLine 271: `return crypto is not None and not crypto.info().key_is_loaded`\n\nLines 275-276: Same pattern in the loop fallback path",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                "id": "f_030",
+                "line_end": 283,
+                "line_start": 262,
+                "score": 0.56,
+                "severity": "important",
+                "suggestion": "Since this is a hot path, consider:\n1. Using a resource cache/pool for frequently accessed datasets\n2. Explicitly deleting resource references after use: `del crypto`\n3. Documenting the cleanup requirements in the code comment\n4. Monitoring resource usage in production to verify if this is causing issues",
+                "tags": [
+                    "hot-path",
+                    "performance",
+                    "resource-leak",
+                    "zfs"
+                ],
+                "title": "Resource leak in hot code path - dataset lock checking"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `open_resource()` utility function is the primary interface for obtaining ZFS resources, but it provides no guidance on resource cleanup.\n\n**Issues:**\n1. No documentation about whether callers need to close/release resources\n2. No context manager support for automatic cleanup\n3. Used extensively across the codebase (50+ locations)\n\n**Impact:**\n- Developers don't know if cleanup is required\n- Inconsistent cleanup patterns throughout the codebase\n- Potential for resource leaks in error paths\n\n**Recommendation:**\nAdd documentation and consider implementing context manager support:\n\n```python\ndef open_resource(tls: Any, path: str) -> Any:\n    \"\"\"\n    Open a ZFS resource.\n    \n    IMPORTANT: The returned resource holds native ZFS handles.\n    In long-running threads, ensure resources are released promptly\n    by using del or explicitly closing when done.\n    \n    Consider using this as a context manager (if implemented) or\n    wrap in try/finally for guaranteed cleanup.\n    \"\"\"\n    ...\n```",
+                "confidence": 0.8,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "resource-cleanup",
+                "dimension_name": "Resource Cleanup and Error Recovery",
+                "evidence": "The open_resource() function at lines 123-133 is called from:\n- encryption.py (4 times)\n- destroy_impl.py (multiple times)\n- mount_unmount_impl.py\n- rename_promote_clone_impl.py\n- snapshot_*.py files\n\nNone of these callers show explicit resource cleanup.",
+                "file_path": "src/middlewared/middlewared/plugins/zfs/utils.py",
+                "id": "f_032",
+                "line_end": 133,
+                "line_start": 123,
+                "score": 0.56,
+                "severity": "important",
+                "suggestion": "1. Add documentation about resource cleanup requirements\n2. Implement __enter__/__exit__ on the returned object if possible\n3. Or provide a contextmanager wrapper\n4. Audit all callers to ensure proper cleanup",
+                "tags": [
+                    "documentation",
+                    "api-design",
+                    "resource-management",
+                    "zfs"
+                ],
+                "title": "open_resource() utility lacks resource management documentation/context manager"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The return type for `PoolDatasetGetQuotaResult` changed from `list[PoolDatasetQuota]` to `list[PoolDatasetQuota] | PoolDatasetQuota | int`.\n\n**Impact**:\n- Clients expecting a list result may break when receiving a single `PoolDatasetQuota` object or an `int`\n- Type checking in client code may fail\n- This is a more permissive return type that could confuse consumers\n\n**Question**: Under what conditions does this endpoint return non-list types? This should be documented or the endpoint should be split.",
+                "confidence": 0.75,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: result: list[PoolDatasetQuota]\nv26_0_0:  result: list[PoolDatasetQuota] | PoolDatasetQuota | int",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool_dataset.py",
+                "id": "f_026",
+                "line_end": 651,
+                "line_start": 649,
+                "score": 0.525,
+                "severity": "important",
+                "suggestion": "Consider using separate endpoints or query parameters to determine return type, or always return a list with a single element. Alternatively, document clearly when each type is returned.",
+                "tags": [
+                    "return-type",
+                    "quota",
+                    "breaking-change"
+                ],
+                "title": "PoolDatasetGetQuotaResult return type expanded"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `load_key()`, `check_key()`, `change_key()`, and `change_encryption_root()` functions in `encryption.py` open ZFS resources via `open_resource()` but never explicitly release them.\n\n**The Problem:**\n- `open_resource(tls, dataset)` returns a ZFS resource object wrapping a C library handle\n- `rsrc.crypto()` returns a cryptography object with additional native resources\n- Neither object has explicit cleanup (no `.close()`, no context manager, no `try/finally`)\n- In the previous process pool architecture, this was acceptable because the entire process would exit, and the OS would reclaim all resources\n- With direct library calls in long-running threads, these objects persist until Python's garbage collector runs, which may not happen promptly enough\n\n**Resource Leak Scenario:**\n1. A long-running middleware thread calls `load_key()` repeatedly for many datasets\n2. Each call creates native ZFS handles that are not immediately released\n3. ZFS has internal limits on open handles per pool/process\n4. Eventually, operations may fail with `ENOMEM` or `EMFILE` errors\n\n**Recommendation:**\nWrap ZFS resource operations in context managers or use `try/finally` blocks to ensure resources are released immediately after use. Consider implementing a context manager in `open_resource()` or documenting that callers must explicitly close resources.",
+                "confidence": 0.75,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "resource-cleanup",
+                "dimension_name": "Resource Cleanup and Error Recovery",
+                "evidence": "Step 1: `load_key()` calls `open_resource(tls, dataset)` at line 29, returning a resource handle\nStep 2: Line 30 calls `rsrc.crypto()`, returning a crypto object\nStep 3: Lines 31-34 perform operations and may raise exceptions\nStep 4: No cleanup code exists - both objects rely on Python GC\n\nSame pattern in:\n- `check_key()` (lines 56-59)\n- `change_key()` (lines 86-90)\n- `change_encryption_root()` (lines 103-106)",
+                "file_path": "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                "id": "f_029",
+                "line_end": 34,
+                "line_start": 29,
+                "score": 0.525,
+                "severity": "important",
+                "suggestion": "Consider modifying the code to explicitly release resources:\n\n```python\ndef load_key(tls: threading.local, dataset: str, **kwargs: str | bytes) -> None:\n    if len(kwargs) > 1:\n        raise ValueError('Cannot specify both key and key location')\n    rsrc = open_resource(tls, dataset)\n    try:\n        if (crypto := rsrc.crypto()) is None:\n            raise ZFSNotEncryptedException(dataset)\n        if crypto.info().key_is_loaded:\n            raise ZFSKeyAlreadyLoadedException(dataset)\n        crypto.load_key(**kwargs)\n    finally:\n        # Explicitly release the resource\n        del rsrc  # Or rsrc.close() if the library supports it\n```\n\nAlternatively, wrap `open_resource()` in a context manager:\n\n```python\nfrom contextlib import contextmanager\n\n@contextmanager\ndef zfs_resource(tls, path):\n    rsrc = open_resource(tls, path)\n    try:\n        yield rsrc\n    finally:\n        # Cleanup code here\n        pass\n\n# Usage:\nwith zfs_resource(tls, dataset) as rsrc:\n    crypto = rsrc.crypto()\n    # ... operations\n```",
+                "tags": [
+                    "resource-leak",
+                    "zfs",
+                    "cleanup",
+                    "threading"
+                ],
+                "title": "ZFS resource objects not explicitly cleaned up after encryption operations"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The code checks for `ZFSError.EZFS_CRYPTOFAILED` when a key loading operation fails. However, there is no verification that this error code has the same numeric value between the old `py-libzfs` library and the new `truenas_pylibzfs` library.\n\nIf the numeric values differ between libraries:\n1. Error handling logic will silently fail to catch the expected errors\n2. Users will receive generic error messages instead of specific 'Invalid Key' messages\n3. The unlock operation may report success when it actually failed due to wrong key\n\nAdditionally, if truenas_pylibzfs introduces new error codes that have no py-libzfs equivalent, those error conditions won't be handled.",
+                "confidence": 0.75,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "error-code-mapping",
+                "dimension_name": "ZFSError Enum Mapping Verification",
+                "evidence": "The code imports ZFSError from truenas_pylibzfs (line 9):\n```python\nfrom truenas_pylibzfs import ZFSError, ZFSException\n```\n\nBut there's no verification that these error codes match the expected values from the old library. The code at line 224 compares `e.code` directly to `ZFSError.EZFS_CRYPTOFAILED` without knowing if the numeric values are consistent.",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                "id": "f_035",
+                "line_end": 232,
+                "line_start": 220,
+                "score": 0.525,
+                "severity": "important",
+                "suggestion": "Verify that EZFS_CRYPTOFAILED and other error codes have the same numeric values between py-libzfs and truenas_pylibzfs. Add a test or validation script that compares the enum values from both libraries. If values differ, create a mapping layer to translate between them.",
+                "tags": [
+                    "error-codes",
+                    "library-migration",
+                    "verification-needed",
+                    "compatibility"
+                ],
+                "title": "Error code mapping between py-libzfs and truenas_pylibzfs not verified"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "In `sync_db_keys()`, the `check_key()` call at line 201 is wrapped in a broad `except Exception:` that sets `should_remove = True`. This means database encryption keys will be removed for ANY error - not just invalid keys, but also permission errors, dataset not found, ZFS operational failures, etc.\n\n**Risk scenario:**\n1. Database contains encryption key for dataset 'tank/secure'\n2. ZFS pool becomes temporarily unavailable or permission issue occurs\n3. `check_key()` raises an error (not EZFS_CRYPTOFAILED)\n4. Exception handler catches it and sets `should_remove = True`\n5. Key is removed from database\n6. User can no longer unlock the dataset even when the underlying issue is resolved\n\n**Data loss potential:** This could lead to permanent data loss if the only copy of the encryption key was in the database and it gets erroneously removed due to a transient ZFS error.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "error_propagation_check_key",
+                "dimension_name": "check_key Error Propagation Verification",
+                "evidence": "Step 1: At dataset_encryption_info.py:200-206:\n```python\ntry:\n    should_remove = not check_key(tls, ds_name, key=key)\nexcept Exception:\n    should_remove = True\n\nif should_remove:\n    to_remove.append(ds_name)\n```\n\nStep 2: Any exception (permission denied, dataset not found, etc.) results in the key being removed from the database at line 212:\n`self.middleware.call_sync('pool.dataset.delete_encrypted_datasets_from_db', [['name', 'in', to_remove]])`",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                "id": "f_011",
+                "line_end": 203,
+                "line_start": 200,
+                "score": 0.499,
+                "severity": "important",
+                "suggestion": "Implement proper error discrimination:\n1. Only remove keys from database when `check_key()` returns False (EZFS_CRYPTOFAILED)\n2. For other ZFS exceptions, log the error but preserve the database key\n3. Consider adding retry logic or a 'force' flag for maintenance operations\n\nRefactor lines 200-206:\n```python\ntry:\n    key_valid = check_key(tls, ds_name, key=key)\nexcept ZFSNotEncryptedException:\n    should_remove = True  # Dataset not encrypted, remove stale key\nexcept ZFSException as e:\n    if e.code == ZFSError.EZFS_CRYPTOFAILED:\n        should_remove = True  # Wrong key\n    else:\n        self.logger.error('ZFS error checking key for %s: %s', ds_name, e)\n        continue  # Preserve key on operational errors\nelse:\n    should_remove = not key_valid\n```",
+                "tags": [
+                    "data-loss-risk",
+                    "error-handling",
+                    "zfs",
+                    "encryption"
+                ],
+                "title": "Database key sync silently removes keys on ANY ZFS error"
+            },
+            {
+                "active_multipliers": [],
+                "body": "The `PoolDatasetCreateArgs.data` field now has an explicit `discriminator='type'` annotation. Additionally, a `model_validator` was added to default `type` to 'FILESYSTEM' if not provided.\n\n**Changes**:\n1. Added `Field(discriminator='type')` to the Union type\n2. Added `set_default_type` model validator\n\n**Potential Issues**:\n- Some JSON serializers/deserializers may handle discriminator fields differently\n- The discriminator field might cause issues with certain client libraries that don't support OpenAPI discriminator semantics\n- While the model_validator provides backward compatibility for missing type fields, the discriminator field itself could cause issues with strict validation\n\n**Question**: Does the middleware framework properly handle discriminator fields in the API layer? This could affect how requests are parsed.",
+                "confidence": 0.7,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "api_compatibility",
+                "dimension_name": "API v26_0_0 Breaking Changes Review",
+                "evidence": "v25_10_2: data: PoolDatasetCreateFilesystem | PoolDatasetCreateVolume\nv26_0_0:  data: PoolDatasetCreateFilesystem | PoolDatasetCreateVolume = Field(discriminator='type')\n         \n         @model_validator(mode='before')\n         @classmethod\n         def set_default_type(cls, data: Any) -> Any: ...",
+                "file_path": "src/middlewared/middlewared/api/v26_0_0/pool_dataset.py",
+                "id": "f_025",
+                "line_end": 551,
+                "line_start": 540,
+                "score": 0.49,
+                "severity": "important",
+                "suggestion": "Test that discriminator field works correctly with the middleware's API handling. Consider if this change is necessary or if the previous union type without discriminator was sufficient.",
+                "tags": [
+                    "discriminator",
+                    "union-type",
+                    "dataset-create",
+                    "pydantic"
+                ],
+                "title": "PoolDatasetCreateArgs discriminator field may break clients"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "The `initialize_zfs_keys` method (lines 164-178) is called from `sync.py:initialize_keys` job at line 98 WITHOUT any synchronization with other cache-modifying methods. This method directly writes to `self.zfs_keys[ds['name']]` at lines 167 and 175 without any lock protection. It can run concurrently with `sync_zfs_keys`, `reset_zfs_key`, `update_zfs_keys`, or `clear_sync_pending_zfs_keys`. While Python dict operations are thread-safe for single operations, compound operations and iteration (like the loop at line 165) are not atomic. Additionally, the cache assignment at line 175 happens AFTER retrieving a key from the KMIP server, but there's no mechanism to ensure this key is still valid by the time it's stored.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "kmip-cache-thread-safety",
+                "dimension_name": "KMIP Key Cache Thread Safety",
+                "evidence": "Step 1: `initialize_keys` job starts and calls `initialize_zfs_keys(connection_success)` at sync.py:98.\nStep 2: Thread A iterates over datasets and calls `_retrieve_secret_data()` at line 171 (synchronous network call).\nStep 3: Thread B calls `sync_zfs_keys()` which modifies `self.zfs_keys` at line 138 via `push_zfs_keys`.\nStep 4: Thread A returns from `_retrieve_secret_data()` and assigns `self.zfs_keys[ds['name']] = key` at line 175, overwriting Thread B's update.\nResult: Cache inconsistency where newer data from Thread B is lost.",
+                "file_path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                "id": "f_002",
+                "line_end": 175,
+                "line_start": 164,
+                "score": 0.473,
+                "severity": "important",
+                "suggestion": "Add a `threading.RLock` to the KMIPService class `__init__` and acquire it in all methods that access `self.zfs_keys`. Consider whether `initialize_zfs_keys` should clear the cache first or merge carefully with existing entries.",
+                "tags": [
+                    "thread-safety",
+                    "cache-consistency",
+                    "concurrency"
+                ],
+                "title": "Unprotected Cache Access in initialize_zfs_keys"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "The `check_key()` function is documented to return `False` only for `EZFS_CRYPTOFAILED` (wrong key) while raising exceptions for other ZFS errors. However, the caller at line 106-109 uses a broad `except Exception:` handler that treats ALL errors as invalid keys. This masks serious issues like permission errors (EACCES), malformed datasets, or ZFS operational failures that should be propagated to the user.\n\n**The contract vs. implementation mismatch:**\n- `check_key()` docstring (encryption.py:41-43): Raises for errors *other than* EZFS_CRYPTOFAILED\n- Actual caller behavior: Catches ALL exceptions and treats them as `valid_key = False`\n\n**Impact:** Users will see 'Provided key is invalid' when the actual error could be:\n- Permission denied on key file or dataset\n- Dataset not found\n- ZFS pool offline/unavailable\n- Malformed key format\n\nThis violates the principle of least surprise and makes debugging encryption issues significantly harder.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "error_propagation_check_key",
+                "dimension_name": "check_key Error Propagation Verification",
+                "evidence": "Step 1: `check_key()` docstring at encryption.py:41-43 states:\n'Raises ZFSNotEncryptedException if the dataset is not encrypted or if the ZFS operation fails for a reason other than a wrong key (EZFS_CRYPTOFAILED returns False rather than raising)'\n\nStep 2: Caller at dataset_encryption_info.py:106-109:\n```python\ntry:\n    valid_key = check_key(tls, name, key=ds_key)\nexcept Exception:\n    valid_key = False\n```\n\nStep 3: The broad `except Exception:` catches ALL errors including permission errors, dataset not found, etc., treating them all as 'invalid key'.",
+                "file_path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                "id": "f_010",
+                "line_end": 109,
+                "line_start": 106,
+                "score": 0.473,
+                "severity": "important",
+                "suggestion": "Replace the broad `except Exception:` with specific exception handling:\n1. Catch `ZFSException` and check `e.code == ZFSError.EZFS_CRYPTOFAILED` \u2192 set `valid_key = False`\n2. Catch `ZFSNotEncryptedException` \u2192 set appropriate error message\n3. Let other ZFS errors propagate or catch and re-raise with context\n\nThis preserves the intended contract where wrong keys return False but operational errors are surfaced to users.",
+                "tags": [
+                    "error-handling",
+                    "zfs",
+                    "encryption",
+                    "api-contract"
+                ],
+                "title": "Broad exception handling masks non-crypto ZFS errors in check_key()"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "In `pull_zfs_keys()` at lines 104-118, the `check_key()` call is used to determine whether to use the cached key or retrieve from KMIP. The broad exception handling at line 117 adds the dataset to the `failed` list for ANY error, including:\n- Permission errors (should retry, not fail)\n- Dataset temporarily unavailable (should retry, not fail)\n- Malformed key format (could be a configuration issue)\n\n**The problem:** The dataset gets added to `failed` but the error is only logged at debug level. There's no way for administrators to distinguish between 'key was invalid' vs 'ZFS operation failed'.",
+                "confidence": 0.9,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "error_propagation_check_key",
+                "dimension_name": "check_key Error Propagation Verification",
+                "evidence": "Step 1: At kmip/zfs_keys.py:104-118:\n```python\ntry:\n    if ds['encryption_key']:\n        key = ds['encryption_key']\n    elif (\n        ds['name'] in self.zfs_keys\n        and check_key(tls, ds['name'], key=self.zfs_keys[ds['name']])\n    ):\n        key = self.zfs_keys[ds['name']]\n    elif connection_successful:\n        with self._connection(...) as conn:\n            key = self._retrieve_secret_data(ds['kmip_uid'], conn)\n    else:\n        raise Exception('Failed to sync dataset')\nexcept Exception:\n    failed.append(ds['name'])\n```\n\nStep 2: Any exception from check_key() (not just EZFS_CRYPTOFAILED) causes the dataset to be added to the failed list.",
+                "file_path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                "id": "f_013",
+                "line_end": 118,
+                "line_start": 104,
+                "score": 0.473,
+                "severity": "important",
+                "suggestion": "Implement granular error handling to distinguish key validation failures from operational errors:\n1. `EZFS_CRYPTOFAILED` (wrong key) \u2192 add to failed list\n2. `ZFSNotEncryptedException` \u2192 log warning, don't add to failed\n3. Other ZFS errors \u2192 log error with full traceback, add to failed with specific error message\n4. Consider different retry/backoff strategies for transient vs permanent errors",
+                "tags": [
+                    "error-handling",
+                    "kmip",
+                    "zfs",
+                    "silent-failure"
+                ],
+                "title": "KMIP pull operation adds datasets to 'failed' list for ANY ZFS error"
+            },
+            {
+                "active_multipliers": [
+                    "cross_ref_compound",
+                    "adversary_challenged"
+                ],
+                "body": "The `reset_zfs_key` method is designed to remove a single dataset from the cache, but it's called from `dataset_encryption_operations.py:delete_encrypted_datasets_from_db` at line 65 as an async task via `self.middleware.create_task()`. This means multiple `reset_zfs_key` calls can execute concurrently, and they can interleave with other cache-modifying operations like `push_zfs_keys` or `initialize_zfs_keys`. The `pop()` operation at line 186 is atomic, but the subsequent `delete_kmip_secret_data` call at line 189 and hook notification at line 194 are not. If `reset_zfs_key` is called while `push_zfs_keys` is running, the cache entry removed at line 186 might be re-added by `push_zfs_keys` line 78 before the KMIP delete completes, resulting in the key being deleted from KMIP but present in the cache.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "kmip-cache-invalidation",
+                "dimension_name": "KMIP Key Cache Invalidation",
+                "evidence": "Step 1: `push_zfs_keys` is processing dataset 'tank/data' and reaches line 78: `self.zfs_keys[ds['name']] = ds['encryption_key']`.\nStep 2: Concurrently, `delete_encrypted_datasets_from_db` calls `reset_zfs_key('tank/data', kmip_uid)` as async task.\nStep 3: `reset_zfs_key` executes `self.zfs_keys.pop('tank/data', None)` at line 186.\nStep 4: `push_zfs_keys` continues and calls `_register_secret_data` at line 86, which succeeds.\nStep 5: `reset_zfs_key` continues to line 189 and calls `delete_kmip_secret_data(kmip_uid)`.\nResult: The key is registered with KMIP, stored in cache, but then deleted from KMIP server while still in cache.",
+                "file_path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                "id": "f_003",
+                "line_end": 194,
+                "line_start": 185,
+                "score": 0.446,
+                "severity": "important",
+                "suggestion": "Ensure `reset_zfs_key` acquires the same lock used by other cache-modifying methods. Consider making the KMIP key deletion and cache removal atomic under a single lock. Review whether `delete_encrypted_datasets_from_db` should await `reset_zfs_key` instead of using `create_task`.",
+                "tags": [
+                    "thread-safety",
+                    "cache-invalidation",
+                    "async-task"
+                ],
+                "title": "Async reset_zfs_key Called Without Cache Lock Protection"
+            }
+        ],
+        "metadata": {
+            "agent_invocations": 17,
+            "anatomy": {
+                "blast_radius": [],
+                "clusters": [
+                    {
+                        "description": "",
+                        "files": [
+                            ""
+                        ],
+                        "id": "cluster_0",
+                        "name": "root",
+                        "primary_language": ""
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                            "src/middlewared/middlewared/api/v26_0_0/pool_dataset.py"
+                        ],
+                        "id": "cluster_1",
+                        "name": "src/middlewared/middlewared/api/v26_0_0",
+                        "primary_language": "python"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "src/middlewared/middlewared/plugins/kmip/zfs_keys.py"
+                        ],
+                        "id": "cluster_2",
+                        "name": "src/middlewared/middlewared/plugins/kmip",
+                        "primary_language": "python"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py"
+                        ],
+                        "id": "cluster_3",
+                        "name": "src/middlewared/middlewared/plugins/pool_",
+                        "primary_language": "python"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                            "src/middlewared/middlewared/plugins/zfs/exceptions.py"
+                        ],
+                        "id": "cluster_4",
+                        "name": "src/middlewared/middlewared/plugins/zfs",
+                        "primary_language": "python"
+                    }
+                ],
+                "context_notes": "This is part of an ongoing migration from py-libzfs to truenas_pylibzfs. The thread-local storage pattern (tls.lzh) is the established pattern for accessing the ZFS library in the new architecture. The @pass_thread_local_storage decorator is critical for dependency injection. The removed file is likely the old ZFS encryption implementation that used process pool workers.",
+                "dependency_graph": {},
+                "files": [
+                    {
+                        "hunks": [
+                            {
+                                "content": "     key.\"\"\"\n     generate_key: bool = False\n     \"\"\"Automatically generate the key to be used for dataset encryption.\"\"\"\n-    pbkdf2iters: int = Field(ge=100000, default=350000)\n+    pbkdf2iters: int = Field(ge=1300000, default=1300000)\n     \"\"\"Number of PBKDF2 iterations for key derivation from passphrase. Higher iterations improve security \\\n-    against brute force attacks but increase unlock time. Default 350,000 balances security and performance.\"\"\"\n+    against brute force attacks but increase unlock time.\"\"\"\n     algorithm: Literal[\n         \"AES-128-CCM\", \"AES-192-CCM\", \"AES-256-CCM\", \"AES-128-GCM\", \"AES-192-GCM\", \"AES-256-GCM\"\n     ] = \"AES-256-GCM\"",
+                                "header": "@@ -136,9 +136,9 @@ class PoolCreateEncryptionOptions(BaseModel):",
+                                "new_count": 9,
+                                "new_start": 136,
+                                "old_count": 9,
+                                "old_start": 136
+                            },
+                            {
+                                "content": "     key: Secret[Annotated[str, Field(min_length=64, max_length=64)] | None] = None\n     \"\"\"A hex-encoded key specified as an alternative to using `passphrase`.\"\"\"\n \n+    @classmethod\n+    def from_previous(cls, value):\n+        value['pbkdf2iters'] = max(1300000, value['pbkdf2iters'])\n+        return value\n+\n \n class PoolCreateTopologyVdevDRAID(BaseModel):\n     type: Literal[\"DRAID1\", \"DRAID2\", \"DRAID3\"]",
+                                "header": "@@ -148,6 +148,11 @@ class PoolCreateEncryptionOptions(BaseModel):",
+                                "new_count": 11,
+                                "new_start": 148,
+                                "old_count": 6,
+                                "old_start": 148
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 7,
+                        "lines_removed": 2,
+                        "path": "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "     \"\"\"Generate a new random encryption key instead of using a provided key or passphrase.\"\"\"\n     key_file: bool = False\n     \"\"\"Whether the provided key is from a key file rather than entered directly.\"\"\"\n-    pbkdf2iters: int = Field(default=350000, ge=100000)\n+    pbkdf2iters: int = Field(default=1300000, ge=1300000)\n     \"\"\"Number of PBKDF2 iterations for passphrase-based keys. Higher values improve security against \\\n-    brute force attacks but increase unlock time. Default 350,000 balances security and performance.\"\"\"\n+    brute force attacks but increase unlock time.\"\"\"\n     passphrase: Secret[NonEmptyString | None] = None\n     \"\"\"Passphrase to use for encryption key derivation.\"\"\"\n     key: Secret[Annotated[str, Field(min_length=64, max_length=64)] | None] = None\n     \"\"\"Raw hex-encoded encryption key.\"\"\"\n \n+    @classmethod\n+    def from_previous(cls, value):\n+        value['pbkdf2iters'] = max(1300000, value['pbkdf2iters'])\n+        return value\n+\n \n class PoolDatasetCreateUserProperty(BaseModel):\n     key: Annotated[str, Field(examples=[\"custom:backup_policy\", \"org:created_by\"], pattern=\".*:.*\")]",
+                                "header": "@@ -172,14 +172,19 @@ class PoolDatasetChangeKeyOptions(BaseModel):",
+                                "new_count": 19,
+                                "new_start": 172,
+                                "old_count": 14,
+                                "old_start": 172
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 7,
+                        "lines_removed": 2,
+                        "path": "src/middlewared/middlewared/api/v26_0_0/pool_dataset.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " # See the file LICENSE.IX for complete terms and conditions\n \n from middlewared.api.current import ZFSResourceQuery\n+from middlewared.plugins.zfs.encryption import check_key\n from middlewared.service import job, private, Service\n+from middlewared.service.decorators import pass_thread_local_storage\n \n from .connection import KMIPServerMixin\n ",
+                                "header": "@@ -4,7 +4,9 @@",
+                                "new_count": 9,
+                                "new_start": 4,
+                                "old_count": 7,
+                                "old_start": 4
+                            },
+                            {
+                                "content": "         return rv\n \n     @private\n-    def push_zfs_keys(self, ids=None):\n+    @pass_thread_local_storage\n+    def push_zfs_keys(self, tls, ids=None):\n         failed = []\n         filters = [] if ids is None else [['id', 'in', ids]]\n         existing_datasets = self.get_encrypted_datasets(filters)",
+                                "header": "@@ -50,7 +52,8 @@ def get_encrypted_datasets(self, filters):",
+                                "new_count": 8,
+                                "new_start": 52,
+                                "old_count": 7,
+                                "old_start": 50
+                            },
+                            {
+                                "content": "                 if not ds['encryption_key']:\n                     # We want to make sure we have the KMIP server's keys and in-memory keys in sync\n                     try:\n-                        if ds['name'] in self.zfs_keys and self.middleware.call_sync(\n-                            'zfs.dataset.check_key', ds['name'], {'key': self.zfs_keys[ds['name']]}\n+                        if (\n+                            ds['name'] in self.zfs_keys\n+                            and check_key(tls, ds['name'], key=self.zfs_keys[ds['name']])\n                         ):\n                             continue\n                         else:",
+                                "header": "@@ -59,8 +62,9 @@ def push_zfs_keys(self, ids=None):",
+                                "new_count": 9,
+                                "new_start": 62,
+                                "old_count": 8,
+                                "old_start": 59
+                            },
+                            {
+                                "content": "         return failed\n \n     @private\n-    def pull_zfs_keys(self):\n+    @pass_thread_local_storage\n+    def pull_zfs_keys(self, tls):\n         existing_datasets = self.get_encrypted_datasets([['kmip_uid', '!=', None]])\n         failed = []\n         connection_successful = self.middleware.call_sync('kmip.test_connection')",
+                                "header": "@@ -91,7 +95,8 @@ def push_zfs_keys(self, ids=None):",
+                                "new_count": 8,
+                                "new_start": 95,
+                                "old_count": 7,
+                                "old_start": 91
+                            },
+                            {
+                                "content": "             try:\n                 if ds['encryption_key']:\n                     key = ds['encryption_key']\n-                elif ds['name'] in self.zfs_keys and self.middleware.call_sync(\n-                    'zfs.dataset.check_key', ds['name'], {'key': self.zfs_keys[ds['name']]}\n+                elif (\n+                    ds['name'] in self.zfs_keys\n+                    and check_key(tls, ds['name'], key=self.zfs_keys[ds['name']])\n                 ):\n                     key = self.zfs_keys[ds['name']]\n                 elif connection_successful:",
+                                "header": "@@ -99,8 +104,9 @@ def pull_zfs_keys(self):",
+                                "new_count": 9,
+                                "new_start": 104,
+                                "old_count": 8,
+                                "old_start": 99
+                            },
+                            {
+                                "content": "         return failed\n \n     @private\n+    @pass_thread_local_storage\n     @job(lock=lambda args: f'kmip_sync_zfs_keys_{args}')\n-    def sync_zfs_keys(self, job, ids=None):\n+    def sync_zfs_keys(self, job, tls, ids=None):\n         if not self.middleware.call_sync('kmip.zfs_keys_pending_sync'):\n             return\n         config = self.middleware.call_sync('kmip.config')\n         conn_successful = self.middleware.call_sync('kmip.test_connection', None, True)\n         if config['enabled'] and config['manage_zfs_keys']:\n             if conn_successful:\n-                failed = self.push_zfs_keys(ids)\n+                failed = self.push_zfs_keys(tls, ids)  # type: ignore\n             else:\n                 return\n         else:\n-            failed = self.pull_zfs_keys()\n+            failed = self.pull_zfs_keys(tls)  # type: ignore\n         if failed:\n             self.middleware.call_sync(\n                 'alert.oneshot_create', 'KMIPZFSDatasetsSyncFailure', {'datasets': ','.join(failed)}",
+                                "header": "@@ -120,19 +126,20 @@ def pull_zfs_keys(self):",
+                                "new_count": 20,
+                                "new_start": 126,
+                                "old_count": 19,
+                                "old_start": 120
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 16,
+                        "lines_removed": 9,
+                        "path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " from middlewared.service.decorators import pass_thread_local_storage\n from middlewared.utils.filter_list import filter_list\n from middlewared.plugins.pool_.utils import get_dataset_parents\n+from middlewared.plugins.zfs.encryption import check_key\n \n from .utils import DATASET_DATABASE_MODEL_NAME, dataset_can_be_mounted, retrieve_keys_from_file, ZFSKeyFormat\n ",
+                                "header": "@@ -18,6 +18,7 @@",
+                                "new_count": 7,
+                                "new_start": 18,
+                                "old_count": 6,
+                                "old_start": 18
+                            },
+                            {
+                                "content": "         namespace = 'pool.dataset'\n \n     @api_method(PoolDatasetEncryptionSummaryArgs, PoolDatasetEncryptionSummaryResult, roles=['DATASET_READ'])\n+    @pass_thread_local_storage\n     @job(lock=lambda args: f'encryption_summary_options_{args[0]}', pipes=['input'], check_pipes=False)\n-    def encryption_summary(self, job, id_, options):\n+    def encryption_summary(self, job, tls, id_, options):\n         \"\"\"\n         Retrieve summary of all encrypted roots under `id`.\n ",
+                                "header": "@@ -28,8 +29,9 @@ class Config:",
+                                "new_count": 9,
+                                "new_start": 29,
+                                "old_count": 8,
+                                "old_start": 28
+                            },
+                            {
+                                "content": "         verrors.check()\n         datasets = self.query_encrypted_datasets(id_, {'all': True})\n \n-        to_check = []\n+        results = []\n         for name, ds in datasets.items():\n             ds_key = keys_supplied.get(name, {}).get('key') or ds['encryption_key']\n             if ZFSKeyFormat(ds['key_format']['value']) == ZFSKeyFormat.RAW and ds_key:\n                 with contextlib.suppress(ValueError):\n                     ds_key = bytes.fromhex(ds_key)\n-            to_check.append((name, {'key': ds_key}))\n \n-        check_job = self.middleware.call_sync('zfs.dataset.bulk_process', 'check_key', to_check)\n-        check_job.wait_sync()\n-        if check_job.error:\n-            raise CallError(f'Failed to retrieve encryption summary for {id_}: {check_job.error}')\n+            try:\n+                valid_key = check_key(tls, name, key=ds_key)\n+            except Exception:\n+                valid_key = False\n \n-        results = []\n-        for ds_data, status in zip(to_check, check_job.result):\n-            ds_name = ds_data[0]\n-            data = datasets[ds_name]\n             results.append({\n-                'name': ds_name,\n-                'key_format': ZFSKeyFormat(data['key_format']['value']).value,\n-                'key_present_in_database': bool(data['encryption_key']),\n-                'valid_key': bool(status['result']), 'locked': data['locked'],\n+                'name': name,\n+                'key_format': ZFSKeyFormat(ds['key_format']['value']).value,\n+                'key_present_in_database': bool(ds['encryption_key']),\n+                'valid_key': valid_key,\n+                'locked': ds['locked'],\n                 'unlock_error': None,\n                 'unlock_successful': False,\n             })\n \n         failed = set()\n         for ds in sorted(results, key=lambda d: d['name'].count('/')):\n-            for i in range(1, ds['name'].count('/') + 1):\n-                check = ds['name'].rsplit('/', i)[0]\n+            ds_name = ds['name']\n+            for i in range(1, ds_name.count('/') + 1):\n+                check = ds_name.rsplit('/', i)[0]\n                 if check in failed:\n-                    failed.add(ds['name'])\n+                    failed.add(ds_name)\n                     ds['unlock_error'] = f'Child cannot be unlocked when parent \"{check}\" is locked'\n \n-            if ds['locked'] and not options['force'] and not keys_supplied.get(ds['name'], {}).get('force'):\n-                err = dataset_can_be_mounted(ds['name'], os.path.join('/mnt', ds['name']))\n+            ds_locked = ds['locked']\n+            if ds_locked and not options['force'] and not keys_supplied.get(ds_name, {}).get('force'):\n+                err = dataset_can_be_mounted(ds_name, os.path.join('/mnt', ds_name))\n                 if ds['unlock_error'] and err:\n                     ds['unlock_error'] += f' and {err}'\n                 elif err:",
+                                "header": "@@ -94,42 +96,40 @@ def encryption_summary(self, job, id_, options):",
+                                "new_count": 40,
+                                "new_start": 96,
+                                "old_count": 42,
+                                "old_start": 94
+                            },
+                            {
+                                "content": " \n             if ds['valid_key']:\n                 ds['unlock_successful'] = not bool(ds['unlock_error'])\n-            elif not ds['locked']:\n+            elif not ds_locked:\n                 # For datasets which are already not locked, unlock operation for them\n                 # will succeed as they are not locked\n                 ds['unlock_successful'] = True\n             else:\n-                key_provided = ds['name'] in keys_supplied or ds['key_present_in_database']\n+                key_provided = ds_name in keys_supplied or ds['key_present_in_database']\n                 if key_provided:\n                     if ds['unlock_error']:\n-                        if ds['name'] in keys_supplied or ds['key_present_in_database']:\n+                        if ds_name in keys_supplied or ds['key_present_in_database']:\n                             ds['unlock_error'] += ' and provided key is invalid'\n                     else:\n                         ds['unlock_error'] = 'Provided key is invalid'\n                 elif not ds['unlock_error']:\n                     ds['unlock_error'] = 'Key not provided'\n-                failed.add(ds['name'])\n+                failed.add(ds_name)\n \n         return results\n \n     @periodic(86400)\n     @private\n+    @pass_thread_local_storage\n     @job(lock=lambda args: f'sync_encrypted_pool_dataset_keys_{args}')\n-    def sync_db_keys(self, job, name=None):\n+    def sync_db_keys(self, job, tls, name=None):\n         if not self.middleware.call_sync('failover.is_single_master_node'):\n             # We don't want to do this for passive controller\n             return",
+                                "header": "@@ -137,28 +137,29 @@ def encryption_summary(self, job, id_, options):",
+                                "new_count": 29,
+                                "new_start": 137,
+                                "old_count": 28,
+                                "old_start": 137
+                            },
+                            {
+                                "content": "         # It is possible we have a pool configured but for some mistake/reason the pool did not import like\n         # during repair disks were not plugged in and system was booted, in such cases we would like to not\n         # remove the encryption keys from the database.\n-        for root_ds in {pool['name'] for pool in self.middleware.call_sync('pool.query')} - {\n-            ds['id'] for ds in self.middleware.call_sync(\n+        pool_names = {pool['name'] for pool in self.middleware.call_sync('pool.query')}\n+        ds_names = {\n+            ds['id']\n+            for ds in self.middleware.call_sync(\n                 'pool.dataset.query', [], {'extra': {'retrieve_children': False, 'properties': []}}\n             )\n-        }:\n+        }\n+        for root_ds in pool_names - ds_names:\n             filters.extend([['name', '!=', root_ds], ['name', '!^', f'{root_ds}/']])\n \n         db_datasets = self.query_encrypted_roots_keys(filters)\n         encrypted_roots = {\n-            d['name']: d for d in self.middleware.call_sync(\n-                'pool.dataset.query', filters, {'extra': {'properties': ['encryptionroot']}}\n-            ) if d['name'] == d['encryption_root']\n+            d['name']: d\n+            for d in self.middleware.call_sync(\n+                'pool.dataset.query',\n+                filters,\n+                {'extra': {'properties': ['encryptionroot', 'keyformat']}}\n+            )\n+            if d['name'] == d['encryption_root']\n         }\n+\n         to_remove = []\n-        check_key_job = self.middleware.call_sync('zfs.dataset.bulk_process', 'check_key', [\n-            (name, {'key': db_datasets[name]}) for name in db_datasets\n-        ])\n-        check_key_job.wait_sync()\n-        if check_key_job.error:\n-            self.logger.error(f'Failed to sync database keys: {check_key_job.error}')\n+        try:\n+            for ds_name, key in db_datasets.items():\n+                ds = encrypted_roots.get(ds_name)\n+                if ds and ZFSKeyFormat(ds['key_format']['value']) == ZFSKeyFormat.RAW and key:\n+                    with contextlib.suppress(ValueError):\n+                        key = bytes.fromhex(key)\n+\n+                try:\n+                    should_remove = not check_key(tls, ds_name, key=key)\n+                except Exception:\n+                    should_remove = True\n+\n+                if should_remove:\n+                    to_remove.append(ds_name)\n+\n+        except Exception as exc:\n+            self.logger.error(f'Failed to sync database keys: {exc}')\n             return\n \n-        for dataset, status in zip(db_datasets, check_key_job.result):\n-            if not status['result']:\n-                to_remove.append(dataset)\n-            elif status['error']:\n-                if dataset not in encrypted_roots:\n-                    to_remove.append(dataset)\n-                else:\n-                    self.logger.error(f'Failed to check encryption status for {dataset}: {status[\"error\"]}')\n-\n         self.middleware.call_sync('pool.dataset.delete_encrypted_datasets_from_db', [['name', 'in', to_remove]])\n \n     @private",
+                                "header": "@@ -167,37 +168,47 @@ def sync_db_keys(self, job, name=None):",
+                                "new_count": 47,
+                                "new_start": 168,
+                                "old_count": 37,
+                                "old_start": 167
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 57,
+                        "lines_removed": 46,
+                        "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " from datetime import datetime\n from pathlib import Path\n \n+from truenas_pylibzfs import ZFSError, ZFSException\n+\n from middlewared.api import api_method\n from middlewared.api.current import (\n     PoolDatasetLockArgs, PoolDatasetLockResult, PoolDatasetUnlockArgs, PoolDatasetUnlockResult\n )\n+from middlewared.plugins.zfs.encryption import load_key\n from middlewared.service import CallError, job, private, Service, ValidationErrors\n+from middlewared.service.decorators import pass_thread_local_storage\n from middlewared.utils.filesystem.directory import directory_is_empty\n \n from .utils import (",
+                                "header": "@@ -6,11 +6,15 @@",
+                                "new_count": 15,
+                                "new_start": 6,
+                                "old_count": 11,
+                                "old_start": 6
+                            },
+                            {
+                                "content": "         return True\n \n     @api_method(PoolDatasetUnlockArgs, PoolDatasetUnlockResult, roles=['DATASET_WRITE'])\n+    @pass_thread_local_storage\n     @job(lock=lambda args: f'dataset_unlock_{args[0]}', pipes=['input'], check_pipes=False)\n-    def unlock(self, job, id_, options):\n+    def unlock(self, job, tls, id_, options):\n         \"\"\"\n         Unlock dataset `id` (and its children if `unlock_options.recursive` is `true`).\n ",
+                                "header": "@@ -85,8 +89,9 @@ async def lock(self, job, id_, options):",
+                                "new_count": 9,
+                                "new_start": 89,
+                                "old_count": 8,
+                                "old_start": 85
+                            },
+                            {
+                                "content": " \n             job.set_progress(int(name_i / len(names) * 90 + 0.5), f'Unlocking {name!r}')\n             try:\n-                self.middleware.call_sync(\n-                    'zfs.dataset.load_key', name, {'key': datasets[name]['key'], 'mount': False}\n-                )\n-            except CallError as e:\n-                failed[name]['error'] = 'Invalid Key' if 'incorrect key provided' in str(e).lower() else str(e)\n+                load_key(tls, name, key=datasets[name]['key'])\n+            except ZFSException as e:\n+                if e.code == ZFSError.EZFS_CRYPTOFAILED:\n+                    failed[name]['error'] = 'Invalid Key'\n+                else:\n+                    failed[name]['error'] = str(e)\n+                continue\n+            except Exception as e:\n+                failed[name]['error'] = str(e)\n                 continue\n \n             # Before we mount the dataset in question, we should ensure that the path where it will be mounted",
+                                "header": "@@ -214,11 +219,15 @@ def unlock(self, job, id_, options):",
+                                "new_count": 15,
+                                "new_start": 219,
+                                "old_count": 11,
+                                "old_start": 214
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 15,
+                        "lines_removed": 6,
+                        "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "     PoolDatasetChangeKeyArgs, PoolDatasetChangeKeyResult, PoolDatasetInheritParentEncryptionPropertiesArgs,\n     PoolDatasetInheritParentEncryptionPropertiesResult\n )\n+from middlewared.plugins.zfs.encryption import change_encryption_root, change_key\n from middlewared.service import CallError, job, private, Service, ValidationErrors\n+from middlewared.service.decorators import pass_thread_local_storage\n from middlewared.utils import secrets\n \n from .utils import DATASET_DATABASE_MODEL_NAME, ZFSKeyFormat",
+                                "header": "@@ -4,7 +4,9 @@",
+                                "new_count": 9,
+                                "new_start": 4,
+                                "old_count": 7,
+                                "old_start": 4
+                            },
+                            {
+                                "content": "         PoolDatasetInsertOrUpdateEncryptedRecordResult,\n         roles=['DATASET_WRITE']\n     )\n-    async def insert_or_update_encrypted_record(self, data):\n+    def insert_or_update_encrypted_record(self, data):\n         key_format = data.pop('key_format') or ZFSKeyFormat.PASSPHRASE.value\n         if not data['encryption_key'] or ZFSKeyFormat(key_format.upper()) == ZFSKeyFormat.PASSPHRASE:\n             # We do not want to save passphrase keys - they are only known to the user\n             return\n \n         ds_id = data.pop('id')\n-        ds = await self.middleware.call(\n+        ds = self.middleware.call_sync(\n             'datastore.query', DATASET_DATABASE_MODEL_NAME,\n             [['id', '=', ds_id]] if ds_id else [['name', '=', data['name']]]\n         )",
+                                "header": "@@ -21,14 +23,14 @@ class Config:",
+                                "new_count": 14,
+                                "new_start": 23,
+                                "old_count": 14,
+                                "old_start": 21
+                            },
+                            {
+                                "content": " \n         pk = ds[0]['id'] if ds else None\n         if ds:\n-            await self.middleware.call(\n+            self.middleware.call_sync(\n                 'datastore.update',\n                 DATASET_DATABASE_MODEL_NAME,\n                 ds[0]['id'], data\n             )\n         else:\n-            pk = await self.middleware.call(\n+            pk = self.middleware.call_sync(\n                 'datastore.insert',\n                 DATASET_DATABASE_MODEL_NAME,\n                 data\n             )\n \n-        kmip_config = await self.middleware.call('kmip.config')\n+        kmip_config = self.middleware.call_sync('kmip.config')\n         if kmip_config['enabled'] and kmip_config['manage_zfs_keys']:\n-            await self.middleware.call('kmip.sync_zfs_keys', [pk])\n+            self.middleware.call_sync('kmip.sync_zfs_keys', [pk])\n \n         return pk\n ",
+                                "header": "@@ -37,21 +39,21 @@ async def insert_or_update_encrypted_record(self, data):",
+                                "new_count": 21,
+                                "new_start": 39,
+                                "old_count": 21,
+                                "old_start": 37
+                            },
+                            {
+                                "content": "         return opts\n \n     @api_method(PoolDatasetChangeKeyArgs, PoolDatasetChangeKeyResult, roles=['DATASET_WRITE'])\n+    @pass_thread_local_storage\n     @job(lock=lambda args: f'dataset_change_key_{args[0]}', pipes=['input'], check_pipes=False)\n-    async def change_key(self, job, id_, options):\n+    def change_key(self, job, tls, id_, options):\n         \"\"\"\n         Change encryption properties for `id` encrypted dataset.\n ",
+                                "header": "@@ -114,8 +116,9 @@ def validate_encryption_data(self, job, verrors, encryption_dict, schema):",
+                                "new_count": 9,
+                                "new_start": 116,
+                                "old_count": 8,
+                                "old_start": 114
+                            },
+                            {
+                                "content": "         1) It has encrypted roots as children which are encrypted with a key\n         2) If it is a root dataset where the system dataset is located\n         \"\"\"\n-        ds = await self.middleware.call('pool.dataset.get_instance_quick', id_, {\n+        ds = self.middleware.call_sync('pool.dataset.get_instance_quick', id_, {\n             'encryption': True,\n         })\n         verrors = ValidationErrors()",
+                                "header": "@@ -124,7 +127,7 @@ async def change_key(self, job, id_, options):",
+                                "new_count": 7,
+                                "new_start": 127,
+                                "old_count": 7,
+                                "old_start": 124
+                            },
+                            {
+                                "content": "                     )\n                 elif any(\n                     d['name'] == d['encryption_root']\n-                    for d in await self.middleware.call(\n+                    for d in self.middleware.call_sync(\n                         'pool.dataset.query', [\n                             ['id', '^', f'{id_}/'], ['encrypted', '=', True],\n                             ['key_format.value', '!=', ZFSKeyFormat.PASSPHRASE.value]",
+                                "header": "@@ -142,7 +145,7 @@ async def change_key(self, job, id_, options):",
+                                "new_count": 7,
+                                "new_start": 145,
+                                "old_count": 7,
+                                "old_start": 142
+                            },
+                            {
+                                "content": "                         f'{id_} has children which are encrypted with a key. It is not allowed to have encrypted '\n                         'roots which are encrypted with a key as children for passphrase encrypted datasets.'\n                     )\n-                elif id_ == (await self.middleware.call('systemdataset.config'))['pool']:\n+                elif id_ == self.middleware.call_sync('systemdataset.config')['pool']:\n                     verrors.add(\n                         'id',\n                         f'{id_} contains the system dataset. Please move the system dataset to a '",
+                                "header": "@@ -154,7 +157,7 @@ async def change_key(self, job, id_, options):",
+                                "new_count": 7,
+                                "new_start": 157,
+                                "old_count": 7,
+                                "old_start": 154
+                            },
+                            {
+                                "content": "                             f'change_key_options.{k}',\n                             'Either Key or passphrase must be provided.'\n                         )\n-                elif id_.count('/') and await self.middleware.call(\n+                elif id_.count('/') and self.middleware.call_sync(\n                         'pool.dataset.query', [\n                             ['id', 'in', [id_.rsplit('/', i)[0] for i in range(1, id_.count('/') + 1)]],\n                             ['key_format.value', '=', ZFSKeyFormat.PASSPHRASE.value], ['encrypted', '=', True]",
+                                "header": "@@ -167,7 +170,7 @@ async def change_key(self, job, id_, options):",
+                                "new_count": 7,
+                                "new_start": 170,
+                                "old_count": 7,
+                                "old_start": 167
+                            },
+                            {
+                                "content": " \n         verrors.check()\n \n-        encryption_dict = await self.middleware.call(\n+        encryption_dict = self.middleware.call_sync(\n             'pool.dataset.validate_encryption_data', job, verrors, {\n                 'enabled': True, 'passphrase': options['passphrase'],\n                 'generate_key': options['generate_key'], 'key_file': options['key_file'],",
+                                "header": "@@ -181,7 +184,7 @@ async def change_key(self, job, id_, options):",
+                                "new_count": 7,
+                                "new_start": 184,
+                                "old_count": 7,
+                                "old_start": 181
+                            },
+                            {
+                                "content": "         encryption_dict.pop('encryption')\n         key = encryption_dict.pop('key')\n \n-        await self.middleware.call(\n-            'zfs.dataset.change_key', id_, {\n-                'encryption_properties': encryption_dict,\n-                'key': key, 'load_key': False,\n-            }\n-        )\n+        change_key(tls, id_, encryption_dict, key)\n \n         # TODO: Handle renames of datasets appropriately wrt encryption roots and db - this will be done when\n         #  devd changes are in from the OS end\n         data = {'encryption_key': key, 'key_format': 'PASSPHRASE' if options['passphrase'] else 'HEX', 'name': id_}\n-        await self.insert_or_update_encrypted_record(data)\n+        self.insert_or_update_encrypted_record(data)\n         if options['passphrase'] and ZFSKeyFormat(ds['key_format']['value']) != ZFSKeyFormat.PASSPHRASE:\n-            await self.middleware.call('pool.dataset.sync_db_keys', id_)\n+            self.middleware.call_sync('pool.dataset.sync_db_keys', id_)\n \n         data['old_key_format'] = ds['key_format']['value']\n-        await self.middleware.call_hook('dataset.change_key', data)\n+        self.middleware.call_hook_sync('dataset.change_key', data)\n \n     @api_method(\n         PoolDatasetInheritParentEncryptionPropertiesArgs,\n         PoolDatasetInheritParentEncryptionPropertiesResult,\n         roles=['DATASET_WRITE']\n     )\n-    async def inherit_parent_encryption_properties(self, id_):\n+    @pass_thread_local_storage\n+    def inherit_parent_encryption_properties(self, tls, id_):\n         \"\"\"\n         Allows inheriting parent's encryption root discarding its current encryption settings. This\n         can only be done where `id` has an encrypted parent and `id` itself is an encryption root.\n         \"\"\"\n-        ds = await self.middleware.call('pool.dataset.get_instance_quick', id_, {\n+        ds = self.middleware.call_sync('pool.dataset.get_instance_quick', id_, {\n             'encryption': True,\n         })\n         if not ds['encrypted']:",
+                                "header": "@@ -194,34 +197,30 @@ async def change_key(self, job, id_, options):",
+                                "new_count": 30,
+                                "new_start": 197,
+                                "old_count": 34,
+                                "old_start": 194
+                            },
+                            {
+                                "content": "         elif '/' not in id_:\n             raise CallError('Root datasets do not have a parent and cannot inherit encryption settings')\n         else:\n-            parent = await self.middleware.call(\n+            parent = self.middleware.call_sync(\n                 'pool.dataset.get_instance_quick', id_.rsplit('/', 1)[0], {\n                     'encryption': True,\n                 }",
+                                "header": "@@ -233,7 +232,7 @@ async def inherit_parent_encryption_properties(self, id_):",
+                                "new_count": 7,
+                                "new_start": 232,
+                                "old_count": 7,
+                                "old_start": 233
+                            },
+                            {
+                                "content": "             if not parent['encrypted']:\n                 raise CallError('This operation requires the parent dataset to be encrypted')\n             else:\n-                parent_encrypted_root = await self.middleware.call(\n+                parent_encrypted_root = self.middleware.call_sync(\n                     'pool.dataset.get_instance_quick', parent['encryption_root'], {\n                         'encryption': True,\n                     }\n                 )\n-                if ZFSKeyFormat(parent_encrypted_root['key_format']['value']) == ZFSKeyFormat.PASSPHRASE.value:\n+                if parent_encrypted_root['key_format']['value'] == ZFSKeyFormat.PASSPHRASE.value:\n                     if any(\n                         d['name'] == d['encryption_root']\n-                        for d in await self.middleware.call(\n+                        for d in self.middleware.call_sync(\n                             'pool.dataset.query', [\n                                 ['id', '^', f'{id_}/'], ['encrypted', '=', True],\n                                 ['key_format.value', '!=', ZFSKeyFormat.PASSPHRASE.value]",
+                                "header": "@@ -241,15 +240,15 @@ async def inherit_parent_encryption_properties(self, id_):",
+                                "new_count": 15,
+                                "new_start": 240,
+                                "old_count": 15,
+                                "old_start": 241
+                            },
+                            {
+                                "content": "                             'roots which are encrypted with a key as children for passphrase encrypted datasets.'\n                         )\n \n-        await self.middleware.call('zfs.dataset.change_encryption_root', id_, {'load_key': False})\n-        await self.middleware.call('pool.dataset.sync_db_keys', id_)\n-        await self.middleware.call_hook('dataset.inherit_parent_encryption_root', id_)\n+        change_encryption_root(tls, id_)\n+        self.middleware.call_sync('pool.dataset.sync_db_keys', id_)\n+        self.middleware.call_hook_sync('dataset.inherit_parent_encryption_root', id_)",
+                                "header": "@@ -261,6 +260,6 @@ async def inherit_parent_encryption_properties(self, id_):",
+                                "new_count": 6,
+                                "new_start": 260,
+                                "old_count": 6,
+                                "old_start": 261
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 29,
+                        "lines_removed": 30,
+                        "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "+import threading\n+from typing import Literal, TypedDict, cast\n+\n+from .exceptions import ZFSKeyAlreadyLoadedException, ZFSNotEncryptedException\n+from .utils import open_resource\n+\n+\n+class EncryptionProperties(TypedDict, total=False):\n+    keyformat: Literal['hex', 'passphrase', 'raw']\n+    keylocation: str\n+    pbkdf2iters: int | None\n+\n+\n+def load_key(tls: threading.local, dataset: str, **kwargs: str | bytes) -> None:\n+    \"\"\"\n+    Load the encryption key for a ZFS dataset.\n+\n+    Args:\n+        dataset: Name of the ZFS dataset whose key should be loaded.\n+\n+    Keyword Args:\n+        key: Key material as ``str`` (hex/passphrase) or ``bytes`` (raw).\n+            Mutually exclusive with ``key_location``.\n+        key_location: Path to the key file on disk.\n+            Mutually exclusive with ``key``.\n+    \"\"\"\n+    if len(kwargs) > 1:\n+        raise ValueError('Cannot specify both key and key location')\n+    rsrc = open_resource(tls, dataset)\n+    if (crypto := rsrc.crypto()) is None:\n+        raise ZFSNotEncryptedException(dataset)\n+    if crypto.info().key_is_loaded:\n+        raise ZFSKeyAlreadyLoadedException(dataset)\n+    crypto.load_key(**kwargs)\n+\n+\n+def check_key(tls: threading.local, dataset: str, **kwargs: str | bytes) -> bool:\n+    \"\"\"\n+    Return True if ``key`` (or the key at ``key_location``) can unlock ``dataset``.\n+\n+    Does not actually load the key. Raises ZFSNotEncryptedException if the\n+    dataset is not encrypted or if the ZFS operation fails for a reason other\n+    than a wrong key (EZFS_CRYPTOFAILED returns False rather than raising).\n+\n+    Args:\n+        dataset: Name of the ZFS dataset to check.\n+\n+    Keyword Args:\n+        key: Key material as ``str`` (hex/passphrase) or ``bytes`` (raw).\n+            Mutually exclusive with ``key_location``.\n+        key_location: Path to the key file on disk.\n+            Mutually exclusive with ``key``.\n+    \"\"\"\n+    if len(kwargs) > 1:\n+        raise ValueError('Cannot specify both key and key location')\n+    rsrc = open_resource(tls, dataset)\n+    if (crypto := rsrc.crypto()) is None:\n+        raise ZFSNotEncryptedException(dataset)\n+    return crypto.check_key(**kwargs)  # type: ignore[no-any-return]\n+\n+\n+def change_key(\n+    tls: threading.local,\n+    dataset: str,\n+    properties: EncryptionProperties | None = None,\n+    key: str | None = None\n+) -> None:\n+    \"\"\"\n+    Change the encryption key and/or properties for ``dataset``.\n+\n+    The dataset's key must already be loaded before calling this.\n+\n+    Args:\n+        dataset: Name of the ZFS dataset whose key should be changed.\n+        properties: May contain any combination of keyformat, keylocation, and\n+            pbkdf2iters.\n+        key: New key material. Required when keylocation is not given.\n+    \"\"\"\n+    props = {} if properties is None else cast(dict[str, str | int | None], properties.copy())\n+    if key:\n+        props.pop('keylocation', None)\n+        props['key'] = key\n+    elif 'keylocation' not in props:\n+        raise ValueError('Must specify either key or key location')\n+\n+    rsrc = open_resource(tls, dataset)\n+    if (crypto := rsrc.crypto()) is None:\n+        raise ZFSNotEncryptedException(dataset)\n+    config = tls.lzh.resource_cryptography_config(**props)\n+    crypto.change_key(info=config)\n+\n+\n+def change_encryption_root(tls: threading.local, dataset: str) -> None:\n+    \"\"\"\n+    Make ``dataset`` inherit encryption from its parent, removing it as\n+    an encryption root.\n+\n+    ``dataset`` must currently be an encryption root and its key must be loaded.\n+\n+    Args:\n+        dataset: Name of the ZFS dataset to remove as an encryption root.\n+    \"\"\"\n+    rsrc = open_resource(tls, dataset)\n+    if (crypto := rsrc.crypto()) is None:\n+        raise ZFSNotEncryptedException(dataset)\n+    crypto.inherit_key()",
+                                "header": "@@ -0,0 +1,106 @@",
+                                "new_count": 106,
+                                "new_start": 1,
+                                "old_count": 0,
+                                "old_start": 0
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 106,
+                        "lines_removed": 0,
+                        "path": "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                        "status": "added"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "-from typing import Collection\n+from typing import Iterable\n \n __all__ = (\n+    \"ZFSKeyAlreadyLoadedException\",\n+    \"ZFSNotEncryptedException\",\n     \"ZFSPathAlreadyExistsException\",\n     \"ZFSPathInvalidException\",\n     \"ZFSPathNotASnapshotException\",",
+                                "header": "@@ -1,6 +1,8 @@",
+                                "new_count": 8,
+                                "new_start": 1,
+                                "old_count": 6,
+                                "old_start": 1
+                            },
+                            {
+                                "content": " )\n \n \n+class ZFSKeyAlreadyLoadedException(Exception):\n+    def __init__(self, path: str):\n+        self.message = f\"{path!r} key is already loaded\"\n+        super().__init__(self.message)\n+\n+\n+class ZFSNotEncryptedException(Exception):\n+    def __init__(self, path: str):\n+        self.message = f\"{path!r} is not encrypted\"\n+        super().__init__(self.message)\n+\n+\n class ZFSPathAlreadyExistsException(Exception):\n     def __init__(self, path: str):\n         self.message = f\"{path!r} already exists\"",
+                                "header": "@@ -9,6 +11,18 @@",
+                                "new_count": 18,
+                                "new_start": 11,
+                                "old_count": 6,
+                                "old_start": 9
+                            },
+                            {
+                                "content": " \n \n class ZFSPathHasClonesException(Exception):\n-    def __init__(self, path: str, clones: Collection[str]):\n+    def __init__(self, path: str, clones: Iterable[str]):\n         self.path = path\n         self.clones = clones\n         self.message = f\"{path!r} has the following clones: {','.join(clones)}\"",
+                                "header": "@@ -16,7 +30,7 @@ def __init__(self, path: str):",
+                                "new_count": 7,
+                                "new_start": 30,
+                                "old_count": 7,
+                                "old_start": 16
+                            },
+                            {
+                                "content": " \n \n class ZFSPathHasHoldsException(Exception):\n-    def __init__(self, path: str, holds: Collection[str]):\n+    def __init__(self, path: str, holds: Iterable[str]):\n         self.message = f\"{path!r} has the following holds: {','.join(holds)}\"\n         super().__init__(self.message)\n ",
+                                "header": "@@ -24,7 +38,7 @@ def __init__(self, path: str, clones: Collection[str]):",
+                                "new_count": 7,
+                                "new_start": 38,
+                                "old_count": 7,
+                                "old_start": 24
+                            }
+                        ],
+                        "language": "python",
+                        "lines_added": 17,
+                        "lines_removed": 3,
+                        "path": "src/middlewared/middlewared/plugins/zfs/exceptions.py",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "-import libzfs\n-\n-from middlewared.service import CallError, job, Service\n-\n-\n-class ZFSDatasetService(Service):\n-\n-    class Config:\n-        namespace = 'zfs.dataset'\n-        private = True\n-        process_pool = True\n-\n-    def common_load_dataset_checks(self, id_, ds):\n-        self.common_encryption_checks(id_, ds)\n-        if ds.key_loaded:\n-            raise CallError(f'{id_} key is already loaded')\n-\n-    def common_encryption_checks(self, id_, ds):\n-        if not ds.encrypted:\n-            raise CallError(f'{id_} is not encrypted')\n-\n-    def load_key(self, id_: str, options: dict | None = None):\n-        if options is None:\n-            options = {\n-                'mount': True,\n-                'recursive': False,\n-                'key': None,\n-                'key_location': None,\n-            }\n-        options.setdefault('mount', True)\n-        options.setdefault('recursive', False)\n-        options.setdefault('key', None)\n-        options.setdefault('key_location', None)\n-\n-        mount_ds = options.pop('mount')\n-        recursive = options.pop('recursive')\n-        try:\n-            with libzfs.ZFS() as zfs:\n-                ds = zfs.get_dataset(id_)\n-                self.common_load_dataset_checks(id_, ds)\n-                ds.load_key(**options)\n-        except libzfs.ZFSException as e:\n-            self.logger.error(f'Failed to load key for {id_}', exc_info=True)\n-            raise CallError(f'Failed to load key for {id_}: {e}')\n-        else:\n-            if mount_ds:\n-                self.call_sync2(self.s.zfs.resource.mount, id_, recursive=recursive)\n-\n-    def check_key(self, id_: str, options: dict | None = None):\n-        \"\"\"\n-        Returns `true` if the `key` is valid, `false` otherwise.\n-        \"\"\"\n-        if options is None:\n-            options = {\n-                'key': None,\n-                'key_location': None,\n-            }\n-\n-        try:\n-            with libzfs.ZFS() as zfs:\n-                ds = zfs.get_dataset(id_)\n-                self.common_encryption_checks(id_, ds)\n-                return ds.check_key(**options)\n-        except libzfs.ZFSException as e:\n-            self.logger.error(f'Failed to check key for {id_}', exc_info=True)\n-            raise CallError(f'Failed to check key for {id_}: {e}')\n-\n-    def change_key(self, id_: str, options: dict | None = None):\n-        if options is None:\n-            options = {\n-                'encryption_properties': {},\n-                'load_key': True,\n-                'key': None,\n-            }\n-\n-        try:\n-            with libzfs.ZFS() as zfs:\n-                ds = zfs.get_dataset(id_)\n-                self.common_encryption_checks(id_, ds)\n-                ds.change_key(props=options['encryption_properties'], load_key=options['load_key'], key=options['key'])\n-        except libzfs.ZFSException as e:\n-            self.logger.error(f'Failed to change key for {id_}', exc_info=True)\n-            raise CallError(f'Failed to change key for {id_}: {e}')\n-\n-    def change_encryption_root(self, id_: str, options: dict | None = None):\n-        if options is None:\n-            options = {'load_key': True}\n-\n-        try:\n-            with libzfs.ZFS() as zfs:\n-                ds = zfs.get_dataset(id_)\n-                ds.change_key(load_key=options['load_key'], inherit=True)\n-        except libzfs.ZFSException as e:\n-            raise CallError(f'Failed to change encryption root for {id_}: {e}')\n-\n-    @job()\n-    def bulk_process(self, job, name: str, params: list):\n-        f = getattr(self, name, None)\n-        if not f:\n-            raise CallError(f'{name} method not found in zfs.dataset')\n-\n-        statuses = []\n-        for i in params:\n-            result = error = None\n-            try:\n-                result = f(*i)\n-            except Exception as e:\n-                error = str(e)\n-            finally:\n-                statuses.append({'result': result, 'error': error})\n-\n-        return statuses",
+                                "header": "@@ -1,112 +0,0 @@",
+                                "new_count": 0,
+                                "new_start": 0,
+                                "old_count": 112,
+                                "old_start": 1
+                            }
+                        ],
+                        "language": "",
+                        "lines_added": 0,
+                        "lines_removed": 112,
+                        "path": "",
+                        "status": "removed"
+                    }
+                ],
+                "intent_gaps": [
+                    "PR description mentions removing 'another use case of our process pool' but doesn't mention the specific file being removed (the diff shows 1 file removed with 112 lines). The removed file likely contained the old py-libzfs implementation that's being replaced",
+                    "PR description references dependency on truenas_pylibzfs PR #145 but doesn't document what specific functionality from that PR is required (likely the resource_cryptography_config or crypto() methods)",
+                    "The new encryption.py module uses tls.lzh.resource_cryptography_config() and crypto() methods (lines 89,30-33,57-59) but there's no validation that these methods exist in the version of truenas_pylibzfs being used - this could cause runtime AttributeError if the dependency version is wrong",
+                    "The PR adds exception classes but doesn't document what happens when encrypted dataset operations encounter other ZFS errors (EZFS_NOMEM, EZFS_IO, etc) - these may now bubble up as unhandled ZFSException instead of being wrapped in CallError"
+                ],
+                "pr_narrative": "This PR refactors ZFS dataset encryption operations by replacing the deprecated py-libzfs library with truenas_pylibzfs. The primary change creates a new abstraction layer in middlewared/plugins/zfs/encryption.py that provides four core encryption functions: load_key(), check_key(), change_key(), and change_encryption_root(). These functions use thread-local storage (tls) to access the ZFS library handle and operate directly on datasets without requiring the process pool. The refactor affects three main areas: (1) pool dataset encryption operations (unlock, change_key, inherit_parent_encryption_properties), (2) encryption info queries (encryption_summary, sync_db_keys, path_in_locked_datasets), and (3) KMIP ZFS key management (push_zfs_keys, pull_zfs_keys, sync_zfs_keys). The old mechanism used process pool workers to execute py-libzfs operations in separate processes, while the new mechanism uses @pass_thread_local_storage decorator to inject the ZFS library handle directly into method calls, eliminating process pool overhead.",
+                "risk_surfaces": [
+                    "Thread-local storage contract: All encryption functions now require 'tls' parameter injected via @pass_thread_local_storage decorator. Callers that bypass the decorator or call these functions outside the middleware service context will fail. Affected files: dataset_encryption_lock.py:222, dataset_encryption_operations.py:200, dataset_encryption_info.py:107,201, kmip/zfs_keys.py:67,109",
+                    "Exception type changes: New code raises ZFSKeyAlreadyLoadedException and ZFSNotEncryptedException from middlewared.plugins.zfs.exceptions, while old code likely raised different exception types from py-libzfs. Callers catching specific exception types may break. File: middlewared/plugins/zfs/exceptions.py adds these new exception classes",
+                    "Key format handling: RAW keys are hex-encoded when stored in database but must be converted back to bytes before calling check_key(). The conversion happens in multiple places (dataset_encryption_info.py:103-104, dataset_encryption_lock.py:178-182) - any inconsistency in encoding/decoding will cause key validation failures",
+                    "Error code mapping: ZFSException from truenas_pylibzfs uses ZFSError enum (EZFS_CRYPTOFAILED, EZFS_NOENT). Code in dataset_encryption_lock.py:223-228 checks e.code == ZFSError.EZFS_CRYPTOFAILED - if error codes differ between old and new library, error handling logic will fail",
+                    "Concurrent access: The path_in_locked_datasets() method is marked as 'EXTREMELY hot code path' (dataset_encryption_info.py:237). Changing from process pool to direct library calls may have different concurrency characteristics under high load",
+                    "Process pool removal: The PR removes a process pool use case. If other parts of the system depend on serialization through the process pool for ZFS operations, concurrent ZFS operations could now race in ways they didn't before",
+                    "KMIP key caching: kmip/zfs_keys.py uses self.zfs_keys in-memory cache (line 18) which persists across calls. With faster direct library calls, race conditions between cache updates and key validation could manifest differently",
+                    "Raw key validation: check_key() returns False on EZFS_CRYPTOFAILED but raises on other errors. If truenas_pylibzfs behavior differs from py-libzfs for edge cases (malformed keys, permission errors), error propagation changes"
+                ],
+                "stats": {
+                    "files_added": 1,
+                    "files_modified": 7,
+                    "files_removed": 1,
+                    "files_renamed": 0,
+                    "test_files_changed": 0,
+                    "test_to_code_ratio": 0,
+                    "total_additions": 254,
+                    "total_deletions": 210,
+                    "total_files": 9
+                },
+                "unrelated_changes": [
+                    "pool.py: PoolCreateEncryptionOptions.pbkdf2iters default value was updated from implicit default to explicit 1300000 minimum in from_previous() method. This appears unrelated to the py-libzfs to truenas_pylibzfs migration and should be in a separate PR",
+                    "pool_dataset.py: Same pbkdf2iters change in PoolDatasetChangeKeyOptions class. Lines 175-186 contain changes not directly related to encryption method refactoring"
+                ]
+            },
+            "budget": {
+                "budget_exhausted": true,
+                "cost_breakdown": {
+                    "adversary": 0,
+                    "anatomy": 0,
+                    "coverage": 0,
+                    "cross_ref": 0,
+                    "intake": 0,
+                    "output": 0,
+                    "planning": 0,
+                    "review": 0,
+                    "synthesis": 0
+                },
+                "max_cost_usd": 10,
+                "max_duration_seconds": 3600,
+                "total_cost_usd": 0
+            },
+            "intake": {
+                "ai_generated": 0,
+                "areas_touched": [
+                    "api"
+                ],
+                "complexity": "complex",
+                "languages": [
+                    "python"
+                ],
+                "pr_summary": "Replace usage of the deprecated py-libzfs with truenas_pylibzfs for these private methods. This removes another use case of our process pool.\r\n\r\nDepends on changes made in https://github.com/truenas/truenas_pylibzfs/pull/145.",
+                "pr_type": "refactor",
+                "review_depth": "thorough",
+                "risk_signals": [
+                    "changes API surface or request/response behavior"
+                ]
+            },
+            "phases_completed": [
+                "intake",
+                "anatomy",
+                "planning",
+                "review",
+                "cross_ref",
+                "adversary",
+                "coverage",
+                "synthesis",
+                "output"
+            ],
+            "plan": {
+                "ai_adjusted": false,
+                "cross_ref_hints": [
+                    "If dimension 1 (Thread-Local Storage) finds callers without proper tls context, AND dimension 2 (Exception Types) finds new exception handling requirements, check if the tls-related exceptions are properly caught and converted at service boundaries.",
+                    "If dimension 3 (Error Code Mapping) finds different ZFSError codes between libraries AND dimension 6 (Process Pool Removal) finds concurrent operations, verify that error handling doesn't introduce race conditions in multi-threaded error recovery paths.",
+                    "If dimension 4 (Key Encoding) finds inconsistencies AND dimension 8 (check_key Errors) finds error propagation changes, ensure that key validation failures don't cause silent authentication bypasses.",
+                    "If dimension 5 (Hot Path Concurrency) finds performance issues AND dimension 7 (KMIP Cache) finds race conditions, check if the combined effect causes cache corruption under high load with concurrent KMIP operations.",
+                    "If dimension 9 (API Changes) finds schema modifications AND dimension 2 (Exception Types) finds new exception classes, verify that new exceptions are properly serialized in API responses and don't cause client parsing errors.",
+                    "If dimension 10 (Resource Cleanup) finds cleanup issues AND dimension 6 (Process Pool Removal) finds lost serialization, verify that resource leaks don't accumulate faster without process pool isolation."
+                ],
+                "dimensions": [
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/kmip/zfs_keys.py"
+                        ],
+                        "id": "dim_1",
+                        "name": "Thread-Local Storage Contract Validation",
+                        "priority": 1,
+                        "review_prompt": "Investigate the new thread-local storage (tls) parameter requirement introduced by the @pass_thread_local_storage decorator. The new encryption functions in middlewared/plugins/zfs/encryption.py now require 'tls' to access the ZFS library handle.\n\nTarget investigation:\n1. Trace all direct callers of load_key(), check_key(), change_key(), and change_encryption_root() from middlewared/plugins/zfs/encryption.py\n2. Verify these callers are methods decorated with @pass_thread_local_storage or are called within a context where tls is available\n3. Check if any callers bypass the decorator or call these functions from non-middleware contexts (background jobs, CLI tools, tests)\n4. Look for any code paths where encryption functions might be called before thread-local storage is initialized\n\nWhat 'correct' looks like:\n- All callers have access to tls through the decorator chain\n- No naked function calls exist outside the middleware service context\n- Error messages clearly indicate when tls is missing\n\nSubtle failures to watch for:\n- Background job runners that don't initialize thread-local storage\n- Unit tests that call encryption methods directly without setting up the decorator chain\n- API endpoints that delegate to helper functions which lose the tls context\n- Async code that switches threads and loses the tls binding",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                            "src/middlewared/middlewared/plugins/kmip/zfs_keys.py"
+                        ],
+                        "id": "dim_2",
+                        "name": "Exception Type Compatibility",
+                        "priority": 2,
+                        "review_prompt": "Analyze the exception type changes between py-libzfs and truenas_pylibzfs. The new code introduces ZFSKeyAlreadyLoadedException and ZFSNotEncryptedException in middlewared/plugins/zfs/exceptions.py, while the old code likely raised different exception types from py-libzfs.\n\nTarget investigation:\n1. Map all try/except blocks in the changed files that catch ZFS-related exceptions\n2. Compare the old exception types (likely libzfs.ZFSException or similar) with the new ones\n3. Verify that callers in dataset_encryption_lock.py, dataset_encryption_info.py, kmip/zfs_keys.py handle both old and new exception types appropriately\n4. Check if any catch-all exception handlers might mask type changes\n5. Look for exception chaining - does the new code wrap old exceptions or replace them?\n\nWhat 'correct' looks like:\n- Exception hierarchies are preserved or clearly documented\n- Callers catch appropriate exception types for their use case\n- No bare except: clauses hide exception type mismatches\n- Error handling logic responds correctly to new exception types\n\nSubtle failures to watch for:\n- Code that catches specific py-libzfs exception classes that no longer exist\n- Exception type checking using isinstance() that fails with new types\n- String matching on exception messages that may have changed\n- Middleware exception middleware that expects certain exception types for HTTP status codes",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/zfs/exceptions.py",
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/zfs/exceptions.py"
+                        ],
+                        "id": "dim_3",
+                        "name": "Error Code Mapping and ZFSError Handling",
+                        "priority": 3,
+                        "review_prompt": "Verify the error code mapping between py-libzfs and truenas_pylibzfs ZFSError enums. The code in dataset_encryption_lock.py:223-228 specifically checks e.code == ZFSError.EZFS_CRYPTOFAILED. If error codes differ between libraries, error handling logic will silently fail.\n\nTarget investigation:\n1. Compare ZFSError enum values between py-libzfs and truenas_pylibzfs\n2. Trace all code that accesses exception.code or exception errno attributes\n3. Verify error code constants match (EZFS_CRYPTOFAILED, EZFS_NOENT, etc.)\n4. Check how ZFSError is imported and used across all changed files\n5. Look for hardcoded error code values vs. enum references\n\nWhat 'correct' looks like:\n- Error codes are semantically equivalent between libraries\n- All error code comparisons use the ZFSError enum, not magic numbers\n- EZFS_CRYPTOFAILED and EZFS_NOENT map to the same error conditions\n- Error handling branches execute as expected\n\nSubtle failures to watch for:\n- Different numeric values for the same logical error\n- New error codes in truenas_pylibzfs that have no py-libzfs equivalent\n- Error code comparisons that use '==' when they should use a set of codes\n- Cases where exception.code might be None or unset",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py"
+                        ],
+                        "id": "dim_4",
+                        "name": "Raw Key Hex Encoding Consistency",
+                        "priority": 4,
+                        "review_prompt": "Analyze the RAW key hex encoding/decoding logic across all encryption operations. RAW keys are hex-encoded when stored in the database but must be converted back to bytes before calling check_key(). The conversion happens in multiple places and any inconsistency will cause key validation failures.\n\nTarget investigation:\n1. Trace the full key data flow from storage to usage:\n   - dataset_encryption_info.py:103-104\n   - dataset_encryption_lock.py:178-182\n   - kmip/zfs_keys.py key handling\n2. Verify hex encoding/decoding is symmetric (encode -> decode produces original bytes)\n3. Check for cases where keys might be double-encoded or double-decoded\n4. Ensure consistent encoding (uppercase vs lowercase hex, with/without '0x' prefix)\n5. Verify key length validation happens after decoding, not before\n\nWhat 'correct' looks like:\n- Single, consistent encoding scheme throughout the pipeline\n- All database-stored keys decode correctly before ZFS operations\n- Key validation checks the actual bytes length, not hex string length\n- No key transformation happens in multiple places inconsistently\n\nSubtle failures to watch for:\n- Keys stored as hex that get re-encoded before storage (double hex)\n- Keys passed to ZFS that are still in hex string form instead of bytes\n- Mixed encoding schemes (some uppercase, some lowercase)\n- Keys that bypass the encoding layer and cause silent failures",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                            "src/middlewared/middlewared/plugins/kmip/zfs_keys.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [],
+                        "id": "dim_5",
+                        "name": "Hot Code Path Concurrency Characteristics",
+                        "priority": 5,
+                        "review_prompt": "Evaluate the path_in_locked_datasets() method in dataset_encryption_info.py, marked as 'EXTREMELY hot code path' at line 237. The change from process pool to direct library calls may have different concurrency characteristics under high load.\n\nTarget investigation:\n1. Compare the concurrency model: process pool serialization vs. direct library calls\n2. Analyze how the new implementation handles concurrent calls to path_in_locked_datasets()\n3. Check if the ZFS library handle (via tls) has any internal locking or thread-safety guarantees\n4. Trace the call frequency and caller patterns for this hot path\n5. Verify no new race conditions or contention points are introduced\n6. Check if the change affects latency characteristics for this hot path\n\nWhat 'correct' looks like:\n- Concurrent calls don't corrupt internal state\n- Performance is maintained or improved under load\n- No deadlocks introduced by thread-local storage access\n- ZFS library handles are thread-safe or properly isolated\n\nSubtle failures to watch for:\n- Thread contention on shared ZFS handles\n- Performance degradation under high concurrent load\n- Race conditions in the locked_datasets cache\n- Deadlocks between multiple concurrent encryption operations",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [],
+                        "id": "dim_6",
+                        "name": "Process Pool Serialization Removal Impact",
+                        "priority": 6,
+                        "review_prompt": "Assess the impact of removing the process pool use case for ZFS operations. The process pool provided implicit serialization and isolation; direct library calls may introduce race conditions in ways the old code avoided.\n\nTarget investigation:\n1. Identify what serialization guarantees the process pool provided (one operation at a time? per-dataset? global?)\n2. Map all ZFS operations that now run directly and their potential interaction points\n3. Check for operations that should not run concurrently (e.g., load_key on same dataset)\n4. Verify no new race conditions between concurrent unlock/lock/change_key operations\n5. Look for any missing synchronization primitives that the process pool provided\n6. Check if other parts of the codebase still use the process pool and might conflict with direct calls\n\nWhat 'correct' looks like:\n- Critical operations are still serialized if they need to be\n- No race conditions between concurrent ZFS modifications\n- Dataset state remains consistent during concurrent operations\n- Direct calls don't interfere with process pool operations elsewhere\n\nSubtle failures to watch for:\n- Multiple concurrent key loads on the same dataset\n- Race between key validation and key change\n- State checks that were atomic in the pool but aren't in direct calls\n- Interaction between direct encryption calls and pool-based ZFS operations elsewhere",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py",
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py"
+                        ],
+                        "id": "dim_7",
+                        "name": "KMIP In-Memory Key Cache Race Conditions",
+                        "priority": 7,
+                        "review_prompt": "Analyze the KMIP key cache (self.zfs_keys at kmip/zfs_keys.py:18) interaction with the new direct library calls. The in-memory cache persists across calls and with faster direct library calls, race conditions between cache updates and key validation could manifest differently.\n\nTarget investigation:\n1. Trace the self.zfs_keys cache lifecycle and access patterns\n2. Check cache consistency during push_zfs_keys(), pull_zfs_keys(), and sync_zfs_keys()\n3. Verify cache invalidation happens correctly when keys change\n4. Analyze concurrent access to the cache from multiple KMIP operations\n5. Check if the cache could return stale data after direct library operations\n6. Verify thread safety of the cache access (is it shared across threads?)\n\nWhat 'correct' looks like:\n- Cache is invalidated appropriately when keys are modified\n- No stale cache entries returned after key operations\n- Cache operations are thread-safe\n- Cache state matches actual ZFS dataset state\n\nSubtle failures to watch for:\n- Cache returning stale keys after concurrent key changes\n- Race between cache read and ZFS key update\n- Memory leaks from uncleaned cache entries\n- Inconsistent cache state after failed operations",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/kmip/zfs_keys.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                            "src/middlewared/middlewared/plugins/kmip/zfs_keys.py"
+                        ],
+                        "id": "dim_8",
+                        "name": "Error Propagation in check_key()",
+                        "priority": 8,
+                        "review_prompt": "Verify the error propagation behavior of check_key() - it returns False on EZFS_CRYPTOFAILED but raises on other errors. If truenas_pylibzfs behavior differs from py-libzfs for edge cases (malformed keys, permission errors), error propagation changes could break callers.\n\nTarget investigation:\n1. Trace the check_key() implementation and its error handling logic\n2. Map all callers of check_key() and their exception handling\n3. Verify that callers expect False return vs. raised exception for each error case\n4. Check edge cases: malformed keys, permission denied, dataset not found, already loaded key\n5. Compare error behavior between py-libzfs check_key() and truenas_pylibzfs version\n6. Look for callers that rely on specific exception types from failed key checks\n\nWhat 'correct' looks like:\n- EZFS_CRYPTOFAILED returns False as expected by callers\n- Other errors raise exceptions that callers catch appropriately\n- Edge cases produce consistent results between old and new implementations\n- No silent failures where exceptions are swallowed unexpectedly\n\nSubtle failures to watch for:\n- Changed exception types for permission errors\n- Different behavior for malformed key formats\n- Silent failures where old code raised but new code returns False\n- Callers that expect exceptions but get False returns",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.5,
+                            "max_duration_seconds": 60,
+                            "max_reference_follows": 3
+                        },
+                        "context_files": [],
+                        "id": "dim_9",
+                        "name": "API Surface Changes",
+                        "priority": 9,
+                        "review_prompt": "Review the API v26_0_0 changes in pool.py and pool_dataset.py to ensure no breaking changes to the request/response schema. Even internal method signature changes can affect the generated API if they alter public method behaviors.\n\nTarget investigation:\n1. Compare the API schemas in pool.py and pool_dataset.py before and after\n2. Check if any method signatures changed that are exposed via @api_method or similar decorators\n3. Verify no new required parameters are added without defaults\n4. Check if return types changed in ways that affect JSON serialization\n5. Look for any changes to encryption-related API models or validators\n6. Ensure error response formats remain compatible\n\nWhat 'correct' looks like:\n- API schemas remain backward compatible\n- No new required fields in request models\n- Response formats unchanged\n- Error responses follow existing patterns\n\nSubtle failures to watch for:\n- Changed default values affecting client behavior\n- New validators rejecting previously valid inputs\n- Different serialization of complex types\n- API version compatibility issues",
+                        "target_files": [
+                            "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                            "src/middlewared/middlewared/api/v26_0_0/pool_dataset.py"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 3,
+                            "max_cost_usd": 0.75,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py",
+                            "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py"
+                        ],
+                        "id": "dim_10",
+                        "name": "Resource Cleanup and Error Recovery",
+                        "priority": 10,
+                        "review_prompt": "Verify that the new direct library calls properly handle resource cleanup and error recovery. The process pool provided implicit resource isolation; direct calls may require explicit cleanup of ZFS handles or dataset references.\n\nTarget investigation:\n1. Check if truenas_pylibzfs requires explicit resource cleanup (handles, references)\n2. Trace error paths to ensure resources are freed on exceptions\n3. Look for potential memory leaks from uncleaned ZFS objects\n4. Verify dataset handles are properly released after operations\n5. Check cleanup behavior in edge cases (partial failures, interrupted operations)\n6. Compare cleanup guarantees between process pool (process exit) and direct calls\n\nWhat 'correct' looks like:\n- All ZFS resources are properly released after use\n- Exception handlers include cleanup logic\n- No resource leaks in error paths\n- Cleanup happens even on unexpected exceptions\n\nSubtle failures to watch for:\n- Leaked ZFS handles accumulating over time\n- Dataset references preventing pool operations\n- Memory leaks from Python objects wrapping C library resources\n- Cleanup code that doesn't run due to exception handling order",
+                        "target_files": [
+                            "src/middlewared/middlewared/plugins/zfs/encryption.py"
+                        ]
+                    }
+                ],
+                "total_budget": {
+                    "max_child_spawns": 29,
+                    "max_cost_usd": 6.75,
+                    "max_duration_seconds": 810,
+                    "max_reference_follows": 38
+                }
+            }
+        },
+        "pr_url": "https://github.com/truenas/middleware/pull/18291",
+        "review": {
+            "body": "## \ud83d\udd34 PR-AF Review \u2014 **Needs Major Rework**\n\n*Automated multi-agent code review \u00b7 [PR-AF](https://github.com/Agent-Field/agentfield) built with [AgentField](https://github.com/Agent-Field/agentfield)*\n\n> **25 findings** \u00b7 \ud83d\udd34 8 critical \u00b7 \ud83d\udfe0 17 important \u00b7 \ud83d\udd35 0 suggestions \u00b7 \u26aa 0 nitpicks\n\n<details>\n<summary><b>PR Overview</b></summary>\n\nReplace usage of the deprecated py-libzfs with truenas_pylibzfs for these private methods. This removes another use case of our process pool.\r\n\r\nDepends on changes made in https://github.com/truenas/truenas_pylibzfs/pull/145.\n\n</details>\n\n### Key Findings\n\n**25 issue(s) should be addressed before merge:**\n\n- \ud83d\udd34 **Breaking Change: pbkdf2iters minimum and default increased from 350000 to 1300000** (`src/middlewared/middlewared/api/v26_0_0/pool.py:139`) \u2014 The `PoolCreateEncryptionOptions.pbkdf2iters` field has breaking changes that affect API compatibility:  1.\n- \ud83d\udd34 **Breaking Change: PoolDatasetChangeKeyOptions.pbkdf2iters minimum increased to 1300000** (`src/middlewared/middlewared/api/v26_0_0/pool_dataset.py:170`) \u2014 Same critical issue as PoolCreateEncryptionOptions: the `PoolDatasetChangeKeyOptions.pbkdf2iters` field has breaking changes:  1.\n- \ud83d\udd34 **Failover unlock uses different lock namespace than user unlock - allows concurrent operations on same dataset** (`src/middlewared/middlewared/plugins/failover.py:553`) \u2014 The failover service's `unlock_zfs_datasets` method uses job lock `'failover_dataset_unlock'` (line 553), while the user-facing `pool.dataset.unlock` method uses lock `f'dataset_unlock_{args[0]}'` (da\u2026\n- \ud83d\udd34 **Breaking Change: PoolCreateTopologySpecialVdev now allows DRAID types** (`src/middlewared/middlewared/api/v26_0_0/pool.py:180`) \u2014 The `PoolCreateTopologySpecialVdev` type has changed from a restricted model to an alias that includes DRAID types.\n- \ud83d\udd34 **PoolScan model lacks None/null support for required fields** (`src/middlewared/middlewared/api/v26_0_0/pool_scrub.py:108`) \u2014 The **PoolScan** model in v26_0_0 defines all fields as non-nullable (except `end_time`, `pause`, and `total_secs_left`), but the **v25_10_2** dict example shows all fields can be `None`.\n- \ud83d\udd34 **Inconsistent ZFSError comparison pattern may cause silent error handling failure** (`src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py:223`) \u2014 The code at lines 223-228 uses a direct comparison pattern `e.code == ZFSError.EZFS_CRYPTOFAILED` which is inconsistent with other files in the codebase.\n- \ud83d\udd34 **TOCTOU Race Condition in push_zfs_keys Cache Access** (`src/middlewared/middlewared/plugins/kmip/zfs_keys.py:66`) \u2014 The `push_zfs_keys` method contains a Time-of-Check-Time-of-Use (TOCTOU) race condition in the cache validation logic.\n- \ud83d\udd34 **TOCTOU Race Condition in pull_zfs_keys Cache Access** (`src/middlewared/middlewared/plugins/kmip/zfs_keys.py:108`) \u2014 The `pull_zfs_keys` method has the same TOCTOU pattern as `push_zfs_keys`.\n- \u2026 and 17 more (see All Findings by Severity)\n\n**Files with findings:** `src/middlewared/middlewared/api/v26_0_0/pool.py`, `src/middlewared/middlewared/api/v26_0_0/pool_dataset.py`, `src/middlewared/middlewared/api/v26_0_0/pool_scrub.py`, `src/middlewared/middlewared/plugins/failover.py`, `src/middlewared/middlewared/plugins/kmip/zfs_keys.py`, `src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py`, `src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py`, `src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py`, `src/middlewared/middlewared/plugins/zfs/encryption.py`, `src/middlewared/middlewared/plugins/zfs/utils.py`\n\n<details>\n<summary><b>All Findings by Severity</b></summary>\n\n#### \ud83d\udd34 Critical (8)\n\n- **Breaking Change: pbkdf2iters minimum and default increased from 350000 to 1300000** `src/middlewared/middlewared/api/v26_0_0/pool.py:139`\n- **Breaking Change: PoolDatasetChangeKeyOptions.pbkdf2iters minimum increased to 1300000** `src/middlewared/middlewared/api/v26_0_0/pool_dataset.py:170`\n- **Failover unlock uses different lock namespace than user unlock - allows concurrent operations on same dataset** `src/middlewared/middlewared/plugins/failover.py:553`\n- **Breaking Change: PoolCreateTopologySpecialVdev now allows DRAID types** `src/middlewared/middlewared/api/v26_0_0/pool.py:180`\n- **PoolScan model lacks None/null support for required fields** `src/middlewared/middlewared/api/v26_0_0/pool_scrub.py:108`\n- **Inconsistent ZFSError comparison pattern may cause silent error handling failure** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py:223`\n- **TOCTOU Race Condition in push_zfs_keys Cache Access** `src/middlewared/middlewared/plugins/kmip/zfs_keys.py:66`\n- **TOCTOU Race Condition in pull_zfs_keys Cache Access** `src/middlewared/middlewared/plugins/kmip/zfs_keys.py:108`\n\n#### \ud83d\udfe0 Important (17)\n\n- **ZFSKeyAlreadyLoadedException and ZFSNotEncryptedException not caught by existing handlers** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py:221`\n- **PoolEntry.scan type changed from dict to PoolScan model** `src/middlewared/middlewared/api/v26_0_0/pool.py:55`\n- **TOCTOU race condition in load_key() - key check and load are not atomic** `src/middlewared/middlewared/plugins/zfs/encryption.py:14`\n- **Pool name validation relaxed: removed whitespace restriction** `src/middlewared/middlewared/api/v26_0_0/pool.py:220`\n- **Inconsistent lock namespaces allow concurrent lock/unlock on same dataset** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py:31`\n- **change_key and inherit_parent_encryption_properties can run concurrently on same dataset** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py:118`\n- **Resource leak in hot code path - dataset lock checking** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py:262`\n- **open_resource() utility lacks resource management documentation/context manager** `src/middlewared/middlewared/plugins/zfs/utils.py:123`\n- **PoolDatasetGetQuotaResult return type expanded** `src/middlewared/middlewared/api/v26_0_0/pool_dataset.py:649`\n- **ZFS resource objects not explicitly cleaned up after encryption operations** `src/middlewared/middlewared/plugins/zfs/encryption.py:29`\n- **Error code mapping between py-libzfs and truenas_pylibzfs not verified** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py:220`\n- **Database key sync silently removes keys on ANY ZFS error** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py:200`\n- **PoolDatasetCreateArgs discriminator field may break clients** `src/middlewared/middlewared/api/v26_0_0/pool_dataset.py:540`\n- **Unprotected Cache Access in initialize_zfs_keys** `src/middlewared/middlewared/plugins/kmip/zfs_keys.py:164`\n- **Broad exception handling masks non-crypto ZFS errors in check_key()** `src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py:106`\n- **KMIP pull operation adds datasets to 'failed' list for ANY ZFS error** `src/middlewared/middlewared/plugins/kmip/zfs_keys.py:104`\n- **Async reset_zfs_key Called Without Cache Lock Protection** `src/middlewared/middlewared/plugins/kmip/zfs_keys.py:185`\n\n</details>\n\n<details>\n<summary><b>Review Process Details</b></summary>\n\n**Dimensions Analyzed (10):**\n\n- **Thread-Local Storage Contract Validation** \u2014 4 file(s)\n- **Exception Type Compatibility** \u2014 3 file(s)\n- **Error Code Mapping and ZFSError Handling** \u2014 2 file(s)\n- **Raw Key Hex Encoding Consistency** \u2014 3 file(s)\n- **Hot Code Path Concurrency Characteristics** \u2014 2 file(s)\n- **Process Pool Serialization Removal Impact** \u2014 3 file(s)\n- **KMIP In-Memory Key Cache Race Conditions** \u2014 1 file(s)\n- **Error Propagation in check_key()** \u2014 2 file(s)\n- **API Surface Changes** \u2014 2 file(s)\n- **Resource Cleanup and Error Recovery** \u2014 1 file(s)\n\n**Cross-Reference & Adversary Analysis:**\n\n- **8** cross-change interaction(s) detected\n- **20** finding(s) adversarially tested: 4 confirmed, 16 challenged\n\n</details>\n\n<details>\n<summary><b>Pipeline Stats</b></summary>\n\n| Metric | Value |\n|--------|-------|\n| Duration | 3626.5s |\n| Agent invocations | 17 |\n| Coverage iterations | 0 |\n| Estimated cost | N/A (provider does not report cost) |\n| Budget exhausted | Yes (timeout: 3626s > 3600s limit) |\n| PR type | refactor |\n| Complexity | complex |\n\n</details>\n\nReview ID: `rev_0ba00e6d6ff2`",
+            "comments": [
+                {
+                    "body": "\ud83d\udd34 **[CRITICAL] Breaking Change: pbkdf2iters minimum and default increased from 350000 to 1300000**\n\nThe `PoolCreateEncryptionOptions.pbkdf2iters` field has breaking changes that affect API compatibility:\n\n1. **Default value changed**: `350000` \u2192 `1300000`\n2. **Minimum value changed**: `100000` \u2192 `1300000`\n3. **Impact**: Any API call providing a pbkdf2iters value between 100000 and 1299999 will now fail validation with a `validation_error`.\n\nWhile a `from_previous` migration method was added, it only handles data migration from previous versions and does NOT help with new API calls. Clients that were previously providing values like 350000 (the old default) will now receive validation errors.\n\nThis affects:\n- `pool.create` calls with custom encryption_options\n- Any client code that hardcoded the old default or minimum values\n- Backward compatibility for scripts using the old iteration counts\n\n---\n\n> v25_10_2: pbkdf2iters: int = Field(ge=100000, default=350000)\n> v26_0_0:  pbkdf2iters: int = Field(ge=1300000, default=1300000)\n> \n> The from_previous method only handles migration:\n> ```python\n> @classmethod\n> def from_previous(cls, value):\n>     value['pbkdf2iters'] = max(1300000, value['pbkdf2iters'])\n>     return value\n> ```\n\n**\ud83d\udca1 Suggested Fix**\n\nOption 1: Keep minimum at 100000 but change default to 1300000 for new pools:\n```python\npbkdf2iters: int = Field(ge=100000, default=1300000)\n```\n\nOption 2: Document this breaking change explicitly in API release notes and notify client developers.\n\n---\n*`API v26_0_0 Breaking Changes Review` \u00b7 confidence 95%*",
+                    "line": 139,
+                    "path": "src/middlewared/middlewared/api/v26_0_0/pool.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udd34 **[CRITICAL] Inconsistent ZFSError comparison pattern may cause silent error handling failure**\n\nThe code at lines 223-228 uses a direct comparison pattern `e.code == ZFSError.EZFS_CRYPTOFAILED` which is inconsistent with other files in the codebase. Most other files use `ZFSError(e.code) == ZFSError.EZFS_*` to convert the integer code to an enum before comparison.\n\nIf `e.code` returns an integer and `ZFSError.EZFS_CRYPTOFAILED` is an enum member (not an IntEnum), this comparison will always return `False` even when the error code matches, causing the error handling logic to silently fail. The invalid key error will not be properly detected, and users will see generic error messages instead of 'Invalid Key'.\n\n**Inconsistent patterns found:**\n- `dataset_encryption_lock.py:224` uses: `e.code == ZFSError.EZFS_CRYPTOFAILED` (DIRECT)\n- `pool_operations.py:124` uses: `e.code == ZFSError.EZFS_NOENT` (DIRECT)\n- `pool_/info.py:111,168` uses: `e.code == ZFSError.EZFS_NOENT` (DIRECT)\n- `pool_/dataset.py:398` uses: `e.code == ZFSError.EZFS_EXISTS` (DIRECT)\n- `dataset_encryption_info.py:265,279` uses: `ZFSError(e.code) == ZFSError.EZFS_*` (CONVERT)\n- `zfs/query_impl.py:75` uses: `ZFSError(e.code) == ZFSError.EZFS_NOENT` (CONVERT)\n- `zfs/snapshot_*.py` files use: `ZFSError(e.code)` pattern (CONVERT)\n\n---\n\n> Code in dataset_encryption_lock.py:223-228:\n> ```python\n> except ZFSException as e:\n>     if e.code == ZFSError.EZFS_CRYPTOFAILED:\n>         failed[name]['error'] = 'Invalid Key'\n>     else:\n>         failed[name]['error'] = str(e)\n> ```\n> \n> Contrast with dataset_encryption_info.py:265:\n> ```python\n> except ZFSException as e:\n>     if ZFSError(e.code) != ZFSError.EZFS_NOENT:\n>         raise\n> ```\n\n**\ud83d\udca1 Suggested Fix**\n\nStandardize on the pattern `ZFSError(e.code) == ZFSError.EZFS_CRYPTOFAILED` for consistency and safety. This explicitly converts the integer code to an enum before comparison, ensuring correct behavior regardless of whether ZFSError is an IntEnum or a regular Enum. Alternatively, verify that truenas_pylibzfs.ZFSError is an IntEnum (which supports direct integer comparison), and if so, standardize on direct comparison for readability - but only if it's confirmed to be an IntEnum.\n\n---\n*`ZFSError Enum Mapping Verification` \u00b7 confidence 85%*",
+                    "line": 223,
+                    "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udd34 **[CRITICAL] TOCTOU Race Condition in push_zfs_keys Cache Access**\n\nThe `push_zfs_keys` method contains a Time-of-Check-Time-of-Use (TOCTOU) race condition in the cache validation logic. At lines 66-67, the code checks `ds['name'] in self.zfs_keys` and then immediately uses `self.zfs_keys[ds['name']]` in the `check_key()` call. Between these two operations, another thread could modify or delete the cache entry via `reset_zfs_key()`, `update_zfs_keys()`, or `clear_sync_pending_zfs_keys()`. With faster direct library calls, this race window is smaller but still exploitable under concurrent load. Additionally, at line 78, the cache is updated with `self.zfs_keys[ds['name']] = ds['encryption_key']` BEFORE the database is updated at line 93. If the `_register_secret_data()` call at line 86 fails, the cache holds a key that was never successfully registered with the KMIP server, leading to cache/database inconsistency.\n\n---\n\n> Step 1: Thread A checks `ds['name'] in self.zfs_keys` at line 66 (returns True).\n> Step 2: Thread B calls `reset_zfs_key(dataset=ds['name'])` which executes `self.zfs_keys.pop(dataset, None)` at line 186.\n> Step 3: Thread A attempts `check_key(tls, ds['name'], key=self.zfs_keys[ds['name']])` at line 67.\n> Step 4: KeyError is raised because Thread B removed the entry, OR a stale key is validated that no longer matches the KMIP server state.\n\n**\ud83d\udca1 Suggested Fix**\n\nUse a threading.Lock to protect all `self.zfs_keys` access. For the compound check-then-use pattern, lock the entire block. Additionally, defer cache updates until after successful KMIP operations and database persistence - only update the cache after line 93 confirms the database update succeeded.\n\n---\n*`KMIP Key Cache Race Conditions` \u00b7 confidence 95%*",
+                    "line": 66,
+                    "path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udd34 **[CRITICAL] TOCTOU Race Condition in pull_zfs_keys Cache Access**\n\nThe `pull_zfs_keys` method has the same TOCTOU pattern as `push_zfs_keys`. At lines 108-109, the code checks membership in `self.zfs_keys` and then validates the key with `check_key()`. However, at line 111, it retrieves `self.zfs_keys[ds['name']]` again. Between the validation at line 109 and the retrieval at line 111, another thread could modify the cache entry. This means the key being assigned to the `key` variable might differ from the key that was validated, potentially assigning an incorrect or stale key to the database update at line 120.\n\n---\n\n> Step 1: Thread A validates `check_key(tls, ds['name'], key=self.zfs_keys[ds['name'])` at line 109 (returns True).\n> Step 2: Thread B calls `push_zfs_keys()` which updates `self.zfs_keys[ds['name']]` at line 78 with a different key value.\n> Step 3: Thread A executes `key = self.zfs_keys[ds['name']]` at line 111, retrieving the NEW key that was NOT validated.\n> Step 4: Database is updated with unvalidated key at line 120, potentially corrupting encryption state.\n\n**\ud83d\udca1 Suggested Fix**\n\nStore the validated key in a local variable immediately after validation to ensure consistency. Use pattern: `cached_key = self.zfs_keys.get(ds['name']); if cached_key and check_key(tls, ds['name'], key=cached_key): key = cached_key`. Protect all cache access with a threading.Lock.\n\n---\n*`KMIP Key Cache Race Conditions` \u00b7 confidence 95%*",
+                    "line": 108,
+                    "path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] ZFSKeyAlreadyLoadedException and ZFSNotEncryptedException not caught by existing handlers**\n\nThe `load_key()` function in `encryption.py` raises custom exceptions `ZFSKeyAlreadyLoadedException` (line 33) and `ZFSNotEncryptedException` (line 31) which are plain Python `Exception` subclasses, NOT `truenas_pylibzfs.ZFSException`.\n\n**The problem:** In `dataset_encryption_lock.py:221-231`, the code specifically catches `ZFSException` to handle crypto failures. However, the new custom exceptions will NOT match this handler and fall through to the generic `except Exception` handler at line 229.\n\n**Impact:**\n- `ZFSKeyAlreadyLoadedException`: May indicate a race condition or partial success, but is treated as a generic failure\n- `ZFSNotEncryptedException`: Indicates the dataset is not encrypted (configuration error), but gets recorded as a generic error string without context\n\n---\n\n> Step 1: `load_key()` is called at line 222.\n> Step 2: If key already loaded, `encryption.py:33` raises `ZFSKeyAlreadyLoadedException` (plain Exception subclass).\n> Step 3: The exception does NOT match `ZFSException` at line 223.\n> Step 4: It falls to line 229 `except Exception as e`, recording `failed[name]['error'] = str(e)`.\n> Step 5: The error is treated as a failure even though the key is actually already loaded.\n\n**\ud83d\udca1 Suggested Fix**\n\nImport and handle the new exception types explicitly:\n1. Import `ZFSKeyAlreadyLoadedException` and `ZFSNotEncryptedException` from `middlewared.plugins.zfs.exceptions`\n2. Add specific handlers before the generic Exception handler:\n```python\nfrom middlewared.plugins.zfs.exceptions import ZFSKeyAlreadyLoadedException, ZFSNotEncryptedException\n\ntry:\n    load_key(tls, name, key=datasets[name]['key'])\nexcept ZFSKeyAlreadyLoadedException:\n    # Key already loaded - treat as success or log informational message\n    unlocked.append(name)\n    continue\nexcept ZFSNotEncryptedException:\n    failed[name]['error'] = 'Dataset is not encrypted'\n    continue\nexcept ZFSException as e:\n    if e.code == ZFSError.EZFS_CRYPTOFAILED:\n        failed[name]['error'] = 'Invalid Key'\n    else:\n        failed[name]['error'] = str(e)\n    continue\nexcept Exception as e:\n    failed[name]['error'] = str(e)\n    continue\n```\n\n---\n*`Exception Type Changes` \u00b7 confidence 90%*",
+                    "line": 221,
+                    "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] TOCTOU race condition in load_key() - key check and load are not atomic**\n\nThe `load_key()` function in `encryption.py` has a classic Time-Of-Check-Time-Of-Use (TOCTOU) race condition. It first checks if the key is already loaded (line 32), then loads it (line 34). These are two separate operations, not atomic.\n\n**Race scenario**:\n1. Thread A calls `load_key('tank/data')`\n2. Thread A checks `crypto.info().key_is_loaded` \u2192 returns False\n3. Context switch to Thread B\n4. Thread B calls `load_key('tank/data')`\n5. Thread B checks `crypto.info().key_is_loaded` \u2192 returns False\n6. Thread B calls `crypto.load_key()` \u2192 succeeds\n7. Context switch back to Thread A\n8. Thread A calls `crypto.load_key()` \u2192 may fail or behave unexpectedly\n\n**Process pool context**: When using the process pool, only one operation could run at a time, preventing this race. With direct library calls and `@pass_thread_local_storage`, multiple threads can execute this code concurrently.\n\n**Impact**: The second load_key call will raise `ZFSKeyAlreadyLoadedException`. While this prevents data corruption, it causes unnecessary failures that didn't occur with the process pool's implicit serialization.\n\n---\n\n> File: encryption.py:32-34 - The check `if crypto.info().key_is_loaded:` and `crypto.load_key(**kwargs)` are separate non-atomic operations.\n> File: dataset_encryption_lock.py:221-222 - `load_key(tls, name, key=datasets[name]['key'])` is called in a loop without dataset-level locking.\n\n**\ud83d\udca1 Suggested Fix**\n\nOption 1: Remove the pre-check and handle 'already loaded' as a non-error case (idempotent behavior).\nOption 2: Add a synchronization primitive (threading.Lock) per dataset to serialize load_key operations on the same dataset.\nOption 3: Rely on higher-level locks (job locks) but ensure they cover all code paths consistently.\n\n---\n*`Process Pool Removal Impact on ZFS Encryption Operations` \u00b7 confidence 90%*",
+                    "line": 14,
+                    "path": "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] change_key and inherit_parent_encryption_properties can run concurrently on same dataset**\n\nThe `change_key` operation uses lock `f'dataset_change_key_{args[0]}'` (line 120), while `inherit_parent_encryption_properties` has NO job decorator and thus NO lock (lines 217-218). This allows:\n\n**Race scenario**:\n1. User calls `pool.dataset.change_key('tank/data')` - acquires `'dataset_change_key_tank/data'`\n2. Concurrently, user calls `pool.dataset.inherit_parent_encryption_properties('tank/data')` - no lock required\n3. Both operations run concurrently on the same dataset\n4. Both call `change_key()` and `change_encryption_root()` respectively on the same dataset\n\n**ZFS operation conflict**:\n- `change_key()` calls `crypto.change_key()` in libzfs\n- `change_encryption_root()` calls `crypto.inherit_key()` in libzfs\n- These both modify the dataset's encryption properties and should not run concurrently\n\n**Process pool context**: Previously, the process pool would serialize these operations even without explicit locks. With direct library calls, there's no serialization.\n\n---\n\n> File: dataset_encryption_operations.py:120 - change_key uses `@job(lock=lambda args: f'dataset_change_key_{args[0]}')`.\n> File: dataset_encryption_operations.py:217-218 - inherit_parent_encryption_properties has no @job decorator.\n> File: encryption.py:62-90 and 93-106 - Both operations modify encryption state via libzfs.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd a job lock to `inherit_parent_encryption_properties` using the same namespace as `change_key`, or use a unified encryption operation lock per dataset. For example:\n```python\n@job(lock=lambda args: f'dataset_encryption_{args[0]}')\n```\nThis would serialize all encryption-modifying operations on the same dataset.\n\n---\n*`Process Pool Removal Impact on ZFS Encryption Operations` \u00b7 confidence 85%*",
+                    "line": 118,
+                    "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_operations.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] ZFS resource objects not explicitly cleaned up after encryption operations**\n\nThe `load_key()`, `check_key()`, `change_key()`, and `change_encryption_root()` functions in `encryption.py` open ZFS resources via `open_resource()` but never explicitly release them.\n\n**The Problem:**\n- `open_resource(tls, dataset)` returns a ZFS resource object wrapping a C library handle\n- `rsrc.crypto()` returns a cryptography object with additional native resources\n- Neither object has explicit cleanup (no `.close()`, no context manager, no `try/finally`)\n- In the previous process pool architecture, this was acceptable because the entire process would exit, and the OS would reclaim all resources\n- With direct library calls in long-running threads, these objects persist until Python's garbage collector runs, which may not happen promptly enough\n\n**Resource Leak Scenario:**\n1. A long-running middleware thread calls `load_key()` repeatedly for many datasets\n2. Each call creates native ZFS handles that are not immediately released\n3. ZFS has internal limits on open handles per pool/process\n4. Eventually, operations may fail with `ENOMEM` or `EMFILE` errors\n\n**Recommendation:**\nWrap ZFS resource operations in context managers or use `try/finally` blocks to ensure resources are released immediately after use. Consider implementing a context manager in `open_resource()` or documenting that callers must explicitly close resources.\n\n---\n\n> Step 1: `load_key()` calls `open_resource(tls, dataset)` at line 29, returning a resource handle\n> Step 2: Line 30 calls `rsrc.crypto()`, returning a crypto object\n> Step 3: Lines 31-34 perform operations and may raise exceptions\n> Step 4: No cleanup code exists - both objects rely on Python GC\n> \n> Same pattern in:\n> - `check_key()` (lines 56-59)\n> - `change_key()` (lines 86-90)\n> - `change_encryption_root()` (lines 103-106)\n\n**\ud83d\udca1 Suggested Fix**\n\nConsider modifying the code to explicitly release resources:\n\n```python\ndef load_key(tls: threading.local, dataset: str, **kwargs: str | bytes) -> None:\n    if len(kwargs) > 1:\n        raise ValueError('Cannot specify both key and key location')\n    rsrc = open_resource(tls, dataset)\n    try:\n        if (crypto := rsrc.crypto()) is None:\n            raise ZFSNotEncryptedException(dataset)\n        if crypto.info().key_is_loaded:\n            raise ZFSKeyAlreadyLoadedException(dataset)\n        crypto.load_key(**kwargs)\n    finally:\n        # Explicitly release the resource\n        del rsrc  # Or rsrc.close() if the library supports it\n```\n\nAlternatively, wrap `open_resource()` in a context manager:\n\n```python\nfrom contextlib import contextmanager\n\n@contextmanager\ndef zfs_resource(tls, path):\n    rsrc = open_resource(tls, path)\n    try:\n        yield rsrc\n    finally:\n        # Cleanup code here\n        pass\n\n# Usage:\nwith zfs_resource(tls, dataset) as rsrc:\n    crypto = rsrc.crypto()\n    # ... operations\n```\n\n---\n*`Resource Cleanup and Error Recovery` \u00b7 confidence 75%*",
+                    "line": 29,
+                    "path": "src/middlewared/middlewared/plugins/zfs/encryption.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Error code mapping between py-libzfs and truenas_pylibzfs not verified**\n\nThe code checks for `ZFSError.EZFS_CRYPTOFAILED` when a key loading operation fails. However, there is no verification that this error code has the same numeric value between the old `py-libzfs` library and the new `truenas_pylibzfs` library.\n\nIf the numeric values differ between libraries:\n1. Error handling logic will silently fail to catch the expected errors\n2. Users will receive generic error messages instead of specific 'Invalid Key' messages\n3. The unlock operation may report success when it actually failed due to wrong key\n\nAdditionally, if truenas_pylibzfs introduces new error codes that have no py-libzfs equivalent, those error conditions won't be handled.\n\n---\n\n> The code imports ZFSError from truenas_pylibzfs (line 9):\n> ```python\n> from truenas_pylibzfs import ZFSError, ZFSException\n> ```\n> \n> But there's no verification that these error codes match the expected values from the old library. The code at line 224 compares `e.code` directly to `ZFSError.EZFS_CRYPTOFAILED` without knowing if the numeric values are consistent.\n\n**\ud83d\udca1 Suggested Fix**\n\nVerify that EZFS_CRYPTOFAILED and other error codes have the same numeric values between py-libzfs and truenas_pylibzfs. Add a test or validation script that compares the enum values from both libraries. If values differ, create a mapping layer to translate between them.\n\n---\n*`ZFSError Enum Mapping Verification` \u00b7 confidence 75%*",
+                    "line": 220,
+                    "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_lock.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Database key sync silently removes keys on ANY ZFS error**\n\nIn `sync_db_keys()`, the `check_key()` call at line 201 is wrapped in a broad `except Exception:` that sets `should_remove = True`. This means database encryption keys will be removed for ANY error - not just invalid keys, but also permission errors, dataset not found, ZFS operational failures, etc.\n\n**Risk scenario:**\n1. Database contains encryption key for dataset 'tank/secure'\n2. ZFS pool becomes temporarily unavailable or permission issue occurs\n3. `check_key()` raises an error (not EZFS_CRYPTOFAILED)\n4. Exception handler catches it and sets `should_remove = True`\n5. Key is removed from database\n6. User can no longer unlock the dataset even when the underlying issue is resolved\n\n**Data loss potential:** This could lead to permanent data loss if the only copy of the encryption key was in the database and it gets erroneously removed due to a transient ZFS error.\n\n---\n\n> Step 1: At dataset_encryption_info.py:200-206:\n> ```python\n> try:\n>     should_remove = not check_key(tls, ds_name, key=key)\n> except Exception:\n>     should_remove = True\n> \n> if should_remove:\n>     to_remove.append(ds_name)\n> ```\n> \n> Step 2: Any exception (permission denied, dataset not found, etc.) results in the key being removed from the database at line 212:\n> `self.middleware.call_sync('pool.dataset.delete_encrypted_datasets_from_db', [['name', 'in', to_remove]])`\n\n**\ud83d\udca1 Suggested Fix**\n\nImplement proper error discrimination:\n1. Only remove keys from database when `check_key()` returns False (EZFS_CRYPTOFAILED)\n2. For other ZFS exceptions, log the error but preserve the database key\n3. Consider adding retry logic or a 'force' flag for maintenance operations\n\nRefactor lines 200-206:\n```python\ntry:\n    key_valid = check_key(tls, ds_name, key=key)\nexcept ZFSNotEncryptedException:\n    should_remove = True  # Dataset not encrypted, remove stale key\nexcept ZFSException as e:\n    if e.code == ZFSError.EZFS_CRYPTOFAILED:\n        should_remove = True  # Wrong key\n    else:\n        self.logger.error('ZFS error checking key for %s: %s', ds_name, e)\n        continue  # Preserve key on operational errors\nelse:\n    should_remove = not key_valid\n```\n\n---\n*`check_key Error Propagation Verification` \u00b7 confidence 95%*",
+                    "line": 200,
+                    "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Broad exception handling masks non-crypto ZFS errors in check_key()**\n\nThe `check_key()` function is documented to return `False` only for `EZFS_CRYPTOFAILED` (wrong key) while raising exceptions for other ZFS errors. However, the caller at line 106-109 uses a broad `except Exception:` handler that treats ALL errors as invalid keys. This masks serious issues like permission errors (EACCES), malformed datasets, or ZFS operational failures that should be propagated to the user.\n\n**The contract vs. implementation mismatch:**\n- `check_key()` docstring (encryption.py:41-43): Raises for errors *other than* EZFS_CRYPTOFAILED\n- Actual caller behavior: Catches ALL exceptions and treats them as `valid_key = False`\n\n**Impact:** Users will see 'Provided key is invalid' when the actual error could be:\n- Permission denied on key file or dataset\n- Dataset not found\n- ZFS pool offline/unavailable\n- Malformed key format\n\nThis violates the principle of least surprise and makes debugging encryption issues significantly harder.\n\n---\n\n> Step 1: `check_key()` docstring at encryption.py:41-43 states:\n> 'Raises ZFSNotEncryptedException if the dataset is not encrypted or if the ZFS operation fails for a reason other than a wrong key (EZFS_CRYPTOFAILED returns False rather than raising)'\n> \n> Step 2: Caller at dataset_encryption_info.py:106-109:\n> ```python\n> try:\n>     valid_key = check_key(tls, name, key=ds_key)\n> except Exception:\n>     valid_key = False\n> ```\n> \n> Step 3: The broad `except Exception:` catches ALL errors including permission errors, dataset not found, etc., treating them all as 'invalid key'.\n\n**\ud83d\udca1 Suggested Fix**\n\nReplace the broad `except Exception:` with specific exception handling:\n1. Catch `ZFSException` and check `e.code == ZFSError.EZFS_CRYPTOFAILED` \u2192 set `valid_key = False`\n2. Catch `ZFSNotEncryptedException` \u2192 set appropriate error message\n3. Let other ZFS errors propagate or catch and re-raise with context\n\nThis preserves the intended contract where wrong keys return False but operational errors are surfaced to users.\n\n---\n*`check_key Error Propagation Verification` \u00b7 confidence 90%*",
+                    "line": 106,
+                    "path": "src/middlewared/middlewared/plugins/pool_/dataset_encryption_info.py",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] KMIP pull operation adds datasets to 'failed' list for ANY ZFS error**\n\nIn `pull_zfs_keys()` at lines 104-118, the `check_key()` call is used to determine whether to use the cached key or retrieve from KMIP. The broad exception handling at line 117 adds the dataset to the `failed` list for ANY error, including:\n- Permission errors (should retry, not fail)\n- Dataset temporarily unavailable (should retry, not fail)\n- Malformed key format (could be a configuration issue)\n\n**The problem:** The dataset gets added to `failed` but the error is only logged at debug level. There's no way for administrators to distinguish between 'key was invalid' vs 'ZFS operation failed'.\n\n---\n\n> Step 1: At kmip/zfs_keys.py:104-118:\n> ```python\n> try:\n>     if ds['encryption_key']:\n>         key = ds['encryption_key']\n>     elif (\n>         ds['name'] in self.zfs_keys\n>         and check_key(tls, ds['name'], key=self.zfs_keys[ds['name']])\n>     ):\n>         key = self.zfs_keys[ds['name']]\n>     elif connection_successful:\n>         with self._connection(...) as conn:\n>             key = self._retrieve_secret_data(ds['kmip_uid'], conn)\n>     else:\n>         raise Exception('Failed to sync dataset')\n> except Exception:\n>     failed.append(ds['name'])\n> ```\n> \n> Step 2: Any exception from check_key() (not just EZFS_CRYPTOFAILED) causes the dataset to be added to the failed list.\n\n**\ud83d\udca1 Suggested Fix**\n\nImplement granular error handling to distinguish key validation failures from operational errors:\n1. `EZFS_CRYPTOFAILED` (wrong key) \u2192 add to failed list\n2. `ZFSNotEncryptedException` \u2192 log warning, don't add to failed\n3. Other ZFS errors \u2192 log error with full traceback, add to failed with specific error message\n4. Consider different retry/backoff strategies for transient vs permanent errors\n\n---\n*`check_key Error Propagation Verification` \u00b7 confidence 90%*",
+                    "line": 104,
+                    "path": "src/middlewared/middlewared/plugins/kmip/zfs_keys.py",
+                    "side": "RIGHT"
+                }
+            ],
+            "event": "REQUEST_CHANGES"
+        },
+        "review_id": "rev_0ba00e6d6ff2",
+        "summary": {
+            "adversary_challenged": 16,
+            "adversary_confirmed": 4,
+            "ai_generated_confidence": 0,
+            "budget_exhausted": true,
+            "by_severity": {
+                "critical": 8,
+                "important": 17
+            },
+            "cost_usd": 0,
+            "coverage_iterations": 0,
+            "cross_ref_interactions": 8,
+            "dimensions_run": 10,
+            "duration_seconds": 3626.527,
+            "total_findings": 25
+        }
+    },
+    "started_at": "2026-03-10T07:08:03Z",
+    "completed_at": "2026-03-10T08:10:49Z",
+    "duration_ms": 3765986,
+    "webhook_registered": false
+}
