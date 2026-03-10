@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
-COPY agentfield-sdk/ /tmp/agentfield-sdk/
+COPY .docker-sdk/ /tmp/agentfield-sdk/
 
 RUN pip install --no-cache-dir --prefix=/install \
     /tmp/agentfield-sdk/ \
