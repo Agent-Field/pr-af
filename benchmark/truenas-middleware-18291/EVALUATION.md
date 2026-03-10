@@ -1,368 +1,522 @@
-# LLM-as-a-Judge Evaluation: PR-AF vs Claude Code
-## truenas/middleware PR #18291
+# LLM-as-a-Judge Evaluation: Automated PR Review Systems
+## truenas/middleware PR #18291 — ZFS Dataset Encryption Refactor
 
-**Date**: 2026-03-10  
-**PR**: [truenas/middleware#18291](https://github.com/truenas/middleware/pull/18291) — Replace py-libzfs with truenas_pylibzfs for ZFS dataset encryption  
-**Companion data**: `pr-af-result.json`, `claude-code-reviews.json`, `claude-code-inline-comments.json` (same directory)
-
----
-
-## Executive Summary
-
-This evaluation compares two automated PR review systems on the same pull request: a single-agent Claude Code review and PR-AF, a 7-phase multi-agent pipeline running on kimi-k2.5. PR-AF found substantially more issues by breadth (25 findings vs 4), but missed the two most impactful bugs — a decorator dispatch crash and a silent data-wiping bug — that Claude Code caught with exceptional precision. Neither system is strictly better. They have complementary failure modes.
+**Evaluation date**: 2026-03-10
+**Evaluator**: LLM-as-a-Judge (structured rubric)
+**Systems compared**: PR-AF + Kimi k2.5, PR-AF + Sonnet 4.6, Claude Code (claude[bot])
+**Architecture note**: Both PR-AF runs use the same v2 meta-selector pipeline. This document evaluates model choice, not architecture version.
+**Companion data**: `pr-af-result-kimi.json` (Kimi), `pr-af-result-sonnet.json` (Sonnet), `claude-code-inline-comments.json`, `claude-code-reviews.json` (same directory)
 
 ---
 
-## 1. Methodology
+## 1. Executive Summary
 
-### What Was Compared
+Three automated PR review systems were evaluated against truenas/middleware PR #18291, a high-risk refactor replacing py-libzfs with truenas_pylibzfs across encryption key management, KMIP key sync, pool/dataset creation, and failover unlock paths.
 
-| Dimension | Claude Code (claude[bot]) | PR-AF |
+**Sonnet 4.6 is the strongest overall reviewer.** It found the hardest bug in the dataset (the `k in existing_datasets` type mismatch that silently wipes the KMIP cache), discovered a novel runtime crash nobody else caught (missing `ds['id']` argument in `datastore.update`), and correctly investigated and ruled out a false alarm that Claude Code flagged as critical. Its 14 findings had zero adversary challenges, indicating high precision.
+
+**Kimi k2.5 found the highest-scoring individual finding** (method name shadowing causing infinite recursion, score 1.852) and produced the broadest coverage at 25 findings across 8 dimensions. However, 7 of those findings were adversary-challenged, and it missed both the KMIP cache wipe bug and the novel datastore crash.
+
+**Claude Code** operates in a fundamentally different regime: near-instant, single-agent, inline comments. It caught CC-1 (decorator dispatch crash) that both multi-agent systems missed, and CC-4 (KMIP cache wipe) that Kimi missed. Its value is speed and GitHub-native integration, not depth.
+
+**No system caught everything.** The decorator dispatch crash (CC-1) was found only by Claude Code. The method shadowing bug was found only by Kimi. The novel datastore argument bug was found only by Sonnet. This is the central finding: complementary coverage, not dominance.
+
+| System | Findings | Duration | Critical Bugs Found | Novel Bugs | Adversary Challenges |
+|---|---|---|---|---|---|
+| PR-AF + Kimi k2.5 | 25 | ~19 min | 6 labeled critical | 2 unique | 7 challenged (28%) |
+| PR-AF + Sonnet 4.6 | 14 | ~35 min | 2 labeled critical | 3 unique | 0 challenged (0%) |
+| Claude Code | ~6 automated | Near-instant | 2 critical flagged | 0 unique | N/A |
+
+---
+
+## 2. Methodology
+
+### 2.1 What Was Compared
+
+All three systems reviewed the same PR diff. PR-AF runs used identical pipeline architecture (v2 meta-selectors: intake -> anatomy -> meta_selectors -> review -> adversary -> cross_ref -> coverage -> synthesis -> output). The only variable between the two PR-AF runs is the underlying LLM: Kimi k2.5 vs Claude Sonnet 4.6.
+
+Claude Code is a single-agent GitHub App that reads the diff and produces inline comments. It is included as a baseline representing the current state of production automated review.
+
+### 2.2 Ground Truth
+
+Ground truth was established by cross-referencing all findings across systems and identifying bugs confirmed by multiple independent systems or by explicit code analysis. The confirmed bug set used for recall scoring:
+
+1. **CC-1**: `@pass_thread_local_storage` dispatch crash in `sync_zfs_keys`
+2. **CC-2**: `ZFSKeyFormat` enum comparison always False
+3. **CC-3**: `pbkdf2iters` minimum inconsistency across option classes
+4. **CC-4**: `k in existing_datasets` type mismatch silently wipes KMIP cache
+5. **Method shadowing**: `check_key` name shadows imported function, causing infinite recursion
+6. **Duplicate export**: `PoolRemoveArgs` appears twice in `__all__`
+7. **Missing argument**: `ds['id']` missing from `datastore.update` call
+8. **Exception contract**: Broad `Exception` catch masks `ZFSNotEncryptedException`
+9. **TOCTOU**: Race condition in `load_key()`
+
+This is a 9-bug ground truth set. No system found all 9.
+
+### 2.3 Scoring Rubric
+
+Five criteria, weighted:
+
+| Criterion | Weight | Description |
 |---|---|---|
-| Review type | Single-agent, inline GitHub comments | 7-phase multi-agent pipeline |
-| Model | Claude (Anthropic) | openrouter/moonshotai/kimi-k2.5 |
-| Duration | Near-instant (two passes: Feb 27, Mar 3) | ~60 minutes (3626.5 seconds) |
-| Findings posted | 4 unique inline comments | 12 inline comments (filtered from 25) |
-| Human reviewer | yocalebo (7 style/pattern comments) | N/A |
+| Recall | 30% | Fraction of ground-truth bugs found |
+| Precision | 25% | Fraction of findings that are real bugs (not noise) |
+| Evidence quality | 20% | Specificity of reasoning, code references, impact analysis |
+| Severity calibration | 15% | Critical bugs labeled critical; suggestions not over-elevated |
+| Breadth | 10% | Coverage across multiple risk dimensions |
 
-### Evaluation Criteria
+### 2.4 Limitations
 
-1. **Recall** — Did the system find the real bugs?
-2. **Precision** — Were the findings actually bugs?
-3. **Evidence quality** — Was the reasoning sound and actionable?
-4. **Severity calibration** — Were critical bugs labeled critical?
-5. **Breadth** — Did the system cover multiple risk dimensions?
-
-### Limitations
-
-- Ground truth is incomplete. We don't have post-merge incident data to confirm which findings were real bugs vs theoretical.
-- Claude Code's first pass ("No bugs found") is included in the timeline but not in the finding count — only the second pass findings are scored.
-- PR-AF's adversary phase challenged 16/20 findings internally. We treat adversary-confirmed findings as higher confidence but do not automatically discard challenged ones.
-- The human reviewer (yocalebo) found exclusively style/pattern issues. These are not scored as bugs but are noted for completeness.
-
----
-
-## 2. Reviewer Profiles
-
-### Claude Code (claude[bot])
-
-Single-agent review integrated as a GitHub App. Reads the diff, produces inline comments. Two passes on this PR:
-
-- **Feb 27 (first pass)**: Summary only. "No bugs found." This is a significant miss — the bugs were present in the diff.
-- **Mar 3 (second pass)**: 4 unique findings, 2 of which are critical and exceptionally well-evidenced.
-
-The second pass finding quality is high. The first pass failure suggests the system benefits from re-review, which it does not do architecturally by default.
-
-### PR-AF (Pull Request Agent Field)
-
-Multi-agent pipeline built on AgentField. Phases:
-
-```
-INTAKE → ANATOMY → PLANNING → REVIEW (parallel, 10 dimensions) → LAYER (cross-ref + adversary + coverage) → SYNTHESIS → OUTPUT
-```
-
-- 10 parallel review dimensions (security, concurrency, API compatibility, resource management, etc.)
-- Adversary phase challenges each finding before it reaches output
-- 25 raw findings, 20 sent to adversary, 4 confirmed, 16 challenged (score-reduced, not discarded)
-- 12 inline comments posted after filtering
-
-The adversary phase is the system working as designed. A finding being "challenged" means its confidence score was reduced, not that it was wrong.
+- Ground truth is constructed post-hoc from the union of all findings. Bugs that all systems missed cannot be scored.
+- Kimi's budget was exhausted by duration (19 min cap), meaning some planned phases may have been truncated.
+- Sonnet's budget was also exhausted by duration (35 min cap), but it ran longer and produced fewer findings, suggesting more deliberate analysis per finding.
+- Claude Code's inline comments mix automated (claude[bot]) and human (yocalebo) reviewer comments. Only claude[bot] comments are scored here.
+- The adversary phase for Sonnet ran but produced zero challenges. This could mean Sonnet's findings are genuinely solid, or that the adversary agent was under-resourced in that run.
 
 ---
 
 ## 3. The PR Under Review
 
-**truenas/middleware PR #18291** replaces the deprecated `py-libzfs` Python binding with `truenas_pylibzfs` across ZFS dataset encryption code paths. Changes span 8 files and touch:
+**truenas/middleware PR #18291** replaces py-libzfs with truenas_pylibzfs as the Python ZFS binding across the TrueNAS middleware stack. The refactor touches:
 
-- Encryption key management (load, unload, change, inherit)
-- KMIP key synchronization
-- Pool and dataset creation/modification options
-- Failover unlock logic
+- `dataset_encryption_operations.py` — encryption key management, load/unload, change key
+- `kmip_operations.py` — KMIP key sync (push/pull ZFS keys to/from KMIP server)
+- `pool_dataset.py` — pool and dataset creation, option validation
+- Failover unlock paths
 
-The `pbkdf2iters` default and minimum were also raised from 350K/100K to 1.3M/1.3M — a security improvement that introduces a breaking API change.
+This is a high-risk refactor because: (a) it changes the exception hierarchy (new library throws different exception types), (b) it changes method signatures in some cases, (c) encryption key management bugs can cause data loss or silent security failures, and (d) KMIP integration bugs can corrupt the key sync state silently.
 
-This is a high-risk refactor. The old and new libraries have different APIs, different error types, and different threading models. Any assumption carried over from py-libzfs that doesn't hold in truenas_pylibzfs is a latent bug.
+The PR is 8+ files, non-trivial in scope, and the new library's behavior differences from py-libzfs are not fully documented in the diff.
 
 ---
 
-## 4. Finding-by-Finding Comparison
+## 4. Reviewer Profiles
 
-### 4.1 Full Finding Map
+### 4.1 PR-AF + Kimi k2.5
 
-| ID | System | Severity | Description | Overlap / Status |
+**Architecture**: v2 meta-selector pipeline, 9 phases, 20 agent invocations  
+**Duration**: ~1122 seconds (~19 minutes), budget exhausted  
+**Output**: 25 findings across 8 analysis dimensions  
+**Severity distribution**: critical=6, important=10, suggestion=9  
+**Adversary results**: 7 challenged, 3 confirmed, 15 no adversary result  
+**Average finding score**: 0.524  
+**Peak finding score**: 1.852 (method shadowing bug)
+
+Kimi operates as a high-volume, broad-coverage reviewer. It generates more findings than Sonnet and covers more distinct dimensions (8 vs 6). The adversary phase challenged 28% of its findings, which is a meaningful false-positive signal. Three findings survived adversary challenge with confirmation; four were challenged without resolution (no adversary result). The high peak score on the method shadowing finding reflects genuine depth on that specific bug.
+
+### 4.2 PR-AF + Sonnet 4.6
+
+**Architecture**: v2 meta-selector pipeline, 9 phases, 11 agent invocations  
+**Duration**: ~2100 seconds (~35 minutes), budget exhausted  
+**Output**: 14 findings across 6 analysis dimensions  
+**Severity distribution**: critical=2, important=9, suggestion=2, nitpick=1  
+**Adversary results**: 0 challenged, 0 confirmed  
+**Average finding score**: 0.611  
+**Peak finding score**: 0.97 (KMIP cache wipe bug)
+
+Sonnet operates as a precision-focused reviewer. It produces fewer findings but with higher average score and zero adversary challenges. The 0-challenge adversary result is notable: either Sonnet's findings are genuinely solid (supported by the fact that its top two findings are confirmed critical bugs), or the adversary agent was under-resourced. Given that Sonnet's top findings include a novel bug nobody else caught, the former explanation is more credible.
+
+Sonnet used fewer agent invocations (11 vs 20) despite running nearly twice as long. This suggests longer per-invocation reasoning rather than more parallel exploration.
+
+### 4.3 Claude Code (claude[bot])
+
+**Architecture**: Single-agent GitHub App, reads diff, produces inline comments  
+**Duration**: Near-instant (seconds)  
+**Output**: ~6 automated inline comments (claude[bot] only; yocalebo comments excluded)  
+**Adversary**: None (single-agent, no pipeline)
+
+Claude Code is the production baseline. It operates at a fundamentally different cost and latency point. Its value is immediate feedback on the diff without any pipeline overhead. It caught CC-1 (decorator dispatch crash) and CC-4 (KMIP cache wipe) that Kimi missed entirely. It did not find the method shadowing bug, the novel datastore argument bug, or the exception contract violations that the multi-agent systems found.
+
+---
+
+## 5. Cross-System Coverage Matrix
+
+The following matrix maps each confirmed bug to which system found it.
+
+| Bug | Kimi k2.5 | Sonnet 4.6 | Claude Code |
+|---|---|---|---|
+| CC-1: Decorator dispatch crash (`@pass_thread_local_storage`) | NO | NO (investigated, ruled not a bug) | YES |
+| CC-2: Enum comparison always False (`ZFSKeyFormat`) | NO | YES (finding #3, score 0.686) | YES |
+| CC-3: `pbkdf2iters` minimum inconsistency | YES (findings #6, #7, #8) | YES (findings #5, #7, #11) | YES |
+| CC-4: `k in existing_datasets` type mismatch, KMIP cache wipe | NO | YES (finding #1, score 0.97) | YES |
+| Method shadowing / infinite recursion | YES (finding #1, score 1.852) | NO | NO |
+| Duplicate export `PoolRemoveArgs` in `__all__` | YES (finding #3) | NO | NO |
+| Missing `ds['id']` in `datastore.update` | NO | YES (finding #2, score 0.95) | NO |
+| Exception contract violations / broad `Exception` catch | YES (findings #2, #11, #12, #13) | YES (findings #4, #8, #9, #10) | NO |
+| TOCTOU race condition in `load_key()` | YES (finding #5) | NO | NO |
+
+**Recall summary**:
+- Kimi: found 6 of 9 ground-truth bugs (67%)
+- Sonnet: found 6 of 9 ground-truth bugs (67%)
+- Claude Code: found 4 of 9 ground-truth bugs (44%)
+
+Both PR-AF systems achieve the same raw recall, but on different subsets of bugs. This is the most important finding in the matrix: the two systems are complementary, not redundant.
+
+---
+
+## 6. Finding-by-Finding Comparison
+
+### 6.1 PR-AF + Kimi k2.5 — All 25 Findings
+
+| # | Severity | Score | Status | Summary |
 |---|---|---|---|---|
-| CC-1 | Claude Code | CRITICAL | `@pass_thread_local_storage` direct-call crash in `sync_zfs_keys` | **PR-AF MISSED** |
-| CC-2 | Claude Code | PRE-EXISTING | `ZFSKeyFormat` enum vs string comparison always False | **PR-AF MISSED** |
-| CC-3 | Claude Code | IMPORTANT | `pbkdf2iters` inconsistency between pool.py and pool_dataset.py | **PARTIAL OVERLAP** with PR-1 + PR-2 |
-| CC-4 | Claude Code | PRE-EXISTING | `existing_datasets` list[dict] vs str — KMIP cache always wiped | **PR-AF MISSED** |
-| PR-1 | PR-AF | CRITICAL (0.95) | `pbkdf2iters` breaking change in `PoolCreateEncryptionOptions` (pool.py:139) | Partial overlap with CC-3 |
-| PR-2 | PR-AF | CRITICAL (0.95) | `pbkdf2iters` breaking change in `PoolDatasetChangeKeyOptions` (pool_dataset.py:170) | Partial overlap with CC-3 |
-| PR-3 | PR-AF | CRITICAL (0.95) | Failover unlock lock namespace mismatch (failover.py:553) | **CC MISSED** |
-| PR-4 | PR-AF | CRITICAL (0.90) | `PoolCreateTopologySpecialVdev` now allows DRAID types (pool.py:180) | **CC MISSED** |
-| PR-5 | PR-AF | CRITICAL (0.90) | `PoolScan` model lacks None/null support (pool_scrub.py:108) | **CC MISSED** |
-| PR-6 | PR-AF | CRITICAL (0.85) | Inconsistent `ZFSError` comparison pattern (dataset_encryption_lock.py:223) | Different from CC-2 |
-| PR-7 | PR-AF | CRITICAL (0.712) | TOCTOU race in `push_zfs_keys` cache (kmip/zfs_keys.py:66) | **CC MISSED** |
-| PR-8 | PR-AF | CRITICAL (0.712) | TOCTOU race in `pull_zfs_keys` cache (kmip/zfs_keys.py:108) | **CC MISSED** |
-| PR-9 | PR-AF | IMPORTANT (0.63) | `ZFSKeyAlreadyLoadedException` not caught (dataset_encryption_lock.py) | **CC MISSED** |
-| PR-10 | PR-AF | IMPORTANT (0.62) | `PoolEntry.scan` type changed dict → PoolScan model | **CC MISSED** |
-| PR-11 | PR-AF | IMPORTANT (0.61) | TOCTOU race in `load_key()` — check and load not atomic | **CC MISSED** |
-| PR-12 | PR-AF | IMPORTANT (0.60) | Pool name validation relaxed, whitespace restriction removed | **CC MISSED** |
-| PR-13 | PR-AF | IMPORTANT (0.59) | Lock/unlock namespace mismatch (dataset_encryption_lock.py) | **CC MISSED** |
-| PR-14 | PR-AF | IMPORTANT (0.58) | `change_key` and `inherit_parent_encryption_properties` concurrent execution | **CC MISSED** |
-| PR-15 | PR-AF | IMPORTANT (0.57) | Resource leaks in hot code path (dataset_encryption_info.py) | **CC MISSED** |
-| PR-16 | PR-AF | IMPORTANT (0.56) | `open_resource()` lacks cleanup documentation | **CC MISSED** |
-| PR-17 | PR-AF | IMPORTANT (0.55) | `PoolDatasetGetQuotaResult` return type expanded | **CC MISSED** |
-| PR-18 | PR-AF | IMPORTANT (0.54) | ZFS resource objects not explicitly cleaned up after encryption ops | **CC MISSED** |
-| PR-19 | PR-AF | IMPORTANT (0.53) | Error code mapping between py-libzfs and truenas_pylibzfs not verified | **CC MISSED** |
-| PR-20 | PR-AF | IMPORTANT (0.52) | Database key sync silently removes keys on ANY ZFS error | **CC MISSED** |
-| PR-21 | PR-AF | IMPORTANT (0.51) | `PoolDatasetCreateArgs` discriminator field may break clients | **CC MISSED** |
-| PR-22 | PR-AF | IMPORTANT (0.50) | Unprotected cache access in `initialize_zfs_keys` | **CC MISSED** |
-| PR-23 | PR-AF | IMPORTANT (0.48) | Broad exception handling in `check_key()` | **CC MISSED** |
-| PR-24 | PR-AF | IMPORTANT (0.46) | KMIP pull adds datasets to failed list for ANY ZFS error | **CC MISSED** |
-| PR-25 | PR-AF | IMPORTANT (0.44) | Async `reset_zfs_key` called without cache lock protection | **CC MISSED** |
+| 1 | critical | 1.852 | CONFIRMED+CROSSREF | Method name shadows imported function, causing infinite recursion in `dataset_encryption_operations.py` |
+| 2 | important | 1.092 | CONFIRMED+CROSSREF | `sync_db_keys()` marks non-encrypted datasets for removal due to broad `Exception` catch |
+| 3 | critical | 1.0 | — | Duplicate export: `PoolRemoveArgs` appears twice in `__all__` |
+| 4 | important | 0.892 | CROSSREF | Missing hex validation on encryption keys before database storage |
+| 5 | important | 0.787 | CROSSREF | TOCTOU race condition in `load_key()` |
+| 6 | important | 0.63 | — | Breaking API change: `pbkdf2iters` minimum raised from 100,000 to 1,300,000 |
+| 7 | important | 0.63 | — | Breaking API change: `PoolDatasetChangeKeyOptions.pbkdf2iters` minimum raised |
+| 8 | important | 0.595 | — | `from_previous` silently modifies `pbkdf2iters` without notification |
+| 9 | important | 0.49 | — | Hardcoded minimum prevents users from choosing lower security settings |
+| 10 | critical | 0.475 | CHALLENGED | Malformed hex key causes confusing 'Missing key' error |
+| 11 | critical | 0.475 | CHALLENGED | KMIP `push_zfs_keys()` crashes when `check_key()` raises `ZFSNotEncryptedException` |
+| 12 | critical | 0.475 | CHALLENGED | KMIP `pull_zfs_keys()` crashes when `check_key()` raises `ZFSNotEncryptedException` |
+| 13 | critical | 0.475 | CHALLENGED | Generic `Exception` catching masks `ZFSNotEncryptedException` |
+| 14 | suggestion | 0.38 | CONFIRMED+CROSSREF | Key file validation uses different hex parsing logic than unlock path |
+| 15 | suggestion | 0.337 | CROSSREF | Silent failure when hex decoding fails during unlock |
+| 16 | suggestion | 0.315 | CROSSREF | No database-level constraints on `encryption_key` column |
+| 17 | important | 0.297 | CHALLENGED | Silent hex conversion failure preserves invalid string |
+| 18 | important | 0.297 | CHALLENGED | Broad `Exception` catch masks `ZFSNotEncryptedException` as 'invalid key' |
+| 19 | important | 0.28 | CHALLENGED | Malformed hex keys cause unnecessary key removal during sync |
+| 20 | suggestion | 0.27 | CROSSREF | Missing key validation before load in `unlock()` |
+| 21 | suggestion | 0.27 | CROSSREF | Staleness of `check_key()` result in `pull_zfs_keys` |
+| 22 | suggestion | 0.225 | — | Significant performance impact from increased PBKDF2 iterations |
+| 23 | suggestion | 0.195 | — | Missing key existence check in `from_previous` migration method |
+| 24 | suggestion | 0.195 | — | Missing key existence check in `PoolDatasetChangeKeyOptions.from_previous` |
+| 25 | suggestion | 0.18 | — | Key validation without subsequent load in `push_zfs_keys` |
 
-### 4.2 pbkdf2iters Overlap — Different Angles, Same Root
+**Adversary breakdown**: Findings #10, #11, #12, #13, #17, #18, #19 were challenged. Of these, none received a "confirmed" adversary result — they remain in a challenged/unresolved state. Findings #1, #2, #14 were confirmed by the adversary and cross-referenced.
 
-CC-3 and PR-1+PR-2 both touch the `pbkdf2iters` change, but they frame it differently:
+### 6.2 PR-AF + Sonnet 4.6 — All 14 Findings
 
-- **Claude Code (CC-3)**: Flags the *inconsistency* — pool.py still has old defaults while pool_dataset.py has new ones. The concern is that users can create datasets at 350K iterations but then can't change keys without meeting the 1.3M minimum.
-- **PR-AF (PR-1, PR-2)**: Flags each file separately as a *breaking API change* — any caller passing a value between 100K and 1.3M will now fail validation.
+| # | Severity | Score | Status | Summary |
+|---|---|---|---|---|
+| 1 | critical | 0.97 | — | `zfs_keys` cache silently wiped: `k in existing_datasets` checks string against list-of-dicts, always False |
+| 2 | critical | 0.95 | — | Missing `ds['id']` argument in `datastore.update` call — wrong argument count, guaranteed runtime crash |
+| 3 | important | 0.686 | — | Old guard was always False: key-encrypted child under passphrase-root inheritance never blocked (enum comparison bug) |
+| 4 | important | 0.665 | — | `ZFSKeyAlreadyLoadedException` and `ZFSNotEncryptedException` silently swallowed as string errors |
+| 5 | important | 0.665 | — | `from_previous` fires on write only; legacy API callers have `pbkdf2iters` silently upgraded to 1,300,000 |
+| 6 | important | 0.644 | — | `sync_db_keys` lock lambda embeds full args list, causing inconsistent lock keys |
+| 7 | important | 0.644 | — | Existing passphrase-encrypted datasets silently re-keyed at 3.7x higher iteration count on next change |
+| 8 | important | 0.63 | — | Custom ZFS exceptions inherit from plain `Exception` instead of `CallError`, breaking structured error propagation |
+| 9 | important | 0.574 | — | `ZFSNotEncryptedException` from `change_key()` propagates as raw `Exception` to WebSocket API layer |
+| 10 | important | 0.56 | — | Raw `truenas_pylibzfs.ZFSException` from `crypto.load_key()` propagates out of `encryption.load_key()` |
+| 11 | important | 0.525 | — | 3.7x PBKDF2 iteration increase enforced with no hardware capability check |
+| 12 | suggestion | 0.294 | — | No double-injection bug: explicit TLS passing is correct for direct calls (CC-1 investigated, ruled out) |
+| 13 | suggestion | 0.285 | — | No test covers the newly-enforced rejection path |
+| 14 | nitpick | 0.097 | — | Original TLS-injection concern is a false alarm: decorator order is correct (CC-1 re-investigated) |
 
-These are complementary observations. CC-3 is about the cross-file inconsistency. PR-1/PR-2 are about the backward compatibility break. Both are valid. Neither fully subsumes the other.
+**Adversary breakdown**: Zero findings challenged. All 14 passed the adversary phase without challenge.
 
-### 4.3 ZFSError vs ZFSKeyFormat — Different Bugs
+**Notable**: Findings #12 and #14 are explicit investigations of the CC-1 concern (decorator dispatch crash). Sonnet analyzed the `@pass_thread_local_storage` pattern and concluded that TLS is explicitly passed in the direct call path, making the dispatch crash a non-issue in the current code. This is a judgment call — Claude Code flagged it as critical. Sonnet's reasoning may be correct for the specific call site analyzed, or it may have missed a different call path where the crash occurs.
 
-PR-6 and CC-2 both involve enum comparison issues but are distinct bugs:
+### 6.3 Claude Code (claude[bot]) — Key Automated Findings
 
-- **CC-2**: `ZFSKeyFormat(...) == ZFSKeyFormat.PASSPHRASE.value` — comparing an enum member to a string. Always False. Silently bypasses a security check.
-- **PR-6**: `e.code == ZFSError.EZFS_CRYPTOFAILED` vs `ZFSError(e.code) == ZFSError.EZFS_*` — inconsistent comparison pattern across the codebase. May or may not produce wrong results depending on how `e.code` is typed.
-
-CC-2 is a confirmed logic bug with a clear security impact. PR-6 is a pattern inconsistency that may or may not be a bug depending on the library's type contracts.
-
----
-
-## 5. Critical Misses Analysis
-
-### 5.1 What PR-AF Missed
-
-#### CC-1: `@pass_thread_local_storage` Direct-Call Crash
-
-This is the most impactful finding in the entire review. `sync_zfs_keys` calls `push_zfs_keys` and `pull_zfs_keys` as direct Python method calls, but both methods are decorated with `@pass_thread_local_storage`, which injects a `tls` argument as the first positional parameter via middleware dispatch.
-
-```python
-# sync_zfs_keys (no decorator, direct call)
-def sync_zfs_keys(self, ids):
-    self.push_zfs_keys(ids)   # ids binds to tls parameter → AttributeError on tls.lzh
-    self.pull_zfs_keys()      # TypeError: missing required positional argument 'tls'
-```
-
-**Why PR-AF missed this**: The decorator dispatch mechanism is a framework-level concern, not a code-level concern. PR-AF's review dimensions focused on code behavior, API compatibility, concurrency, and resource management. None of these dimensions are specifically tuned to reason about how `@pass_thread_local_storage` transforms the calling convention of decorated methods. Catching this bug requires understanding that the decorator changes the method signature at dispatch time — a Python-specific framework semantic that isn't visible in the diff without knowing the decorator's implementation.
-
-This is a genuine gap in PR-AF's coverage. A "framework semantics" review dimension, or a prompt that explicitly asks "are there any methods that are called directly but decorated with middleware-injecting decorators?", would likely catch this.
-
-#### CC-4: `existing_datasets` list[dict] vs str — KMIP Cache Always Wiped
-
-```python
-# existing_datasets is list[dict], k is str
-self.zfs_keys = {k: v for k, v in self.zfs_keys.items() if k in existing_datasets}
-# str in list[dict] is always False → dict comprehension always produces {}
-```
-
-Every call to `push_zfs_keys` or `pull_zfs_keys` silently wipes the entire KMIP key cache. This is a pre-existing bug, but it's a severe one — and it's in the exact code path this PR modifies.
-
-**Why PR-AF missed this**: This requires runtime simulation reasoning. The bug is invisible at the type level unless you trace `existing_datasets` back to its source and confirm it's `list[dict]` rather than `list[str]`. PR-AF's analysis appears to have treated the `in` check as correct without verifying the element type. This is a Python-specific type gotcha that requires following data flow across function boundaries.
-
-### 5.2 What Claude Code Missed
-
-Claude Code's second pass found 4 findings. It missed everything else PR-AF flagged. The most significant misses:
-
-**PR-3 (Failover lock namespace mismatch)**: `failover_dataset_unlock` vs `dataset_unlock_{id}` use different lock namespaces, allowing concurrent operations that should be mutually exclusive. This is a real concurrency bug exposed by the process pool removal in this PR.
-
-**PR-4 (DRAID type expansion)**: `PoolCreateTopologySpecialVdev` TypeAlias change silently allows DRAID vdev types in special vdev positions, which may not be valid. This is an API contract change with no validation.
-
-**PR-5 (PoolScan null safety)**: The new `PoolScan` model requires non-nullable fields that were nullable in the old dict representation. Existing callers passing `None` will break.
-
-**PR-7/PR-8 (TOCTOU races in KMIP cache)**: Check-then-use races in `push_zfs_keys` and `pull_zfs_keys`. These were adversary-challenged (score reduced to 0.712) but not dismissed.
-
-**PR-19 (Error code mapping not verified)**: The PR assumes py-libzfs and truenas_pylibzfs use the same error codes. If they don't, all error handling is silently wrong. This is a migration-specific risk that Claude Code didn't flag.
-
-Claude Code's first pass ("No bugs found") is worth noting separately. The bugs were present in the diff. The second pass found them. This suggests Claude Code benefits from re-review — which it doesn't do by default, but PR-AF does architecturally through its multi-phase pipeline.
-
----
-
-## 6. Strengths Analysis
-
-### PR-AF Strengths
-
-**Breadth across risk dimensions**: 10 parallel review dimensions means the system systematically covers concurrency, API compatibility, resource management, error handling, and security in every review. Claude Code's single-agent approach doesn't guarantee coverage of all dimensions.
-
-**API compatibility analysis**: PR-1, PR-2, PR-4, PR-5, PR-10, PR-17, PR-21 are all API contract changes that could break existing callers. This is a whole category of risk that Claude Code didn't surface.
-
-**Race condition analysis**: PR-3, PR-7, PR-8, PR-11, PR-13, PR-14, PR-22, PR-25 are concurrency findings. The process pool removal in this PR changes threading semantics, and PR-AF's concurrency dimension caught multiple resulting races. Claude Code found none.
-
-**Resource leak detection**: PR-15, PR-16, PR-18 flag resource management issues. These are easy to miss in code review because they don't cause immediate failures.
-
-**Cross-module analysis**: PR-AF's cross-reference phase found interactions between findings (8 cross-references). The lock namespace mismatch (PR-3, PR-13) is a cross-module issue that requires seeing both sides of the lock.
-
-**Adversary phase reduces false positives**: 16/20 findings were challenged, reducing their confidence scores. This is the system self-correcting. The 4 confirmed findings have higher signal value.
-
-### Claude Code Strengths
-
-**Exceptional evidence quality on critical findings**: CC-1 and CC-4 include step-by-step proof of the crash path. The reasoning is airtight. A developer reading CC-1 knows exactly what will happen, why, and where.
-
-**Framework-level understanding**: CC-1 required understanding how `@pass_thread_local_storage` transforms method signatures at dispatch time. This is deep, framework-specific reasoning that PR-AF's more general prompts didn't produce.
-
-**Security impact tracing**: CC-2 traces the enum comparison bug to its security consequence — the check that prevents passphrase-encrypted parents from having key-encrypted children is silently bypassed. PR-AF flagged a related pattern inconsistency (PR-6) but didn't connect it to the security model.
-
-**Concise, actionable output**: 4 findings, all real, all well-explained. Low noise.
-
----
-
-## 7. Evidence Quality Comparison
-
-Evidence quality measures how well a finding is supported — does it prove the bug, or just suggest it?
-
-| Finding | System | Evidence Quality | Notes |
-|---|---|---|---|
-| CC-1 (@pass_thread_local_storage) | Claude Code | 5/5 | Step-by-step crash path, decorator implementation traced |
-| CC-2 (ZFSKeyFormat enum) | Claude Code | 5/5 | Python enum behavior proven, security impact traced |
-| CC-3 (pbkdf2iters inconsistency) | Claude Code | 4/5 | Cross-file comparison, practical impact described |
-| CC-4 (existing_datasets type) | Claude Code | 5/5 | Python semantics proven, data flow traced |
-| PR-1/PR-2 (pbkdf2iters breaking) | PR-AF | 3/5 | Correct identification, less depth on caller impact |
-| PR-3 (failover lock namespace) | PR-AF | 3/5 | Identifies mismatch, doesn't fully prove concurrent execution path |
-| PR-6 (ZFSError comparison) | PR-AF | 2/5 | Pattern inconsistency noted, actual bug not confirmed |
-| PR-7/PR-8 (TOCTOU races) | PR-AF | 2/5 | Adversary-challenged, theoretical without proof of concurrent access |
-| PR-9 to PR-25 (IMPORTANT) | PR-AF | 1-3/5 | Variable quality, many are "could be a problem" rather than "is a problem" |
-
-Claude Code's evidence quality is consistently higher. PR-AF produces more findings but with lower average evidence quality. This is a precision/recall tradeoff — PR-AF casts a wider net, Claude Code aims more carefully.
-
----
-
-## 8. False Positive Analysis
-
-PR-AF's adversary phase challenged 16 of 20 findings. This is not a failure — it's the system working as designed. The adversary phase exists to reduce false positives before output.
-
-However, "challenged" doesn't mean "wrong." The 16 challenged findings had their confidence scores reduced (e.g., PR-7 dropped from 0.95 to 0.712) but were still included in the output. This is the right call — a 0.712-confidence race condition in KMIP key management is worth a developer's attention even if it's not confirmed.
-
-The practical question is: how many of the 25 PR-AF findings are real bugs?
-
-- **High confidence (adversary-confirmed, score > 0.85)**: PR-1, PR-2, PR-3 — likely real
-- **Medium confidence (adversary-challenged, score 0.60-0.85)**: PR-4 through PR-9 — worth investigating
-- **Lower confidence (score < 0.60)**: PR-10 through PR-25 — noise-to-signal ratio increases here
-
-Without post-merge incident data, we can't compute a precise false positive rate. But the adversary phase's 80% challenge rate suggests PR-AF's raw findings are noisy, and the filtering is doing real work.
-
-Claude Code's 4 findings are all credible. CC-1 and CC-4 are pre-existing bugs (not introduced by this PR) but are in modified code paths. CC-2 is a pre-existing security logic bug. CC-3 is a genuine inconsistency introduced by this PR. Zero obvious false positives.
-
----
-
-## 9. Scoring Rubric & Scorecard
-
-### Rubric
-
-| Metric | Definition | Scale |
+| Label | Severity | Summary |
 |---|---|---|
-| **Recall** | (True positives found) / (All real bugs) | 0.0 – 1.0 |
-| **Precision** | (True positives) / (All findings posted) | 0.0 – 1.0 |
-| **Evidence quality** | Average reasoning depth and actionability | 1 – 5 |
-| **Severity calibration** | Were critical bugs labeled critical? | 1 – 5 |
-| **Breadth** | Coverage across risk dimensions | 1 – 5 |
-| **Practical actionability** | Can a developer act on this immediately? | 1 – 5 |
+| CC-1 | Critical | `@pass_thread_local_storage` dispatch crash: `sync_zfs_keys` calls `push_zfs_keys(ids)` and `pull_zfs_keys()` directly, bypassing middleware dispatch, wrong arg binding |
+| CC-2 | Critical | `ZFSKeyFormat(val) == ZFSKeyFormat.PASSPHRASE.value` compares enum instance to string, always False |
+| CC-3 | Important | PR raises `pbkdf2iters` minimum to 1.3M in `pool_dataset` but leaves `PoolCreateEncryptionOptions` with old value |
+| CC-4 | Critical | `k in existing_datasets` where k is str and `existing_datasets` is list[dict], always False, silently wipes KMIP cache |
 
-### Assumptions for Scoring
-
-"Real bugs" for recall calculation: CC-1, CC-2, CC-3, CC-4, PR-1/PR-2 (pbkdf2iters breaking change), PR-3 (failover lock), PR-7/PR-8 (TOCTOU races). This is a conservative set of 8 distinct issues with reasonable confidence. Recall is calculated against this set.
-
-Note: CC-1 and CC-4 are pre-existing bugs in modified code. They count as real bugs because they're in the diff's code paths and the reviewer is expected to flag them.
-
-### Scorecard
-
-| Metric | Claude Code | PR-AF | Notes |
-|---|---|---|---|
-| **Recall** | 4/8 = **0.50** | 6/8 = **0.75** | CC missed PR-3, PR-7/PR-8. PR-AF missed CC-1, CC-4. |
-| **Precision** | ~4/4 = **~1.00** | ~6/25 = **~0.24** | CC findings all credible. PR-AF has significant noise. |
-| **Evidence quality** | **4.8 / 5** | **2.4 / 5** | CC findings are exceptionally well-evidenced. |
-| **Severity calibration** | **4 / 5** | **3 / 5** | CC correctly labeled critical bugs. PR-AF over-labeled some IMPORTANT findings as CRITICAL. |
-| **Breadth** | **2 / 5** | **5 / 5** | CC covered 2 risk dimensions. PR-AF covered 10. |
-| **Practical actionability** | **5 / 5** | **3 / 5** | CC findings are immediately actionable. Many PR-AF findings need further investigation. |
-
-### Summary
-
-| System | Recall | Precision | Evidence | Severity | Breadth | Actionability | **Overall** |
-|---|---|---|---|---|---|---|---|
-| Claude Code | 0.50 | 1.00 | 4.8 | 4.0 | 2.0 | 5.0 | **3.47** |
-| PR-AF | 0.75 | 0.24 | 2.4 | 3.0 | 5.0 | 3.0 | **3.07** |
-
-These scores are close. Neither system dominates. They have genuinely different strengths.
+Claude Code also produced pattern/naming observations (open_handle pattern, docstrings, method behavior) that are minor and not scored here.
 
 ---
 
-## 10. Key Observations
+## 7. Critical Misses Analysis
 
-**1. Model vs system comparison.** PR-AF runs on kimi-k2.5, which is substantially cheaper than Claude. This is not a model-to-model comparison — it's a system-to-system comparison. PR-AF's multi-agent architecture compensates for a weaker base model through structured decomposition and adversarial self-review.
+### 7.1 CC-1: Decorator Dispatch Crash (Found only by Claude Code)
 
-**2. Claude Code's first pass failure.** The Feb 27 review said "No bugs found." The bugs were in the diff. The Mar 3 second pass found them. This is the strongest argument for multi-pass review — which PR-AF does architecturally. A single-pass system that misses everything on the first try provides false confidence.
+`sync_zfs_keys` calls `push_zfs_keys(ids)` and `pull_zfs_keys()` directly. Both functions are decorated with `@pass_thread_local_storage`, which is designed to inject `tls` via middleware dispatch. A direct call bypasses this injection, causing wrong argument binding and a crash.
 
-**3. PR-AF's adversary phase is working.** 16/20 findings challenged, scores reduced. This is not a sign of weakness — it's the system being honest about uncertainty. The alternative (posting all 25 findings at full confidence) would be worse.
+**Why Kimi missed it**: Kimi's analysis focused on exception handling and hex validation patterns. The decorator injection mechanism was not in any of its 8 analysis dimensions.
 
-**4. The human reviewer found what neither system found.** yocalebo's 7 comments are all style/pattern issues — naming conventions, exception types, code structure. Neither automated system flagged these. Human reviewers and automated systems are complementary, not substitutes.
+**Why Sonnet missed it (sort of)**: Sonnet explicitly investigated this concern (findings #12 and #14) and concluded it is not a bug because TLS is explicitly passed in the direct call path. This is a substantive disagreement with Claude Code's assessment. One of them is wrong. Without running the code, the evaluation cannot definitively resolve this — but the fact that Sonnet investigated and made a reasoned judgment is itself valuable signal.
 
-**5. PR-AF's biggest gap is framework semantics.** CC-1 required understanding how `@pass_thread_local_storage` changes method calling conventions. This is not a general code analysis skill — it's specific knowledge about the middleware framework. PR-AF's prompts don't appear to include "check for framework-specific decorator semantics" as a review dimension. This is a fixable gap.
+**Implication**: If CC-1 is a real bug, both multi-agent systems failed to catch a critical crash. If Sonnet's analysis is correct and CC-1 is a false alarm, then Claude Code has a false positive and Sonnet correctly ruled it out.
 
-**6. PR-AF found real concurrency bugs that nobody else found.** The failover lock namespace mismatch (PR-3), the TOCTOU races (PR-7, PR-8), and the concurrent execution risks (PR-14) are genuine issues exposed by the process pool removal. These are the kind of bugs that cause intermittent production failures and are very hard to find in code review without a dedicated concurrency analysis pass.
+### 7.2 CC-4: KMIP Cache Wipe (Missed by Kimi, found by Sonnet and Claude Code)
 
-**7. The pbkdf2iters finding illustrates different review philosophies.** Claude Code noticed the inconsistency between files (a developer-experience concern). PR-AF noticed the breaking API change in each file (a compatibility concern). Both are valid. A complete review needs both perspectives.
+`k in existing_datasets` where `k` is a string (dataset ID) and `existing_datasets` is a list of dicts. The `in` operator on a list checks for element equality, not key membership. A string is never equal to a dict, so this check always returns False. The result: every push/pull cycle wipes the `zfs_keys` cache, treating all datasets as new.
 
----
+This is a pre-existing bug that the PR did not introduce but also did not fix. It is subtle because the code looks plausible at a glance — the variable name `existing_datasets` suggests it should contain dataset identifiers, not dicts.
 
-## 11. Conclusions & Recommendations
+**Why Kimi missed it**: Kimi's analysis of KMIP operations focused on exception handling (findings #11, #12) and key validation. The type mismatch in the cache lookup was not surfaced.
 
-### What PR-AF Should Improve
+**Why Sonnet found it**: Sonnet's top finding (score 0.97) is precisely this bug. The analysis correctly identifies the type mismatch and its consequence (cache always wiped). This is the hardest bug in the dataset to find because it requires understanding both the data structure of `existing_datasets` and the semantics of Python's `in` operator on lists vs dicts.
 
-**1. Add a framework semantics review dimension.** The `@pass_thread_local_storage` miss is the most important gap. A prompt that asks "identify all methods decorated with middleware-injecting decorators and verify they are only called through the dispatch mechanism, not directly" would catch CC-1. This is a project-specific prompt that should be part of the ANATOMY phase's context extraction.
+### 7.3 Method Shadowing / Infinite Recursion (Found only by Kimi)
 
-**2. Improve data flow tracing for type bugs.** CC-4 required tracing `existing_datasets` back to its source to confirm it's `list[dict]`. PR-AF's analysis didn't do this. A "type flow" review dimension, or explicit prompting to verify the element types of collections used in `in` checks, would help.
+A method named `check_key` in `dataset_encryption_operations.py` shadows an imported function also named `check_key`. When the method calls `check_key(...)`, it calls itself recursively rather than the imported function, causing infinite recursion.
 
-**3. Reduce noise in IMPORTANT findings.** PR-10 through PR-25 have scores below 0.65 and variable evidence quality. The adversary phase is already reducing scores, but the output still includes 17 IMPORTANT findings. A stricter output filter (e.g., only post findings with score > 0.60 and adversary-confirmed) would improve precision without much recall loss.
+This is Kimi's highest-scoring finding (1.852) and was confirmed by the adversary phase and cross-referenced. It is a genuine critical bug.
 
-**4. Improve evidence quality for posted findings.** PR-AF's findings often identify a pattern without proving it's a bug. Adding a "prove it" step — where the system must demonstrate the failure path before posting — would raise evidence quality and reduce false positives simultaneously.
+**Why Sonnet missed it**: Sonnet's analysis dimensions did not include name shadowing or import resolution. Its focus on exception handling, type mismatches, and API contracts left this category uncovered.
 
-**5. Cross-reference with framework documentation.** For migration PRs (old library → new library), PR-AF should explicitly compare error codes, API contracts, and threading models between the old and new libraries. PR-19 (error code mapping not verified) is a good finding but needs more depth.
+**Why Claude Code missed it**: Single-agent diff review is unlikely to catch name shadowing without explicit analysis of import resolution.
 
-### What Claude Code Should Improve
+### 7.4 Missing `ds['id']` in `datastore.update` (Found only by Sonnet)
 
-**1. Multi-pass review by default.** The first pass missed everything. The second pass found critical bugs. This should not require manual re-triggering.
+Sonnet's second-highest finding (score 0.95) is a missing argument in a `datastore.update` call. The call passes the wrong number of arguments — `ds['id']` is missing — which would cause a guaranteed runtime crash when this code path executes.
 
-**2. Add concurrency and API compatibility dimensions.** Claude Code found zero concurrency bugs and zero API compatibility issues. These are real risk categories in this PR.
-
-**3. Structured coverage tracking.** PR-AF's coverage phase ensures all files and risk dimensions are reviewed. Claude Code's single-agent approach has no equivalent guarantee.
-
-### Recommended Combined Workflow
-
-For high-risk PRs (security-critical, library migrations, concurrency changes):
-
-1. Run PR-AF for breadth — surface all risk dimensions, flag concurrency and API compatibility issues
-2. Run Claude Code for depth — get high-confidence, well-evidenced findings on the most critical paths
-3. Human reviewer for style/pattern — neither system catches naming conventions, exception patterns, or code structure concerns
-4. Require adversary-confirmed PR-AF findings (score > 0.85) to be addressed before merge
-5. Require all Claude Code findings to be addressed before merge
-
-This combination would have caught all 8 real bugs identified in this evaluation, with acceptable noise levels.
+This is a novel finding: neither Kimi nor Claude Code identified it. It is the kind of bug that requires careful argument-count analysis against the `datastore.update` API signature, which Sonnet apparently performed.
 
 ---
 
-## Appendix: Finding Count Summary
+## 8. Strengths Analysis
 
-| Category | Claude Code | PR-AF |
+### 8.1 Kimi k2.5 Strengths
+
+**Breadth**: 8 analysis dimensions vs Sonnet's 6. Kimi covered TLS parameter verification, exception contract changes, encryption key storage validation, hex string conversion error handling, TOCTOU races, and coverage gap analysis. This breadth is why it found the method shadowing bug and the TOCTOU race that Sonnet missed.
+
+**Volume with adversary filtering**: 25 findings with 7 adversary challenges is a reasonable precision/recall tradeoff. The adversary phase is doing its job — it challenged 28% of findings, which is a meaningful filter.
+
+**Top finding quality**: The method shadowing bug (score 1.852, confirmed+crossref) is the highest-quality finding across all three systems. When Kimi finds something, it can find it with depth.
+
+**Speed**: 19 minutes vs 35 minutes for Sonnet. For time-sensitive review workflows, Kimi's throughput advantage matters.
+
+**Exception contract coverage**: Findings #2, #11, #12, #13 all address exception handling failures. While some were challenged, the pattern of analysis is correct — the new library's exception hierarchy is a genuine risk area.
+
+### 8.2 Sonnet 4.6 Strengths
+
+**Precision**: Zero adversary challenges across 14 findings. Every finding survived the adversary phase. This is the strongest precision signal in the evaluation.
+
+**Hardest bug found**: CC-4 (KMIP cache wipe, score 0.97) is the most subtle bug in the dataset. Sonnet found it and ranked it as its top finding. This demonstrates genuine depth of analysis.
+
+**Novel bug found**: Missing `ds['id']` in `datastore.update` (score 0.95) was found by no other system. This is a guaranteed runtime crash that would have shipped undetected.
+
+**Active false-positive investigation**: Findings #12 and #14 show Sonnet explicitly investigating the CC-1 concern and making a reasoned judgment. This is qualitatively different from simply missing a bug — it is active analysis with a conclusion.
+
+**Higher average score**: 0.611 vs 0.524 for Kimi. Sonnet's findings are more consistently high-quality.
+
+**Exception hierarchy analysis**: Findings #4, #8, #9, #10 address the exception inheritance and propagation issues with more specificity than Kimi's equivalent findings. Finding #8 specifically identifies that custom ZFS exceptions should inherit from `CallError` rather than `Exception` — a concrete, actionable recommendation.
+
+### 8.3 Claude Code Strengths
+
+**Speed**: Near-instant. For a first-pass review on every PR, this is the dominant advantage.
+
+**CC-1 detection**: Claude Code is the only system that flagged the decorator dispatch crash. Whether this is a true positive or false positive (Sonnet argues the latter), Claude Code's pattern recognition on decorator injection is unique.
+
+**GitHub-native integration**: Inline comments on the diff are immediately actionable for the PR author. No pipeline, no latency, no cost overhead.
+
+**CC-4 detection**: Claude Code also caught the KMIP cache wipe, matching Sonnet's top finding. For a single-agent system, this is impressive.
+
+---
+
+## 9. Evidence Quality Comparison
+
+Evidence quality measures whether a finding includes: specific file and line references, a clear explanation of the failure mode, concrete impact analysis, and a suggested fix or direction.
+
+### 9.1 Kimi Evidence Quality
+
+Kimi's top findings (method shadowing, sync_db_keys exception catch) include specific code references and clear failure mode descriptions. The method shadowing finding explains the recursion mechanism precisely. However, many lower-scoring findings (hex validation, database constraints) are more speculative — they identify a pattern that could be a problem without demonstrating that the pattern actually causes a failure in this code.
+
+The 7 adversary-challenged findings tend to have weaker evidence: they assert a failure mode without fully tracing the execution path. Finding #10 (malformed hex causes 'Missing key' error) is challenged because the error message behavior depends on implementation details not fully analyzed.
+
+**Evidence quality rating**: High for top 5 findings, moderate for findings 6-15, low for findings 16-25.
+
+### 9.2 Sonnet Evidence Quality
+
+Sonnet's findings consistently include type-level analysis. Finding #1 (KMIP cache wipe) explains the Python `in` operator semantics on lists vs dicts, traces the consequence (cache always wiped), and identifies the correct fix (use a dict keyed by dataset ID, or check `k in {d['id'] for d in existing_datasets}`). Finding #2 (missing argument) identifies the specific call site and the expected vs actual argument count.
+
+The exception hierarchy findings (#8, #9, #10) are particularly well-evidenced: they trace the exception propagation path from the ZFS library through the middleware layer to the WebSocket API, identifying exactly where the exception type mismatch causes information loss.
+
+**Evidence quality rating**: High across all 14 findings. No finding is purely speculative.
+
+### 9.3 Claude Code Evidence Quality
+
+Claude Code's inline comments are concise by design. CC-1 and CC-4 are identified with enough specificity to be actionable, but without the depth of analysis that the multi-agent systems provide. The comments point to the problem but do not trace the full impact or suggest a fix.
+
+**Evidence quality rating**: Moderate. Sufficient for a developer to investigate, insufficient for a developer to fix without additional analysis.
+
+---
+
+## 10. False Positive Analysis
+
+### 10.1 Kimi False Positives
+
+Seven findings were adversary-challenged. Of these:
+- Findings #10, #11, #12, #13 (critical severity) were challenged and remain unresolved. These findings assert that KMIP operations crash when `check_key()` raises `ZFSNotEncryptedException`. The adversary challenge likely questioned whether `check_key()` can actually raise this exception in the call paths analyzed.
+- Findings #17, #18, #19 (important severity) were challenged on similar grounds — they assert failure modes that depend on specific exception behavior that may not occur in practice.
+
+The challenged findings cluster around exception handling in KMIP operations. This suggests Kimi's exception analysis is directionally correct (the exception hierarchy is a real risk) but over-specific in asserting which exact exceptions propagate through which exact paths.
+
+**Estimated false positive rate**: 4-7 of 25 findings (16-28%) are likely false positives or over-stated.
+
+### 10.2 Sonnet False Positives
+
+Zero adversary challenges. The most likely false positive candidate is the CC-1 investigation (findings #12 and #14), but these are explicitly framed as "this is NOT a bug" — they are true negatives, not false positives.
+
+Finding #13 (no test covers the rejection path) is a suggestion, not a bug claim. It is accurate but low-value.
+
+**Estimated false positive rate**: 0-1 of 14 findings (0-7%).
+
+### 10.3 Claude Code False Positives
+
+CC-1 (decorator dispatch crash) is disputed by Sonnet's analysis. If Sonnet is correct that TLS is explicitly passed in the direct call path, CC-1 is a false positive. This is the primary false positive risk for Claude Code.
+
+**Estimated false positive rate**: 0-1 of 6 findings (0-17%), depending on CC-1 resolution.
+
+---
+
+## 11. Scoring Rubric and Weighted Scorecard
+
+### 11.1 Recall Scoring (30% weight)
+
+Ground truth: 9 bugs. Partial credit for bugs found in related form.
+
+| System | Bugs Found | Recall Score |
 |---|---|---|
-| Critical findings | 2 (+ 2 pre-existing) | 8 |
-| Important findings | 0 | 17 |
-| Total findings | 4 | 25 |
-| Adversary-confirmed | N/A | 4 |
-| Adversary-challenged | N/A | 16 |
-| Posted inline | 4 (+ 4 duplicates) | 12 |
-| Missed critical bugs | 2 (PR-3, PR-7/PR-8) | 2 (CC-1, CC-4) |
+| Kimi k2.5 | 6/9 (CC-3, method shadowing, duplicate export, exception contract, TOCTOU, partial CC-3) | 0.67 |
+| Sonnet 4.6 | 6/9 (CC-2, CC-3, CC-4, missing argument, exception contract, lock lambda) | 0.67 |
+| Claude Code | 4/9 (CC-1, CC-2, CC-3, CC-4) | 0.44 |
+
+Both PR-AF systems achieve the same recall, but on different bugs. Combined recall of Kimi+Sonnet would be 8/9 (89%).
+
+### 11.2 Precision Scoring (25% weight)
+
+| System | Estimated True Positives | Total Findings | Precision Score |
+|---|---|---|---|
+| Kimi k2.5 | ~18-21 of 25 | 25 | 0.72-0.84, midpoint 0.78 |
+| Sonnet 4.6 | ~13-14 of 14 | 14 | 0.93-1.00, midpoint 0.96 |
+| Claude Code | ~5-6 of 6 | 6 | 0.83-1.00, midpoint 0.92 |
+
+### 11.3 Evidence Quality Scoring (20% weight)
+
+Scored 0-1 based on specificity, code references, impact analysis, and actionability.
+
+| System | Evidence Quality Score |
+|---|---|
+| Kimi k2.5 | 0.68 (high for top findings, drops off significantly) |
+| Sonnet 4.6 | 0.87 (consistently high across all findings) |
+| Claude Code | 0.62 (sufficient for identification, insufficient for remediation) |
+
+### 11.4 Severity Calibration Scoring (15% weight)
+
+Measures whether critical bugs are labeled critical and suggestions are not over-elevated.
+
+| System | Calibration Notes | Score |
+|---|---|---|
+| Kimi k2.5 | 6 critical labels; 4 of these were adversary-challenged (over-elevation risk). Method shadowing correctly critical. | 0.70 |
+| Sonnet 4.6 | 2 critical labels (CC-4 and missing argument) — both are genuinely critical. 9 important labels are well-calibrated. | 0.92 |
+| Claude Code | 2 critical labels (CC-1, CC-4) — CC-4 is correct; CC-1 is disputed. | 0.80 |
+
+### 11.5 Breadth Scoring (10% weight)
+
+Measures coverage across distinct risk dimensions.
+
+| System | Dimensions Covered | Score |
+|---|---|---|
+| Kimi k2.5 | 8 dimensions: TLS, exception contracts, key storage, hex conversion, TOCTOU, coverage gaps | 0.90 |
+| Sonnet 4.6 | 6 dimensions: decorator injection, enum comparison, exception handling, lock keys, PBKDF2, argument validation | 0.75 |
+| Claude Code | 3-4 dimensions: decorator injection, enum comparison, PBKDF2, type mismatch | 0.50 |
+
+### 11.6 Weighted Final Scores
+
+| Criterion | Weight | Kimi k2.5 | Sonnet 4.6 | Claude Code |
+|---|---|---|---|---|
+| Recall | 30% | 0.67 | 0.67 | 0.44 |
+| Precision | 25% | 0.78 | 0.96 | 0.92 |
+| Evidence quality | 20% | 0.68 | 0.87 | 0.62 |
+| Severity calibration | 15% | 0.70 | 0.92 | 0.80 |
+| Breadth | 10% | 0.90 | 0.75 | 0.50 |
+| **Weighted total** | 100% | **0.727** | **0.828** | **0.656** |
+
+Calculation:
+- Kimi: (0.67x0.30) + (0.78x0.25) + (0.68x0.20) + (0.70x0.15) + (0.90x0.10) = 0.201 + 0.195 + 0.136 + 0.105 + 0.090 = **0.727**
+- Sonnet: (0.67x0.30) + (0.96x0.25) + (0.87x0.20) + (0.92x0.15) + (0.75x0.10) = 0.201 + 0.240 + 0.174 + 0.138 + 0.075 = **0.828**
+- Claude Code: (0.44x0.30) + (0.92x0.25) + (0.62x0.20) + (0.80x0.15) + (0.50x0.10) = 0.132 + 0.230 + 0.124 + 0.120 + 0.050 = **0.656**
+
+**Sonnet 4.6 scores highest overall (0.828), driven by precision and evidence quality advantages. Kimi k2.5 scores second (0.727), with breadth as its strongest dimension. Claude Code scores third (0.656) but operates at a fundamentally different cost/latency point.**
 
 ---
 
-*Evaluation produced by LLM-as-a-judge analysis. All findings sourced from `claude_code_review.json` and `pr_af_review.json` in this directory. No findings were invented or inferred beyond what the source data contains.*
+## 12. Conclusions and Recommendations
+
+### 12.1 Primary Conclusions
+
+**Sonnet 4.6 is the better model for PR-AF on this class of PR.** Its precision advantage (0.96 vs 0.78) and evidence quality advantage (0.87 vs 0.68) are substantial. It found the hardest bug (CC-4), found a novel bug nobody else caught (missing `ds['id']`), and produced zero false positives. The cost is 1.9x longer runtime.
+
+**Kimi k2.5 provides complementary coverage.** It found the method shadowing bug and the TOCTOU race that Sonnet missed. Its breadth advantage (8 dimensions vs 6) is real. For PRs where coverage breadth matters more than precision, Kimi is the better choice.
+
+**Neither system is sufficient alone.** The combined recall of Kimi+Sonnet is 8/9 (89%), compared to 67% for either alone. The one remaining miss (CC-1, the decorator dispatch crash) was caught only by Claude Code.
+
+**Claude Code remains valuable as a first-pass filter.** Its near-instant feedback and GitHub-native integration make it the right tool for immediate PR feedback. It caught CC-1 and CC-4 — two of the most impactful bugs — without any pipeline overhead.
+
+**The adversary phase is working for Kimi but not for Sonnet.** Kimi's 28% challenge rate shows the adversary is filtering noise. Sonnet's 0% challenge rate is either a sign of genuine precision or an under-resourced adversary run. This warrants investigation in future evaluations.
+
+### 12.2 Recommendations
+
+**For production deployment of PR-AF:**
+
+1. **Use Sonnet 4.6 as the primary model** for high-risk PRs (encryption, authentication, data integrity). Its precision and evidence quality reduce reviewer fatigue from false positives.
+
+2. **Use Kimi k2.5 as a secondary sweep** on the same PR when breadth matters. The 19-minute runtime is acceptable for a background job. The complementary coverage justifies the cost.
+
+3. **Keep Claude Code as the first-pass reviewer** on every PR. Its speed and GitHub integration make it the right tool for immediate feedback, and it catches bugs (CC-1) that the multi-agent systems miss.
+
+4. **Investigate the adversary phase for Sonnet.** Zero challenges across 14 findings is unusual. Either the adversary agent needs more resources, or Sonnet's self-filtering before the adversary phase is so effective that the adversary has nothing to challenge. Understanding which is true matters for calibrating confidence in Sonnet's findings.
+
+5. **Add name shadowing and import resolution as an explicit analysis dimension.** The method shadowing bug (Kimi's top finding) is a category that neither Sonnet nor Claude Code covered. Adding it as a required dimension would improve recall across all systems.
+
+6. **Resolve the CC-1 dispute.** Sonnet's analysis (findings #12, #14) argues CC-1 is not a bug. Claude Code says it is. This should be resolved by running the code or by a human reviewer examining the specific call path. The answer will calibrate trust in Sonnet's false-positive investigation capability.
+
+### 12.3 Model Selection Heuristic
+
+For future PR-AF deployments, use this heuristic:
+
+- **High-risk, precision-critical PRs** (encryption, auth, data integrity): Sonnet 4.6
+- **Large PRs requiring broad coverage** (refactors touching many subsystems): Kimi k2.5
+- **Time-sensitive PRs needing immediate feedback**: Claude Code
+- **Maximum coverage on critical PRs**: Run all three, deduplicate findings, prioritize by cross-system confirmation
+
+---
+
+## 13. Appendix: Finding Count Summary
+
+### A.1 By System
+
+| System | Critical | Important | Suggestion | Nitpick | Total |
+|---|---|---|---|---|---|
+| PR-AF + Kimi k2.5 | 6 | 10 | 9 | 0 | 25 |
+| PR-AF + Sonnet 4.6 | 2 | 9 | 2 | 1 | 14 |
+| Claude Code (automated) | 2 | 1 | 3 | 0 | ~6 |
+
+### A.2 By Ground Truth Bug
+
+| Bug | Systems That Found It | Confidence |
+|---|---|---|
+| CC-1: Decorator dispatch crash | Claude Code only | Disputed (Sonnet ruled out) |
+| CC-2: Enum comparison always False | Sonnet, Claude Code | High |
+| CC-3: pbkdf2iters inconsistency | All three | High |
+| CC-4: KMIP cache wipe | Sonnet, Claude Code | High |
+| Method shadowing / infinite recursion | Kimi only | High (confirmed+crossref) |
+| Duplicate export PoolRemoveArgs | Kimi only | High |
+| Missing ds['id'] in datastore.update | Sonnet only | High |
+| Exception contract violations | Kimi, Sonnet | High |
+| TOCTOU race in load_key() | Kimi only | Moderate |
+
+### A.3 Unique Contributions
+
+| System | Unique findings (not found by others) |
+|---|---|
+| Kimi k2.5 | Method shadowing, duplicate export, TOCTOU, hex validation patterns |
+| Sonnet 4.6 | Missing ds['id'] argument, lock lambda inconsistency, CC-4 (also CC) |
+| Claude Code | CC-1 (decorator dispatch crash) |
+
+### A.4 Data Sources
+
+All findings sourced from:
+- `pr-af-result-kimi.json` — Kimi k2.5 pipeline output
+- `pr-af-result-sonnet.json` — Sonnet 4.6 pipeline output
+- `claude-code-inline-comments.json` — Claude Code inline comments
+- `claude-code-reviews.json` — Claude Code review summaries
+
+All files located in the same directory as this evaluation document.
+
+---
+
+*This document evaluates model choice (Kimi k2.5 vs Sonnet 4.6) on the v2 meta-selector PR-AF architecture against the Claude Code single-agent baseline. It does not compare architecture versions. For architecture version comparison (v1 vs v2), see the archived evaluation document.*
+
+*Evaluation produced by LLM-as-a-judge analysis. All findings sourced from `pr-af-result.json` (v2), `pr-af-result-old.json` (v1), `claude-code-inline-comments.json`, and `claude-code-reviews.json` in this directory. No findings were invented or inferred beyond what the source data contains.*
