@@ -127,20 +127,30 @@ class ReviewDimension(BaseModel):
     name: str  # Human-readable name (attributed in comments)
     review_prompt: str  # Dynamically crafted prompt (string — consumed by reviewer LLM)
     target_files: list[str]  # Files this reviewer must examine
-    context_files: list[str] = Field(
-        default_factory=list
-    )  # Additional files for reference
+    context_files: list[str] = Field(default_factory=list)  # Additional files for reference
     priority: int = 1  # Higher = more important = gets budget first
     budget: BudgetAllocation = Field(default_factory=BudgetAllocation)
+
+
+class SubReviewRequest(BaseModel):
+    """A request from a reviewer to spawn a deeper sub-review on a specific area.
+
+    Reviewers emit these when they discover a complex area that requires
+    specialized deeper analysis beyond their current scope.
+    """
+
+    reason: str  # Why this sub-review is needed
+    review_prompt: str  # Crafted prompt for the child reviewer
+    target_files: list[str]  # Files the child should inspect
+    context_files: list[str] = Field(default_factory=list)
+    priority: int = 1
 
 
 class ReviewPlan(BaseModel):
     """Phase 3 output. The planner's complete review strategy."""
 
     dimensions: list[ReviewDimension]
-    cross_ref_hints: list[str] = Field(
-        default_factory=list
-    )  # Suspected interactions (string for LLM)
+    cross_ref_hints: list[str] = Field(default_factory=list)  # Suspected interactions (string for LLM)
     ai_adjusted: bool = False  # Whether plan was adjusted for AI-generated code
     total_budget: BudgetAllocation = Field(default_factory=BudgetAllocation)
 
@@ -166,9 +176,7 @@ class ReviewFinding(BaseModel):
     suggestion: str | None = None  # Concrete fix (code block)
     evidence: str = ""  # Code references that support this finding
     confidence: float = 0.5
-    tags: list[str] = Field(
-        default_factory=list
-    )  # Machine-readable: security, correctness, etc.
+    tags: list[str] = Field(default_factory=list)  # Machine-readable: security, correctness, etc.
 
 
 # ---------------------------------------------------------------------------

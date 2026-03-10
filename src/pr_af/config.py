@@ -53,6 +53,9 @@ class BudgetConfig(BaseModel):
     # Outer loop caps (pipeline)
     max_coverage_iterations: int = 2
 
+    # Recursive sub-review depth (1=flat, 2=one sub-level, 3=max)
+    max_review_depth: int = 2
+
 
 class ModelConfig(BaseModel):
     """Model routing per agent.
@@ -112,9 +115,7 @@ class ScoringConfig(BaseModel):
 class CommentConfig(BaseModel):
     """Comment formatting and posting preferences."""
 
-    min_severity: str = (
-        "suggestion"  # Minimum severity to post (skip nitpicks by default)
-    )
+    min_severity: str = "suggestion"  # Minimum severity to post (skip nitpicks by default)
     max_comments: int = 25  # Cap inline comments to avoid overwhelming
     include_suggestions: bool = True  # Include ```suggestion blocks
     include_dimension_attribution: bool = True  # Show which dimension found it
@@ -197,11 +198,10 @@ class ReviewConfig(BaseModel):
         config.budget.max_cost_usd = review_input.max_cost_usd
         config.budget.max_duration_seconds = review_input.max_duration_seconds
         if review_input.max_concurrent_reviewers is not None:
-            config.budget.max_concurrent_reviewers = (
-                review_input.max_concurrent_reviewers
-            )
+            config.budget.max_concurrent_reviewers = review_input.max_concurrent_reviewers
         if review_input.max_coverage_iterations is not None:
             config.budget.max_coverage_iterations = review_input.max_coverage_iterations
+        config.budget.max_review_depth = min(review_input.max_review_depth, 3)
 
         if review_input.models:
             for field_name, model_id in review_input.models.items():
@@ -209,9 +209,7 @@ class ReviewConfig(BaseModel):
                     setattr(config.models, field_name, model_id)
 
         if review_input.ignore_paths:
-            config.ignore_paths = list(
-                set(config.ignore_paths + review_input.ignore_paths)
-            )
+            config.ignore_paths = list(set(config.ignore_paths + review_input.ignore_paths))
 
         if review_input.hints:
             config.hints = review_input.hints
@@ -236,14 +234,10 @@ class ReviewConfig(BaseModel):
 
 class AIIntegrationConfig(BaseModel):
     provider: str = Field(
-        default_factory=lambda: os.getenv(
-            "PR_AF_PROVIDER", os.getenv("HARNESS_PROVIDER", "opencode")
-        )
+        default_factory=lambda: os.getenv("PR_AF_PROVIDER", os.getenv("HARNESS_PROVIDER", "opencode"))
     )
     harness_model: str = Field(
-        default_factory=lambda: os.getenv(
-            "PR_AF_MODEL", os.getenv("HARNESS_MODEL", "minimax/minimax-m2.5")
-        )
+        default_factory=lambda: os.getenv("PR_AF_MODEL", os.getenv("HARNESS_MODEL", "minimax/minimax-m2.5"))
     )
     ai_model: str = Field(
         default_factory=lambda: os.getenv(
@@ -251,27 +245,15 @@ class AIIntegrationConfig(BaseModel):
             os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "minimax/minimax-m2.5")),
         )
     )
-    max_turns: int = Field(
-        default_factory=lambda: int(os.getenv("PR_AF_MAX_TURNS", "50"))
-    )
-    max_retries: int = Field(
-        default_factory=lambda: int(os.getenv("PR_AF_AI_MAX_RETRIES", "3"))
-    )
+    max_turns: int = Field(default_factory=lambda: int(os.getenv("PR_AF_MAX_TURNS", "50")))
+    max_retries: int = Field(default_factory=lambda: int(os.getenv("PR_AF_AI_MAX_RETRIES", "3")))
     initial_backoff_seconds: float = Field(
-        default_factory=lambda: float(
-            os.getenv("PR_AF_AI_INITIAL_BACKOFF_SECONDS", "2.0")
-        )
+        default_factory=lambda: float(os.getenv("PR_AF_AI_INITIAL_BACKOFF_SECONDS", "2.0"))
     )
-    max_backoff_seconds: float = Field(
-        default_factory=lambda: float(os.getenv("PR_AF_AI_MAX_BACKOFF_SECONDS", "8.0"))
-    )
-    opencode_bin: str = Field(
-        default_factory=lambda: os.getenv("PR_AF_OPENCODE_BIN", "opencode")
-    )
+    max_backoff_seconds: float = Field(default_factory=lambda: float(os.getenv("PR_AF_AI_MAX_BACKOFF_SECONDS", "8.0")))
+    opencode_bin: str = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_BIN", "opencode"))
     opencode_server: str | None = Field(
-        default_factory=lambda: os.getenv(
-            "PR_AF_OPENCODE_SERVER", os.getenv("OPENCODE_SERVER")
-        )
+        default_factory=lambda: os.getenv("PR_AF_OPENCODE_SERVER", os.getenv("OPENCODE_SERVER"))
     )
 
     @classmethod
@@ -287,12 +269,8 @@ class AIIntegrationConfig(BaseModel):
             "GITHUB_TOKEN",
             "GH_TOKEN",
         )
-        env: dict[str, str] = {
-            key: value for key in env_keys if (value := os.getenv(key))
-        }
-        xdg = os.getenv("XDG_DATA_HOME") or os.path.join(
-            tempfile.gettempdir(), "opencode-shared-data"
-        )
+        env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
+        xdg = os.getenv("XDG_DATA_HOME") or os.path.join(tempfile.gettempdir(), "opencode-shared-data")
         os.makedirs(xdg, exist_ok=True)
         env["XDG_DATA_HOME"] = xdg
         return env

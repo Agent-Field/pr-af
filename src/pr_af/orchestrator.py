@@ -16,9 +16,20 @@ import time
 from typing import Any, cast
 from uuid import uuid4
 
+import httpx
+
 from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
 from .diff_engine import parse_unified_diff
 from .github.client import GitHubClient
+from .reasoners.harnesses import (
+    adversary_phase,
+    anatomy_phase,
+    coverage_gate,
+    cross_ref_phase,
+    intake_phase,
+    planning_phase,
+    review_dimension,
+)
 from .schemas.input import ChangedFile, GitHubPRData, ReviewInput
 from .schemas.output import (
     GitHubComment,
@@ -36,10 +47,9 @@ from .schemas.pipeline import (
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
+    SubReviewRequest,
 )
 from .scoring import deduplicate_exact, determine_review_event, score_findings
-
-NODE_ID = os.getenv("PR_AF", "pr-af")
 
 
 class BudgetExhausted(RuntimeError):
@@ -101,17 +111,28 @@ class ReviewOrchestrator:
         self.adversary_challenged_count = 0
 
     async def run(self) -> ReviewResult:
-        """Execute the full 7-phase pipeline."""
+        print("[PR-AF] Starting 7-phase pipeline", flush=True)
 
+        print("[PR-AF] Phase 1: INTAKE", flush=True)
         intake = await self._run_intake()
         self.intake_result = intake
         review_depth = self._resolve_depth(intake)
+        print(
+            f"[PR-AF] Intake complete: type={intake.pr_type}, complexity={intake.complexity}, depth={review_depth}",
+            flush=True,
+        )
 
+        print("[PR-AF] Phase 2: ANATOMY", flush=True)
         anatomy = await self._run_anatomy(intake)
         self.anatomy_result = anatomy
+        print(f"[PR-AF] Anatomy complete: {len(anatomy.files)} files, {len(anatomy.clusters)} clusters", flush=True)
 
+        print("[PR-AF] Phase 3: PLANNING", flush=True)
         plan = await self._run_planning(intake, anatomy, review_depth)
 
+        print(f"[PR-AF] Planning complete: {len(plan.dimensions)} dimensions", flush=True)
+
+        print("[PR-AF] Phase 4+5: REVIEW (parallel) + LAYER", flush=True)
         findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
 
         review_task = asyncio.create_task(self._run_parallel_review(plan, findings_queue))
@@ -120,6 +141,12 @@ class ReviewOrchestrator:
         _, layer_result = await asyncio.gather(review_task, layer_task)
         all_findings, cross_refs, adversary_results = layer_result
 
+        print(
+            f"[PR-AF] Review+Layer done: {len(all_findings)} findings, {len(cross_refs)} cross-refs, {len(adversary_results)} adversary results",
+            flush=True,
+        )
+
+        print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
         all_findings, cross_refs, adversary_results = await self._run_coverage_loop(
             plan, anatomy, all_findings, cross_refs, adversary_results
         )
@@ -127,9 +154,16 @@ class ReviewOrchestrator:
         self.adversary_challenged_count = sum(1 for result in adversary_results if result.verdict == "challenged")
         self.adversary_confirmed_count = sum(1 for result in adversary_results if result.verdict == "confirmed")
 
+        print("[PR-AF] Phase 7: SYNTHESIS", flush=True)
         scored_findings = self._synthesize(all_findings, cross_refs, adversary_results)
+        print(f"[PR-AF] Synthesis complete: {len(scored_findings)} scored findings", flush=True)
 
+        print("[PR-AF] Phase 8: OUTPUT", flush=True)
         result = await self._generate_output(scored_findings, intake, anatomy, plan)
+        print(
+            f"[PR-AF] Pipeline complete! {result.summary.total_findings} findings, cost=${result.summary.cost_usd}",
+            flush=True,
+        )
 
         return result
 
@@ -170,14 +204,13 @@ class ReviewOrchestrator:
         else:
             raise ValueError("One of pr_url, diff_text, or repo_path is required")
 
-        result_raw = await self.app.call(
-            f"{NODE_ID}.intake_phase",
+        result_raw = await intake_phase(
             pr_data=self.pr_data.model_dump(),
             depth=self.input.depth,
         )
         self.agent_invocations += 1
         self._register_cost("intake", self._extract_cost(result_raw))
-        intake = IntakeResult.model_validate(_unwrap(result_raw))
+        intake = IntakeResult.model_validate(result_raw)
         return intake
 
     async def _run_anatomy(self, intake: IntakeResult) -> AnatomyResult:
@@ -186,23 +219,21 @@ class ReviewOrchestrator:
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
-        result_raw = await self.app.call(
-            f"{NODE_ID}.anatomy_phase",
+        result_raw = await anatomy_phase(
             pr_data=self.pr_data.model_dump(),
             intake=intake.model_dump(),
             repo_path=self.input.repo_path or "",
         )
         self.agent_invocations += 1
         self._register_cost("anatomy", self._extract_cost(result_raw))
-        anatomy = AnatomyResult.model_validate(_unwrap(result_raw))
+        anatomy = AnatomyResult.model_validate(result_raw)
         return anatomy
 
     async def _run_planning(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("planning"):
             raise BudgetExhausted("Budget exhausted before planning")
 
-        result_raw = await self.app.call(
-            f"{NODE_ID}.planning_phase",
+        result_raw = await planning_phase(
             intake=intake.model_dump(),
             anatomy=anatomy.model_dump(),
             depth=review_depth,
@@ -210,7 +241,7 @@ class ReviewOrchestrator:
         )
         self.agent_invocations += 1
         self._register_cost("planning", self._extract_cost(result_raw))
-        plan = ReviewPlan.model_validate(_unwrap(result_raw))
+        plan = ReviewPlan.model_validate(result_raw)
 
         depth_profile = DEPTH_PROFILES.get(review_depth)
         if depth_profile and len(plan.dimensions) > depth_profile.max_dimensions:
@@ -222,31 +253,70 @@ class ReviewOrchestrator:
         self,
         plan: ReviewPlan,
         findings_queue: asyncio.Queue[list[ReviewFinding] | None],
+        current_depth: int = 0,
     ) -> None:
+        max_depth = self.config.budget.max_review_depth
         semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
 
-        async def run_dimension(dim: ReviewDimension) -> None:
+        async def run_dimension(dim: ReviewDimension, depth: int) -> None:
             if self._budget_or_timeout_exhausted("review"):
                 return
             async with semaphore:
-                result_raw = await self.app.call(
-                    f"{NODE_ID}.review_dimension",
+                result_raw = await review_dimension(
                     review_prompt=dim.review_prompt,
                     target_files=dim.target_files,
                     context_files=dim.context_files,
                     repo_path=self.input.repo_path or "",
+                    current_depth=depth,
+                    max_depth=max_depth,
                 )
                 self.agent_invocations += 1
                 self._register_cost("review", self._extract_cost(result_raw))
                 findings = self._extract_findings(result_raw, dim)
                 await findings_queue.put(findings)
 
+                sub_reviews = self._extract_sub_reviews(result_raw, dim)
+                if sub_reviews and depth < max_depth and not self._budget_or_timeout_exhausted("review"):
+                    print(
+                        f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} sub-review(s) at depth {depth + 1}/{max_depth}",
+                        flush=True,
+                    )
+                    sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
+                    await asyncio.gather(*sub_tasks)
+
         try:
-            tasks = [run_dimension(dim) for dim in plan.dimensions]
+            tasks = [run_dimension(dim, current_depth) for dim in plan.dimensions]
             if tasks:
                 await asyncio.gather(*tasks)
         finally:
             await findings_queue.put(None)
+
+    def _extract_sub_reviews(self, result_raw: object, parent_dim: ReviewDimension) -> list[ReviewDimension]:
+        payload = _unwrap(result_raw)
+        if not isinstance(payload, dict):
+            return []
+        raw_subs = payload.get("sub_reviews", [])
+        if not isinstance(raw_subs, list):
+            return []
+        dims: list[ReviewDimension] = []
+        for idx, sub in enumerate(raw_subs[:2]):
+            if not isinstance(sub, dict):
+                continue
+            prompt = sub.get("review_prompt", "")
+            targets = sub.get("target_files", [])
+            if not prompt or not targets:
+                continue
+            dims.append(
+                ReviewDimension(
+                    id=f"{parent_dim.id}_sub{idx}",
+                    name=f"{parent_dim.name} → {sub.get('reason', 'deep-dive')[:40]}",
+                    review_prompt=prompt,
+                    target_files=targets,
+                    context_files=sub.get("context_files", []),
+                    priority=parent_dim.priority,
+                )
+            )
+        return dims
 
     async def _run_review_layer(
         self,
@@ -265,8 +335,7 @@ class ReviewOrchestrator:
         adversary_results: list[AdversaryResult] = []
 
         if all_findings and not self._budget_or_timeout_exhausted("cross_ref"):
-            cross_raw = await self.app.call(
-                f"{NODE_ID}.cross_ref_phase",
+            cross_raw = await cross_ref_phase(
                 findings=[f.model_dump() for f in all_findings],
                 cross_ref_hints=plan.cross_ref_hints,
             )
@@ -275,8 +344,7 @@ class ReviewOrchestrator:
             cross_refs = self._extract_cross_refs(cross_raw)
 
         if all_findings and not self._budget_or_timeout_exhausted("adversary"):
-            adversary_raw = await self.app.call(
-                f"{NODE_ID}.adversary_phase",
+            adversary_raw = await adversary_phase(
                 findings=[f.model_dump() for f in all_findings],
                 ai_generated_confidence=self.intake_result.ai_generated if self.intake_result else 0.0,
             )
@@ -299,14 +367,13 @@ class ReviewOrchestrator:
                 break
 
             reviewed_clusters = self._reviewed_clusters(anatomy, findings)
-            gate_raw = await self.app.call(
-                f"{NODE_ID}.coverage_gate",
+            gate_raw = await coverage_gate(
                 anatomy=anatomy.model_dump(),
                 reviewed_clusters=reviewed_clusters,
             )
             self.agent_invocations += 1
             self._register_cost("coverage", self._extract_cost(gate_raw))
-            gate = _unwrap(gate_raw)
+            gate = gate_raw if isinstance(gate_raw, dict) else {}
             fully_covered = bool(gate.get("fully_covered", False))
             confident = bool(gate.get("confident", True))
             gap_descriptions = cast(list[str], gate.get("gap_descriptions", []))
@@ -335,8 +402,7 @@ class ReviewOrchestrator:
                 findings.extend(batch)
 
             if findings and not self._budget_or_timeout_exhausted("cross_ref"):
-                cross_raw = await self.app.call(
-                    f"{NODE_ID}.cross_ref_phase",
+                cross_raw = await cross_ref_phase(
                     findings=[f.model_dump() for f in findings],
                     cross_ref_hints=plan.cross_ref_hints,
                 )
@@ -345,8 +411,7 @@ class ReviewOrchestrator:
                 cross_refs = self._extract_cross_refs(cross_raw)
 
             if findings and not self._budget_or_timeout_exhausted("adversary"):
-                adversary_raw = await self.app.call(
-                    f"{NODE_ID}.adversary_phase",
+                adversary_raw = await adversary_phase(
                     findings=[f.model_dump() for f in findings],
                     ai_generated_confidence=self.intake_result.ai_generated if self.intake_result else 0.0,
                 )
@@ -373,6 +438,42 @@ class ReviewOrchestrator:
         )
         return scored[: self.config.comments.max_comments]
 
+    def _normalize_path(self, path: str) -> str:
+        if not path:
+            return path
+        repo_path = self.input.repo_path or ""
+        if repo_path and path.startswith(repo_path):
+            path = path[len(repo_path) :].lstrip("/")
+        if path.startswith("/workspaces/"):
+            parts = path.split("/", 3)
+            if len(parts) >= 4:
+                path = parts[3]
+        return path
+
+    def _diff_line_ranges(self) -> dict[str, list[tuple[int, int]]]:
+        if not self.pr_data:
+            return {}
+        ranges: dict[str, list[tuple[int, int]]] = {}
+        for cf in self.pr_data.changed_files:
+            if not cf.patch:
+                ranges[cf.path] = [(1, 999999)]
+                continue
+            file_ranges: list[tuple[int, int]] = []
+            for line in cf.patch.split("\n"):
+                if line.startswith("@@"):
+                    import re
+
+                    match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+                    if match:
+                        start = int(match.group(1))
+                        count = int(match.group(2) or "1")
+                        file_ranges.append((start, start + count))
+            if file_ranges:
+                ranges[cf.path] = file_ranges
+            else:
+                ranges[cf.path] = [(1, 999999)]
+        return ranges
+
     async def _generate_output(
         self,
         scored_findings: list[ScoredFinding],
@@ -383,6 +484,9 @@ class ReviewOrchestrator:
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
+        diff_files = {cf.path for cf in self.pr_data.changed_files}
+        diff_ranges = self._diff_line_ranges()
+
         severity_rank = {"nitpick": 0, "suggestion": 1, "important": 2, "critical": 3}
         min_rank = severity_rank.get(self.config.comments.min_severity, 1)
 
@@ -392,15 +496,21 @@ class ReviewOrchestrator:
             if severity_rank.get(finding.severity, 0) < min_rank:
                 continue
             filtered_for_comments.append(finding)
-            if finding.file_path and finding.line_start > 0:
-                comments.append(
-                    GitHubComment(
-                        path=finding.file_path,
-                        line=finding.line_start,
-                        side=finding.diff_side,
-                        body=self._format_comment_body(finding),
-                    )
+            norm_path = self._normalize_path(finding.file_path)
+            if not norm_path or norm_path not in diff_files or finding.line_start <= 0:
+                continue
+            ranges = diff_ranges.get(norm_path, [])
+            in_range = any(start <= finding.line_start <= end for start, end in ranges)
+            if not in_range:
+                continue
+            comments.append(
+                GitHubComment(
+                    path=norm_path,
+                    line=finding.line_start,
+                    side=finding.diff_side,
+                    body=self._format_comment_body(finding),
                 )
+            )
 
         comments = comments[: self.config.comments.max_comments]
         review_event = determine_review_event(filtered_for_comments)
@@ -426,8 +536,37 @@ class ReviewOrchestrator:
                     review=review,
                     commit_sha=self.pr_data.head_sha,
                 )
-            except NotImplementedError:
-                pass
+                print(
+                    f"[PR-AF] Posted review to {self.pr_data.owner}/{self.pr_data.repo}#{self.pr_data.number}",
+                    flush=True,
+                )
+            except httpx.HTTPStatusError as exc:
+                # GitHub returns 422 when requesting changes on own PR — retry with COMMENT
+                if exc.response.status_code == 422 and "own pull request" in exc.response.text.lower():
+                    print("[PR-AF] Cannot request changes on own PR, retrying with COMMENT event", flush=True)
+                    review_fallback = GitHubReview(
+                        body=summary_body,
+                        event="COMMENT",
+                        comments=comments,
+                    )
+                    try:
+                        await client.post_review(
+                            owner=self.pr_data.owner,
+                            repo=self.pr_data.repo,
+                            pr_number=self.pr_data.number,
+                            review=review_fallback,
+                            commit_sha=self.pr_data.head_sha,
+                        )
+                        print(
+                            f"[PR-AF] Posted review (COMMENT) to {self.pr_data.owner}/{self.pr_data.repo}#{self.pr_data.number}",
+                            flush=True,
+                        )
+                    except Exception as retry_exc:
+                        print(f"[PR-AF] Failed to post review on retry: {retry_exc}", flush=True)
+                else:
+                    print(f"[PR-AF] Failed to post review: {exc}", flush=True)
+            except Exception as exc:
+                print(f"[PR-AF] Failed to post review: {exc}", flush=True)
 
         by_severity: dict[str, int] = {}
         for finding in scored_findings:

@@ -11,7 +11,7 @@ license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [{ name = "AgentField", email = "hello@agentfield.dev" }]
 dependencies = [
-    "agentfield>=0.1.0",
+    "agentfield",
     "pydantic>=2.0",
     "httpx>=0.27",
     "pyyaml>=6.0",

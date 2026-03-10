@@ -106,11 +106,7 @@ class GitHubClient:
             number=number,
             title=pr_data.get("title", ""),
             description=pr_data.get("body") or "",
-            labels=[
-                label.get("name", "")
-                for label in pr_data.get("labels", [])
-                if label.get("name")
-            ],
+            labels=[label.get("name", "") for label in pr_data.get("labels", []) if label.get("name")],
             author=pr_data.get("user", {}).get("login", ""),
             base_sha=pr_data.get("base", {}).get("sha", ""),
             head_sha=pr_data.get("head", {}).get("sha", ""),
@@ -126,13 +122,17 @@ class GitHubClient:
         pr_number: int,
         review: GitHubReview,
         commit_sha: str = "",
-    ) -> None:
+    ) -> dict[str, object]:
         """Post a review with inline comments to a GitHub PR."""
         payload: dict[str, object] = {
             "body": review.body,
             "event": review.event,
-            "commit_id": commit_sha,
-            "comments": [
+        }
+        if commit_sha:
+            payload["commit_id"] = commit_sha
+
+        if review.comments:
+            payload["comments"] = [
                 {
                     "path": comment.path,
                     "line": comment.line,
@@ -140,16 +140,29 @@ class GitHubClient:
                     "body": comment.body,
                 }
                 for comment in review.comments
-            ],
-        }
+                if comment.path and comment.line > 0
+            ]
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        print(
+            f"[PR-AF] Posting review to {owner}/{repo}#{pr_number}: "
+            f"event={review.event}, {len(review.comments)} comments, "
+            f"commit_sha={commit_sha[:12] if commit_sha else 'none'}",
+            flush=True,
+        )
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
                 headers=self._headers(),
                 json=payload,
             )
+            if response.status_code >= 400:
+                error_body = response.text
+                print(f"[PR-AF] GitHub API error {response.status_code}: {error_body}", flush=True)
             response.raise_for_status()
+            result = response.json()
+            print(f"[PR-AF] Review posted successfully: id={result.get('id')}", flush=True)
+            return result
 
     async def clone_repo(
         self,

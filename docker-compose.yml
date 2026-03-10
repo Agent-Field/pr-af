@@ -1,6 +1,7 @@
 services:
   agentfield:
-    image: ghcr.io/agent-field/agentfield:latest
+    image: agentfield/control-plane:latest
+    pull_policy: always
     ports:
       - "8080:8080"
     environment:
@@ -9,12 +10,6 @@ services:
       - AGENTFIELD_STORAGE_MODE=local
     volumes:
       - agentfield-data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
     restart: unless-stopped
 
   pr-af:
@@ -37,7 +32,7 @@ services:
       - pr-af-workspaces:/workspaces
     depends_on:
       agentfield:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
       interval: 30s

@@ -18,19 +18,29 @@ from ..schemas.pipeline import (
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
+    SubReviewRequest,
 )
 
 
 class _AnatomySemanticResult(BaseModel):
-    pr_narrative: str
+    pr_narrative: str = ""
     risk_surfaces: list[str] = Field(default_factory=list)
     unrelated_changes: list[str] = Field(default_factory=list)
     intent_gaps: list[str] = Field(default_factory=list)
     context_notes: str = ""
 
 
+class _SubReviewRequest(BaseModel):
+    reason: str = ""
+    review_prompt: str = ""
+    target_files: list[str] = Field(default_factory=list)
+    context_files: list[str] = Field(default_factory=list)
+    priority: int = 1
+
+
 class _ReviewFindingsResult(BaseModel):
     findings: list[ReviewFinding] = Field(default_factory=list)
+    sub_reviews: list[_SubReviewRequest] = Field(default_factory=list)
 
 
 class _CrossRefResult(BaseModel):
@@ -193,21 +203,24 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
     pr = GitHubPRData.model_validate(pr_data)
     files_changed = len(pr.changed_files)
     languages = _extract_languages(pr)
+    import json as _json
 
-    gate_result = await router.app.ai(
-        prompt=(
-            "Classify this pull request from metadata and diff footprint. "
-            "Return pr_type, complexity, and confident only."
-        ),
-        input={
+    ai_input = _json.dumps(
+        {
             "title": pr.title,
-            "description": pr.description,
+            "description": (pr.description or "")[:500],
             "labels": pr.labels,
             "author": pr.author,
             "files_changed": files_changed,
             "languages": languages,
-            "commit_messages": pr.commit_messages,
+            "commit_messages": pr.commit_messages[:5],
         },
+        default=str,
+    )
+
+    gate_result = await router.app.ai(
+        f"Classify this pull request from metadata and diff footprint.\n\n{ai_input}",
+        system="Return pr_type, complexity, and confident only. Use the provided schema.",
         schema=IntakeGate,
     )
 
@@ -226,24 +239,29 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
         )
         return intake_result.model_dump()
 
-    fallback_result = await router.app.harness(
-        prompt=(
-            "Perform deep intake classification for this pull request. "
-            "Infer PR type, complexity, touched areas, risk signals, AI-generation confidence, "
-            "and an accurate short PR summary for downstream reviewers."
-        ),
-        input={
-            "pr_data": pr.model_dump(),
+    fallback_input = _json.dumps(
+        {
+            "pr_title": pr.title,
+            "description": (pr.description or "")[:1000],
             "requested_depth": depth,
-            "language_hints": languages,
+            "languages": languages,
+            "files_changed": files_changed,
         },
+        default=str,
+    )
+    fallback_result = await router.app.harness(
+        f"Perform deep intake classification for this pull request. "
+        f"Infer PR type, complexity, touched areas, risk signals, AI-generation confidence, "
+        f"and an accurate short PR summary for downstream reviewers.\n\n{fallback_input}",
         schema=IntakeResult,
     )
-    return fallback_result.model_dump()
+    return fallback_result.parsed.model_dump() if fallback_result.parsed else {}
 
 
 @router.reasoner()
 async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dict:
+    import json as _json
+
     pr = GitHubPRData.model_validate(pr_data)
     intake_result = IntakeResult.model_validate(intake)
 
@@ -256,65 +274,81 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dic
     changed_paths = [file.path for file in files]
     blast_radius = compute_blast_radius(changed_paths, repo_path)
 
-    semantic = await router.app.harness(
-        prompt=(
-            "Analyze the pull request semantically. Explain what changed and why, identify risk surfaces, "
-            "call out unrelated changes, and detect intent gaps between PR description and actual diff."
-        ),
-        input={
-            "intake": intake_result.model_dump(),
-            "pr_metadata": {
-                "title": pr.title,
-                "description": pr.description,
-                "labels": pr.labels,
-                "commit_messages": pr.commit_messages,
+    context = _json.dumps(
+        {
+            "intake": {
+                "pr_type": intake_result.pr_type,
+                "complexity": intake_result.complexity,
+                "pr_summary": intake_result.pr_summary,
             },
-            "files": [file.model_dump() for file in files],
+            "pr_metadata": {"title": pr.title, "description": (pr.description or "")[:500], "labels": pr.labels},
             "clusters": _cluster_descriptions(clusters),
             "stats": stats.model_dump(),
-            "blast_radius": blast_radius,
+            "blast_radius_count": len(blast_radius),
+            "files_changed": [
+                {"path": f.path, "status": f.status, "lines_added": f.lines_added, "lines_removed": f.lines_removed}
+                for f in files[:30]
+            ],
         },
+        default=str,
+    )
+    semantic = await router.app.harness(
+        f"Analyze the pull request semantically. Explain what changed and why, identify risk surfaces, "
+        f"call out unrelated changes, and detect intent gaps between PR description and actual diff.\n\n{context}",
         schema=_AnatomySemanticResult,
-        cwd=repo_path,
+        cwd=repo_path or None,
     )
 
+    parsed = semantic.parsed if semantic.parsed else _AnatomySemanticResult()
     anatomy_result = AnatomyResult(
         files=files,
         clusters=clusters,
         blast_radius=blast_radius,
         dependency_graph={},
         stats=stats,
-        pr_narrative=semantic.pr_narrative,
-        risk_surfaces=semantic.risk_surfaces,
-        unrelated_changes=semantic.unrelated_changes,
-        intent_gaps=semantic.intent_gaps,
-        context_notes=semantic.context_notes,
+        pr_narrative=parsed.pr_narrative,
+        risk_surfaces=parsed.risk_surfaces,
+        unrelated_changes=parsed.unrelated_changes,
+        intent_gaps=parsed.intent_gaps,
+        context_notes=parsed.context_notes,
     )
     return anatomy_result.model_dump()
 
 
 @router.reasoner()
 async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", hints: list[str] | None = None) -> dict:
+    import json as _json
+
     intake_result = IntakeResult.model_validate(intake)
     anatomy_result = AnatomyResult.model_validate(anatomy)
     planner_hints = hints or []
 
-    plan = await router.app.harness(
-        prompt=(
-            "Create a dynamic review plan for this PR. Do not use fixed reviewer templates. "
-            "Generate review dimensions based on intake and anatomy, with clear target files and context files. "
-            "Each dimension must include a concrete review_prompt that another reviewer can execute directly. "
-            "Balance depth with the requested review depth and prioritize highest-risk dimensions first."
-        ),
-        input={
-            "intake": intake_result.model_dump(),
-            "anatomy": anatomy_result.model_dump(),
+    context = _json.dumps(
+        {
+            "intake": {
+                "pr_type": intake_result.pr_type,
+                "complexity": intake_result.complexity,
+                "pr_summary": intake_result.pr_summary,
+                "areas_touched": intake_result.areas_touched,
+                "risk_signals": intake_result.risk_signals,
+            },
+            "clusters": _cluster_descriptions(anatomy_result.clusters),
+            "risk_surfaces": anatomy_result.risk_surfaces,
+            "pr_narrative": anatomy_result.pr_narrative,
             "depth": depth,
             "hints": planner_hints,
+            "file_paths": [f.path for f in anatomy_result.files[:30]],
         },
+        default=str,
+    )
+    plan_result = await router.app.harness(
+        f"Create a dynamic review plan for this PR. Do not use fixed reviewer templates. "
+        f"Generate review dimensions based on intake and anatomy, with clear target files and context files. "
+        f"Each dimension must include a concrete review_prompt that another reviewer can execute directly. "
+        f"Balance depth with the requested review depth and prioritize highest-risk dimensions first.\n\n{context}",
         schema=ReviewPlan,
     )
-    return plan.model_dump()
+    return plan_result.parsed.model_dump() if plan_result.parsed else {"dimensions": [], "cross_ref_hints": []}
 
 
 @router.reasoner()
@@ -323,67 +357,132 @@ async def review_dimension(
     target_files: list[str],
     context_files: list[str] | None = None,
     repo_path: str = "",
+    current_depth: int = 0,
+    max_depth: int = 2,
 ) -> dict:
-    context = context_files or []
-    result = await router.app.harness(
-        prompt=(
-            "Execute one review dimension using the provided review prompt. "
-            "Inspect target files deeply, use context files as needed, and return structured findings only."
-        ),
-        input={
-            "review_prompt": review_prompt,
-            "target_files": target_files,
-            "context_files": context,
-        },
-        schema=_ReviewFindingsResult,
-        cwd=repo_path,
+    ctx_files = context_files or []
+    can_spawn = current_depth < max_depth
+
+    spawn_instruction = ""
+    if can_spawn:
+        spawn_instruction = (
+            "\n\nSUB-REVIEW SPAWNING: You may request deeper sub-reviews for areas that need "
+            "specialized investigation beyond your current scope. Only request a sub-review when:\n"
+            "- You found a complex issue that requires reading additional files not in your target list\n"
+            "- A finding reveals a pattern that may repeat across other files\n"
+            "- You suspect a security/correctness issue but lack context to confirm it\n"
+            f"Current depth: {current_depth}/{max_depth}. "
+            f"You have {max_depth - current_depth} level(s) of sub-review remaining. "
+            "Do NOT request sub-reviews for trivial issues or things you can resolve yourself. "
+            "Maximum 2 sub-reviews per dimension."
+        )
+    else:
+        spawn_instruction = (
+            "\n\nYou are at maximum review depth. Do NOT request any sub-reviews. "
+            "Report all findings directly, even if uncertain."
+        )
+
+    prompt = (
+        f"Execute the following review dimension.\n\n"
+        f"Review prompt: {review_prompt}\n\n"
+        f"Target files: {', '.join(target_files)}\n"
+        f"Context files: {', '.join(ctx_files) if ctx_files else 'none'}\n\n"
+        f"Inspect target files deeply, use context files as needed, and return structured findings."
+        f"{spawn_instruction}"
     )
-    return {"findings": [finding.model_dump() for finding in result.findings]}
+    result = await router.app.harness(
+        prompt,
+        schema=_ReviewFindingsResult,
+        cwd=repo_path or None,
+    )
+    parsed = result.parsed if result.parsed else _ReviewFindingsResult()
+    sub_review_dicts = []
+    if can_spawn and parsed.sub_reviews:
+        sub_review_dicts = [
+            {
+                "reason": sr.reason,
+                "review_prompt": sr.review_prompt,
+                "target_files": sr.target_files,
+                "context_files": sr.context_files,
+                "priority": sr.priority,
+            }
+            for sr in parsed.sub_reviews[:2]
+            if sr.review_prompt and sr.target_files
+        ]
+    return {
+        "findings": [finding.model_dump() for finding in parsed.findings],
+        "sub_reviews": sub_review_dicts,
+        "current_depth": current_depth,
+    }
 
 
 @router.reasoner()
 async def cross_ref_phase(findings: list[dict], cross_ref_hints: list[str] | None = None) -> dict:
+    import json as _json
+
     hints = cross_ref_hints or []
     validated_findings = [ReviewFinding.model_validate(finding) for finding in findings]
 
+    findings_summary = _json.dumps(
+        [
+            {
+                "title": f.title,
+                "severity": f.severity,
+                "file_path": f.file_path,
+                "dimension_name": f.dimension_name,
+                "body": f.body[:200],
+            }
+            for f in validated_findings[:20]
+        ],
+        default=str,
+    )
     result = await router.app.harness(
-        prompt=(
-            "Analyze interactions across findings from different review dimensions. "
-            "Identify compound risks, assumption violations, and consistency gaps."
-        ),
-        input={
-            "findings": [finding.model_dump() for finding in validated_findings],
-            "cross_ref_hints": hints,
-        },
+        f"Analyze interactions across findings from different review dimensions. "
+        f"Identify compound risks, assumption violations, and consistency gaps.\n\n"
+        f"Findings:\n{findings_summary}\n\nHints: {hints if hints else 'none'}",
         schema=_CrossRefResult,
     )
-    return {"interactions": [interaction.model_dump() for interaction in result.interactions]}
+    parsed = result.parsed if result.parsed else _CrossRefResult()
+    return {"interactions": [interaction.model_dump() for interaction in parsed.interactions]}
 
 
 @router.reasoner()
 async def adversary_phase(findings: list[dict], ai_generated_confidence: float = 0.0) -> dict:
+    import json as _json
+
     validated_findings = [ReviewFinding.model_validate(finding) for finding in findings]
     skepticism = "standard"
     if ai_generated_confidence > 0.5:
         skepticism = "high"
 
+    findings_summary = _json.dumps(
+        [
+            {
+                "title": f.title,
+                "severity": f.severity,
+                "file_path": f.file_path,
+                "body": f.body[:200],
+                "confidence": f.confidence,
+            }
+            for f in validated_findings[:20]
+        ],
+        default=str,
+    )
     result = await router.app.harness(
-        prompt=(
-            "Challenge each finding adversarially. Look for false positives, over-claimed severity, "
-            "and hidden traps that reviewers may have missed."
-        ),
-        input={
-            "findings": [finding.model_dump() for finding in validated_findings],
-            "ai_generated_confidence": ai_generated_confidence,
-            "skepticism_mode": skepticism,
-        },
+        f"Challenge each finding adversarially. Look for false positives, over-claimed severity, "
+        f"and hidden traps that reviewers may have missed.\n\n"
+        f"Skepticism mode: {skepticism}\nAI-generated confidence: {ai_generated_confidence}\n\n"
+        f"Findings:\n{findings_summary}",
         schema=_AdversaryPhaseResult,
     )
-    return {"results": [item.model_dump() for item in result.results]}
+    parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
+    return {"results": [item.model_dump() for item in parsed.results]}
 
 
 @router.reasoner()
 async def coverage_gate(anatomy: dict, reviewed_clusters: list[str]) -> dict:
+    import json as _json
+
     anatomy_result = AnatomyResult.model_validate(anatomy)
     cluster_payload = [
         {
@@ -395,17 +494,19 @@ async def coverage_gate(anatomy: dict, reviewed_clusters: list[str]) -> dict:
         for cluster in anatomy_result.clusters
     ]
 
-    gate = await router.app.ai(
-        prompt=(
-            "Determine whether review coverage is complete. "
-            "Compare reviewed cluster identifiers against all change clusters. "
-            "If gaps exist, return concise gap_descriptions."
-        ),
-        input={
+    context = _json.dumps(
+        {
             "all_clusters": cluster_payload,
             "reviewed_clusters": reviewed_clusters,
             "risk_surfaces": anatomy_result.risk_surfaces,
         },
+        default=str,
+    )
+    gate = await router.app.ai(
+        f"Determine whether review coverage is complete. "
+        f"Compare reviewed cluster identifiers against all change clusters. "
+        f"If gaps exist, return concise gap_descriptions.\n\n{context}",
+        system="Analyze the coverage state and return the structured result.",
         schema=CoverageGate,
     )
     return gate.model_dump()

@@ -51,12 +51,7 @@ app = Agent(
 
 def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
     target = repo_path
-    if (
-        not target
-        and isinstance(pr_url, str)
-        and "github.com" in pr_url
-        and "/pull/" in pr_url
-    ):
+    if not target and isinstance(pr_url, str) and "github.com" in pr_url and "/pull/" in pr_url:
         parts = pr_url.split("github.com/")[-1].split("/pull/")[0].strip("/")
         if parts.count("/") == 1:
             target = f"https://github.com/{parts}.git"
@@ -69,7 +64,7 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         target_dir = f"/workspaces/{repo_name}"
         os.makedirs("/workspaces", exist_ok=True)
 
-        if os.path.isdir(target_dir):
+        if os.path.isdir(target_dir) and os.path.isdir(os.path.join(target_dir, ".git")):
             subprocess.run(
                 ["git", "pull", "--ff-only"],
                 cwd=target_dir,
@@ -79,8 +74,13 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
             )
             return target_dir
 
+        clone_url = target
+        gh_token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
+        if gh_token and clone_url.startswith("https://github.com/"):
+            clone_url = clone_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
+
         result = subprocess.run(
-            ["git", "clone", "--depth", "1", target, target_dir],
+            ["git", "clone", "--depth", "1", clone_url, target_dir],
             env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
             timeout=120,
             capture_output=True,
@@ -109,10 +109,15 @@ async def review(
     models: dict[str, str] | None = None,
     max_concurrent_reviewers: int | None = None,
     max_coverage_iterations: int | None = None,
+    max_review_depth: int = 2,
     output_format: str = "github",
     dry_run: bool = False,
     post_pr_number: int | None = None,
 ) -> dict[str, object]:
+    print(
+        f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, depth={depth!r}, dry_run={dry_run!r}",
+        flush=True,
+    )
     review_input = ReviewInput(
         pr_url=pr_url,
         diff_text=diff_text,
@@ -128,6 +133,7 @@ async def review(
         models=models,
         max_concurrent_reviewers=max_concurrent_reviewers,
         max_coverage_iterations=max_coverage_iterations,
+        max_review_depth=min(max_review_depth, 3),
         output_format=output_format,
         dry_run=dry_run,
         post_pr_number=post_pr_number,
@@ -142,12 +148,11 @@ async def review(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
     except Exception as exc:
-        cast("Any", app).note(
-            f"Review pipeline failed: {exc}", tags=["review", "error"]
-        )
-        raise HTTPException(
-            status_code=500, detail={"error": f"review execution failed: {exc}"}
-        ) from exc
+        import traceback as _tb
+
+        print(f"[PR-AF] Pipeline error: {exc}\n{_tb.format_exc()}", flush=True)
+        cast("Any", app).note(f"Review pipeline failed: {exc}", tags=["review", "error"])
+        raise HTTPException(status_code=500, detail={"error": f"review execution failed: {exc}"}) from exc
 
     return result.model_dump()
 
