@@ -492,16 +492,22 @@ class ReviewOrchestrator:
 
         comments: list[GitHubComment] = []
         filtered_for_comments: list[ScoredFinding] = []
+        skipped_severity = 0
+        skipped_path = 0
+        skipped_range = 0
         for finding in scored_findings:
             if severity_rank.get(finding.severity, 0) < min_rank:
+                skipped_severity += 1
                 continue
             filtered_for_comments.append(finding)
             norm_path = self._normalize_path(finding.file_path)
             if not norm_path or norm_path not in diff_files or finding.line_start <= 0:
+                skipped_path += 1
                 continue
             ranges = diff_ranges.get(norm_path, [])
             in_range = any(start <= finding.line_start <= end for start, end in ranges)
             if not in_range:
+                skipped_range += 1
                 continue
             comments.append(
                 GitHubComment(
@@ -511,6 +517,14 @@ class ReviewOrchestrator:
                     body=self._format_comment_body(finding),
                 )
             )
+        print(
+            f"[PR-AF] Comment filtering: {len(scored_findings)} scored → "
+            f"{len(filtered_for_comments)} pass severity (skipped {skipped_severity}) → "
+            f"{len(filtered_for_comments) - skipped_path - skipped_range} in-diff "
+            f"(skipped {skipped_path} path, {skipped_range} range) → "
+            f"{len(comments)} inline comments",
+            flush=True,
+        )
 
         comments = comments[: self.config.comments.max_comments]
         review_event = determine_review_event(filtered_for_comments)
@@ -518,6 +532,8 @@ class ReviewOrchestrator:
         summary_body = self._format_summary(
             findings=filtered_for_comments,
             review_event=review_event,
+            intake=intake,
+            plan=plan,
         )
 
         review = GitHubReview(
@@ -769,41 +785,307 @@ class ReviewOrchestrator:
 
     def _format_comment_body(self, finding: ScoredFinding) -> str:
         emoji = self.config.comments.severity_emojis.get(finding.severity, "")
-        lines = [f"{emoji} **{finding.title}**".strip(), "", finding.body]
+        severity_label = finding.severity.upper()
+        lines = [f"{emoji} **[{severity_label}] {finding.title}**", ""]
 
-        if self.config.comments.include_suggestions and finding.suggestion:
-            lines.extend(["", "Suggested fix:", "```suggestion", finding.suggestion, "```"])
+        lines.append(finding.body)
 
         if finding.evidence:
-            lines.extend(["", f"Evidence: {finding.evidence}"])
+            lines.extend(["", "---", ""])
+            evidence_lines = finding.evidence.strip().splitlines()
+            for ev_line in evidence_lines:
+                lines.append(f"> {ev_line}")
+
+        if self.config.comments.include_suggestions and finding.suggestion:
+            suggestion_text = finding.suggestion.strip()
+            if self.config.comments.suggestion_mode == "code":
+                lines.extend(["", "```suggestion", suggestion_text, "```"])
+            else:
+                lines.extend(
+                    [
+                        "",
+                        "**💡 Suggested Fix**",
+                        "",
+                        suggestion_text,
+                    ]
+                )
 
         meta_parts: list[str] = []
         if self.config.comments.include_dimension_attribution:
-            meta_parts.append(f"Dimension: {finding.dimension_name}")
+            meta_parts.append(f"`{finding.dimension_name}`")
         if self.config.comments.include_confidence:
-            meta_parts.append(f"Confidence: {finding.confidence:.2f}")
+            pct = int(finding.confidence * 100)
+            meta_parts.append(f"confidence {pct}%")
         if meta_parts:
-            lines.extend(["", " | ".join(meta_parts)])
+            lines.extend(["", f"---", f"*{' · '.join(meta_parts)}*"])
 
         return "\n".join(lines).strip()
 
-    def _format_summary(self, findings: list[ScoredFinding], review_event: str) -> str:
+    @staticmethod
+    def _lang_from_path(path: str) -> str:
+        ext_map = {
+            ".py": "python",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".go": "go",
+            ".rs": "rust",
+            ".java": "java",
+            ".rb": "ruby",
+            ".swift": "swift",
+            ".kt": "kotlin",
+            ".cs": "csharp",
+            ".cpp": "cpp",
+            ".c": "c",
+            ".sh": "bash",
+        }
+        for ext, lang in ext_map.items():
+            if path.endswith(ext):
+                return lang
+        return ""
+
+    @staticmethod
+    def _wrap_as_comment(text: str, lang: str) -> str:
+        hash_langs = {"python", "ruby", "bash", "yaml", "perl"}
+        slash_langs = {"javascript", "typescript", "go", "java", "rust", "swift", "kotlin", "csharp", "cpp", "c"}
+        prefix = "# " if lang in hash_langs else "// " if lang in slash_langs else "# "
+        return "\n".join(f"{prefix}{line}" if line.strip() else "" for line in text.splitlines())
+
+    def _format_summary(
+        self,
+        findings: list[ScoredFinding],
+        review_event: str,
+        intake: IntakeResult | None = None,
+        plan: ReviewPlan | None = None,
+    ) -> str:
         by_severity: dict[str, int] = {"critical": 0, "important": 0, "suggestion": 0, "nitpick": 0}
         for finding in findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
+        emojis = self.config.comments.severity_emojis
+        duration = round(time.monotonic() - self.started_at, 1)
 
-        return "\n".join(
-            [
-                "## PR-AF Review Summary",
-                "",
-                f"Review decision: **{review_event}**",
-                f"- Total findings: {len(findings)}",
-                f"- Critical: {by_severity.get('critical', 0)}",
-                f"- Important: {by_severity.get('important', 0)}",
-                f"- Suggestions: {by_severity.get('suggestion', 0)}",
-                f"- Nitpicks: {by_severity.get('nitpick', 0)}",
-            ]
+        rating = self._compute_rating(by_severity, len(findings))
+
+        lines: list[str] = [
+            f"## {rating['emoji']} PR-AF Review — **{rating['label']}**",
+            "",
+            f"*Automated multi-agent code review · "
+            f"[PR-AF](https://github.com/Agent-Field/agentfield) built with "
+            f"[AgentField](https://github.com/Agent-Field/agentfield)*",
+            "",
+            f"> **{len(findings)} findings** · "
+            f"{emojis.get('critical', '')} {by_severity.get('critical', 0)} critical · "
+            f"{emojis.get('important', '')} {by_severity.get('important', 0)} important · "
+            f"{emojis.get('suggestion', '')} {by_severity.get('suggestion', 0)} suggestions · "
+            f"{emojis.get('nitpick', '')} {by_severity.get('nitpick', 0)} nitpicks",
+            "",
+        ]
+
+        if intake:
+            lines.extend(
+                [
+                    "<details>",
+                    "<summary><b>PR Overview</b></summary>",
+                    "",
+                    intake.pr_summary,
+                    "",
+                    "</details>",
+                    "",
+                ]
+            )
+
+        lines.extend(self._build_key_findings(findings))
+
+        if findings:
+            lines.extend(
+                [
+                    "<details>",
+                    "<summary><b>All Findings by Severity</b></summary>",
+                    "",
+                ]
+            )
+            for sev in ("critical", "important", "suggestion", "nitpick"):
+                sev_findings = [f for f in findings if f.severity == sev]
+                if not sev_findings:
+                    continue
+                lines.append(f"#### {emojis.get(sev, '')} {sev.title()} ({len(sev_findings)})")
+                lines.append("")
+                for f in sev_findings:
+                    path_ref = f"`{self._normalize_path(f.file_path)}:{f.line_start}`" if f.file_path else ""
+                    lines.append(f"- **{f.title}** {path_ref}")
+                lines.append("")
+            lines.extend(["</details>", ""])
+
+        lines.extend(self._build_review_details(findings, plan))
+
+        lines.extend(self._build_pipeline_stats(intake, duration))
+
+        lines.append(f"Review ID: `{self.review_id}`")
+
+        return "\n".join(lines)
+
+    def _compute_rating(self, by_severity: dict[str, int], total: int) -> dict[str, str]:
+        critical = by_severity.get("critical", 0)
+        important = by_severity.get("important", 0)
+
+        if total == 0:
+            return {"emoji": "🟢", "label": "Looks Good", "grade": "A"}
+        if critical >= 3:
+            return {"emoji": "🔴", "label": "Needs Major Rework", "grade": "D"}
+        if critical >= 1:
+            return {"emoji": "🔴", "label": "Changes Required", "grade": "C"}
+        if important >= 5:
+            return {"emoji": "🟠", "label": "Several Issues", "grade": "C+"}
+        if important >= 2:
+            return {"emoji": "🟡", "label": "Minor Issues", "grade": "B"}
+        if important >= 1:
+            return {"emoji": "🟡", "label": "Mostly Good", "grade": "B+"}
+        return {"emoji": "🟢", "label": "Looks Good — Minor Suggestions", "grade": "A-"}
+
+    def _build_key_findings(self, findings: list[ScoredFinding]) -> list[str]:
+        if not findings:
+            return ["**No issues found.** This PR looks clean across all review dimensions.", ""]
+
+        lines: list[str] = []
+        by_sev: dict[str, list[ScoredFinding]] = {}
+        for f in findings:
+            by_sev.setdefault(f.severity, []).append(f)
+
+        blocking = by_sev.get("critical", []) + by_sev.get("important", [])
+        non_blocking = by_sev.get("suggestion", []) + by_sev.get("nitpick", [])
+
+        lines.append("### Key Findings")
+        lines.append("")
+
+        if blocking:
+            lines.append(f"**{len(blocking)} issue(s) should be addressed before merge:**")
+            lines.append("")
+            for f in blocking[:8]:
+                emoji = self.config.comments.severity_emojis.get(f.severity, "")
+                path_ref = f" (`{self._normalize_path(f.file_path)}:{f.line_start}`)" if f.file_path else ""
+                lines.append(f"- {emoji} **{f.title}**{path_ref} — {self._first_sentence(f.body)}")
+            if len(blocking) > 8:
+                lines.append(f"- … and {len(blocking) - 8} more (see All Findings by Severity)")
+            lines.append("")
+
+        if non_blocking:
+            lines.append(f"**{len(non_blocking)} suggestion(s) and style note(s):**")
+            lines.append("")
+            for f in non_blocking[:5]:
+                emoji = self.config.comments.severity_emojis.get(f.severity, "")
+                path_ref = f" (`{self._normalize_path(f.file_path)}:{f.line_start}`)" if f.file_path else ""
+                lines.append(f"- {emoji} {f.title}{path_ref}")
+            if len(non_blocking) > 5:
+                lines.append(f"- … and {len(non_blocking) - 5} more (see All Findings by Severity)")
+            lines.append("")
+
+        affected_files = sorted({self._normalize_path(f.file_path) for f in findings if f.file_path})
+        if affected_files:
+            lines.append(f"**Files with findings:** {', '.join(f'`{p}`' for p in affected_files[:10])}")
+            if len(affected_files) > 10:
+                lines.append(f" … and {len(affected_files) - 10} more")
+            lines.append("")
+
+        return lines
+
+    def _build_review_details(self, findings: list[ScoredFinding], plan: ReviewPlan | None) -> list[str]:
+        lines: list[str] = []
+        detail_parts: list[str] = []
+
+        if plan and plan.dimensions:
+            detail_parts.append(f"**Dimensions Analyzed ({len(plan.dimensions)}):**")
+            detail_parts.append("")
+            for dim in plan.dimensions:
+                detail_parts.append(f"- **{dim.name}** — {len(dim.target_files)} file(s)")
+            detail_parts.append("")
+
+        sub_review_dims = {f.dimension_name for f in findings if "→" in f.dimension_name}
+        if sub_review_dims:
+            detail_parts.append(f"**Sub-Reviews Spawned ({len(sub_review_dims)} deep-dives):**")
+            detail_parts.append("")
+            for dim_name in sorted(sub_review_dims):
+                count = sum(1 for f in findings if f.dimension_name == dim_name)
+                detail_parts.append(f"- **{dim_name}** ({count} finding(s))")
+            detail_parts.append("")
+
+        if self.cross_ref_count > 0 or self.adversary_confirmed_count > 0 or self.adversary_challenged_count > 0:
+            detail_parts.append("**Cross-Reference & Adversary Analysis:**")
+            detail_parts.append("")
+            if self.cross_ref_count > 0:
+                detail_parts.append(f"- **{self.cross_ref_count}** cross-change interaction(s) detected")
+            total_adv = self.adversary_confirmed_count + self.adversary_challenged_count
+            if total_adv > 0:
+                detail_parts.append(
+                    f"- **{total_adv}** finding(s) adversarially tested: "
+                    f"{self.adversary_confirmed_count} confirmed, "
+                    f"{self.adversary_challenged_count} challenged"
+                )
+            detail_parts.append("")
+
+        if detail_parts:
+            lines.extend(
+                [
+                    "<details>",
+                    "<summary><b>Review Process Details</b></summary>",
+                    "",
+                    *detail_parts,
+                    "</details>",
+                    "",
+                ]
+            )
+
+        return lines
+
+    def _build_pipeline_stats(self, intake: IntakeResult | None, duration: float) -> list[str]:
+        cost_display = (
+            f"${self.total_cost_usd:.4f}" if self.total_cost_usd > 0 else "N/A (provider does not report cost)"
         )
+        exhaustion_reason = ""
+        if self.budget_exhausted:
+            elapsed = time.monotonic() - self.started_at
+            if elapsed > self.config.budget.max_duration_seconds:
+                exhaustion_reason = f" (timeout: {int(elapsed)}s > {self.config.budget.max_duration_seconds}s limit)"
+            elif self.total_cost_usd >= self.config.budget.max_cost_usd:
+                exhaustion_reason = (
+                    f" (cost: ${self.total_cost_usd:.2f} ≥ ${self.config.budget.max_cost_usd:.2f} limit)"
+                )
+
+        stats_rows = [
+            f"| Duration | {duration}s |",
+            f"| Agent invocations | {self.agent_invocations} |",
+            f"| Coverage iterations | {self.coverage_iterations} |",
+            f"| Estimated cost | {cost_display} |",
+            f"| Budget exhausted | {'Yes' + exhaustion_reason if self.budget_exhausted else 'No'} |",
+        ]
+        if intake:
+            stats_rows.extend(
+                [
+                    f"| PR type | {intake.pr_type} |",
+                    f"| Complexity | {intake.complexity} |",
+                ]
+            )
+
+        return [
+            "<details>",
+            "<summary><b>Pipeline Stats</b></summary>",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            *stats_rows,
+            "",
+            "</details>",
+            "",
+        ]
+
+    @staticmethod
+    def _first_sentence(text: str) -> str:
+        text = text.strip().replace("\n", " ")
+        for sep in (". ", ".\n", "! ", "?\n"):
+            idx = text.find(sep)
+            if idx != -1 and idx < 200:
+                return text[: idx + 1]
+        return text[:200] + ("…" if len(text) > 200 else "")
 
     def _to_changed_file(self, file_change: Any) -> ChangedFile:
         return ChangedFile(

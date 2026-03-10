@@ -124,9 +124,7 @@ def _detect_container_ip() -> Optional[str]:
 
         # Try AWS metadata service
         try:
-            response = requests.get(
-                "http://169.254.169.254/latest/meta-data/public-ipv4", timeout=2
-            )
+            response = requests.get("http://169.254.169.254/latest/meta-data/public-ipv4", timeout=2)
             if response.status_code == 200:
                 return response.text.strip()
         except Exception:
@@ -205,11 +203,7 @@ def _is_running_in_container() -> bool:
         try:
             with open("/proc/1/cgroup", "r") as f:
                 content = f.read()
-                if (
-                    "docker" in content
-                    or "containerd" in content
-                    or "kubepods" in content
-                ):
+                if "docker" in content or "containerd" in content or "kubepods" in content:
                     return True
         except Exception:
             pass
@@ -275,9 +269,7 @@ def _normalize_candidate(candidate: str, port: int) -> Optional[str]:
     return f"{scheme}://{netloc}"
 
 
-def _build_callback_candidates(
-    callback_url: Optional[str], port: int, *, include_defaults: bool = True
-) -> List[str]:
+def _build_callback_candidates(callback_url: Optional[str], port: int, *, include_defaults: bool = True) -> List[str]:
     """Assemble a prioritized list of callback URL candidates."""
 
     candidates: List[str] = []
@@ -580,9 +572,7 @@ class Agent(FastAPI):
         self._heartbeat_stop_event = threading.Event()
         self.dev_mode = dev_mode
         self.agentfield_connected = False
-        self.auto_register = (
-            auto_register  # Auto-register on first invocation (serverless mode)
-        )
+        self.auto_register = auto_register  # Auto-register on first invocation (serverless mode)
 
         # 🔥 FIX: Resolve callback URL immediately if provided
         # This ensures base_url is available before serve() is called
@@ -599,9 +589,7 @@ class Agent(FastAPI):
         self.api_key = api_key
 
         # Initialize AgentFieldClient with async configuration and API key
-        self.client = AgentFieldClient(
-            base_url=agentfield_server, async_config=self.async_config, api_key=api_key
-        )
+        self.client = AgentFieldClient(base_url=agentfield_server, async_config=self.async_config, api_key=api_key)
         self.client.caller_agent_id = self.node_id
         self._current_execution_context: Optional[ExecutionContext] = None
 
@@ -623,9 +611,7 @@ class Agent(FastAPI):
         self.memory_config = (
             memory_config
             if memory_config
-            else MemoryConfig(
-                auto_inject=[], memory_retention="session", cache_results=False
-            )
+            else MemoryConfig(auto_inject=[], memory_retention="session", cache_results=False)
         )
 
         # Add MCP management
@@ -672,9 +658,7 @@ class Agent(FastAPI):
 
                 # Initialize Dynamic Skill Manager when both MCP components are available
                 if self.mcp_manager and self.mcp_client_registry:
-                    self.dynamic_skill_manager = DynamicMCPSkillManager(
-                        self, self.dev_mode
-                    )
+                    self.dynamic_skill_manager = DynamicMCPSkillManager(self, self.dev_mode)
                     if self.dev_mode:
                         log_debug("Dynamic MCP skill manager initialized")
 
@@ -784,9 +768,7 @@ class Agent(FastAPI):
         """Allow setting skills for backward compatibility (deprecated)."""
         self._skills_legacy = value
 
-    def _entry_to_metadata(
-        self, entry: Union[ReasonerEntry, SkillEntry], kind: str
-    ) -> Dict:
+    def _entry_to_metadata(self, entry: Union[ReasonerEntry, SkillEntry], kind: str) -> Dict:
         """Convert a registry entry to legacy metadata dict format with on-demand schema generation."""
         # Generate input schema from stored types
         input_schema = self._types_to_json_schema(entry.input_types)
@@ -799,14 +781,10 @@ class Agent(FastAPI):
             "input_schema": input_schema,
             "output_schema": output_schema,
             "memory_config": self.memory_config.to_dict(),
-            "return_type_hint": getattr(
-                entry.output_type, "__name__", str(entry.output_type)
-            ),
+            "return_type_hint": getattr(entry.output_type, "__name__", str(entry.output_type)),
             "tags": entry.tags,
             "proposed_tags": entry.tags,
-            "vc_enabled": entry.vc_enabled
-            if entry.vc_enabled is not None
-            else self._agent_vc_enabled,
+            "vc_enabled": entry.vc_enabled if entry.vc_enabled is not None else self._agent_vc_enabled,
         }
         return metadata
 
@@ -873,9 +851,7 @@ class Agent(FastAPI):
         # Default fallback
         return {"type": "object"}
 
-    def _validate_handler_input(
-        self, data: dict, input_types: Dict[str, tuple]
-    ) -> dict:
+    def _validate_handler_input(self, data: dict, input_types: Dict[str, tuple]) -> dict:
         """
         Validate input data against expected types at runtime.
 
@@ -944,17 +920,11 @@ class Agent(FastAPI):
                         result[name] = value.lower() in ("true", "1", "yes")
                     else:
                         result[name] = bool(value)
-                elif (
-                    actual_type is dict
-                    or getattr(actual_type, "__origin__", None) is dict
-                ):
+                elif actual_type is dict or getattr(actual_type, "__origin__", None) is dict:
                     if not isinstance(value, dict):
                         raise ValueError(f"Field '{name}' must be a dict")
                     result[name] = dict(value)
-                elif (
-                    actual_type is list
-                    or getattr(actual_type, "__origin__", None) is list
-                ):
+                elif actual_type is list or getattr(actual_type, "__origin__", None) is list:
                     if not isinstance(value, list):
                         raise ValueError(f"Field '{name}' must be a list")
                     result[name] = list(value)
@@ -969,9 +939,7 @@ class Agent(FastAPI):
 
         return result
 
-    def handle_serverless(
-        self, event: dict, adapter: Optional[Callable] = None
-    ) -> dict:
+    def handle_serverless(self, event: dict, adapter: Optional[Callable] = None) -> dict:
         """
         Universal serverless handler for executing reasoners and skills.
 
@@ -1047,9 +1015,7 @@ class Agent(FastAPI):
             self.async_config.enable_async_execution = False
 
         # Parse event format for execution
-        reasoner_name = (
-            event.get("reasoner") or event.get("target") or event.get("skill")
-        )
+        reasoner_name = event.get("reasoner") or event.get("target") or event.get("skill")
         if not reasoner_name and path:
             # Support paths like /execute/<target> or /reasoners/<name>
             cleaned_path = path.split("?", 1)[0].strip("/")
@@ -1063,9 +1029,7 @@ class Agent(FastAPI):
                     reasoner_name = parts[-1]
 
         input_data = event.get("input") or event.get("input_data", {})
-        execution_context_data = (
-            event.get("execution_context") or event.get("executionContext") or {}
-        )
+        execution_context_data = event.get("execution_context") or event.get("executionContext") or {}
 
         if not reasoner_name:
             return {
@@ -1074,12 +1038,8 @@ class Agent(FastAPI):
             }
 
         # Create execution context
-        exec_id = execution_context_data.get(
-            "execution_id", f"exec_{int(time.time() * 1000)}"
-        )
-        run_id = execution_context_data.get("run_id") or execution_context_data.get(
-            "workflow_id"
-        )
+        exec_id = execution_context_data.get("execution_id", f"exec_{int(time.time() * 1000)}")
+        run_id = execution_context_data.get("run_id") or execution_context_data.get("workflow_id")
         if not run_id:
             run_id = f"wf_{int(time.time() * 1000)}"
         workflow_id = execution_context_data.get("workflow_id", run_id)
@@ -1095,9 +1055,7 @@ class Agent(FastAPI):
             actor_id=execution_context_data.get("actor_id"),
             caller_did=execution_context_data.get("caller_did"),
             target_did=execution_context_data.get("target_did"),
-            agent_node_did=execution_context_data.get(
-                "agent_node_did", execution_context_data.get("agent_did")
-            ),
+            agent_node_did=execution_context_data.get("agent_node_did", execution_context_data.get("agent_did")),
             workflow_id=workflow_id,
             parent_workflow_id=execution_context_data.get("parent_workflow_id"),
             root_workflow_id=execution_context_data.get("root_workflow_id"),
@@ -1168,9 +1126,7 @@ class Agent(FastAPI):
         """Initialize DID and VC components."""
         try:
             # Initialize DID Manager
-            self.did_manager = DIDManager(
-                self.agentfield_server, self.node_id, self.api_key
-            )
+            self.did_manager = DIDManager(self.agentfield_server, self.node_id, self.api_key)
 
             # Initialize VC Generator
             self.vc_generator = VCGenerator(self.agentfield_server, self.api_key)
@@ -1305,9 +1261,7 @@ class Agent(FastAPI):
         if not self._current_execution_context:
             return None
 
-        memory_client = MemoryClient(
-            self.client, self._current_execution_context, agent_node_id=self.node_id
-        )
+        memory_client = MemoryClient(self.client, self._current_execution_context, agent_node_id=self.node_id)
         if not self.memory_event_client:
             self.memory_event_client = MemoryEventClient(
                 self.agentfield_server,
@@ -1355,16 +1309,11 @@ class Agent(FastAPI):
             return thread_local_ctx
         # Only return agent-level context if it was set during an actual execution
         # (i.e., has registered=True), not the default context created at init time
-        if (
-            self._current_execution_context
-            and self._current_execution_context.registered
-        ):
+        if self._current_execution_context and self._current_execution_context.registered:
             return self._current_execution_context
         return None
 
-    def _populate_execution_context_with_did(
-        self, execution_context, did_execution_context
-    ):
+    def _populate_execution_context_with_did(self, execution_context, did_execution_context):
         """
         Populate the execution context with DID information.
 
@@ -1382,9 +1331,7 @@ class Agent(FastAPI):
         """Resolve the agent-level VC default, falling back to enabled."""
         return True if self._agent_vc_enabled is None else self._agent_vc_enabled
 
-    def _set_reasoner_vc_override(
-        self, reasoner_id: str, value: Optional[bool]
-    ) -> None:
+    def _set_reasoner_vc_override(self, reasoner_id: str, value: Optional[bool]) -> None:
         if value is None:
             self._reasoner_vc_overrides.pop(reasoner_id, None)
         else:
@@ -1396,21 +1343,13 @@ class Agent(FastAPI):
         else:
             self._skill_vc_overrides[skill_id] = value
 
-    def _effective_component_vc_setting(
-        self, component_id: str, overrides: Dict[str, bool]
-    ) -> bool:
+    def _effective_component_vc_setting(self, component_id: str, overrides: Dict[str, bool]) -> bool:
         if component_id in overrides:
             return overrides[component_id]
         return self._agent_vc_default()
 
-    def _should_generate_vc(
-        self, component_id: str, overrides: Dict[str, bool]
-    ) -> bool:
-        if (
-            not self.did_enabled
-            or not self.vc_generator
-            or not self.vc_generator.is_enabled()
-        ):
+    def _should_generate_vc(self, component_id: str, overrides: Dict[str, bool]) -> bool:
+        if not self.did_enabled or not self.vc_generator or not self.vc_generator.is_enabled():
             return False
         return self._effective_component_vc_setting(component_id, overrides)
 
@@ -1428,16 +1367,12 @@ class Agent(FastAPI):
     def _build_vc_metadata(self) -> Dict[str, Any]:
         """Produce a serializable VC policy snapshot for control-plane visibility."""
         effective_reasoners = {
-            reasoner["id"]: self._effective_component_vc_setting(
-                reasoner["id"], self._reasoner_vc_overrides
-            )
+            reasoner["id"]: self._effective_component_vc_setting(reasoner["id"], self._reasoner_vc_overrides)
             for reasoner in self.reasoners
             if "id" in reasoner
         }
         effective_skills = {
-            skill["id"]: self._effective_component_vc_setting(
-                skill["id"], self._skill_vc_overrides
-            )
+            skill["id"]: self._effective_component_vc_setting(skill["id"], self._skill_vc_overrides)
             for skill in self.skills
             if "id" in skill
         }
@@ -1511,9 +1446,7 @@ class Agent(FastAPI):
         if not payload:
             return
 
-        discovery_section = (
-            payload.get("callback_discovery") if isinstance(payload, dict) else None
-        )
+        discovery_section = payload.get("callback_discovery") if isinstance(payload, dict) else None
 
         resolved = None
         if isinstance(payload, dict):
@@ -1585,8 +1518,7 @@ class Agent(FastAPI):
                 )
 
             log_debug(
-                "Calling did_manager.register_agent() with "
-                f"{len(reasoner_defs)} reasoners and {len(skill_defs)} skills"
+                f"Calling did_manager.register_agent() with {len(reasoner_defs)} reasoners and {len(skill_defs)} skills"
             )
 
             # Register with DID system
@@ -1600,9 +1532,7 @@ class Agent(FastAPI):
                 agent_did = self.did_manager.get_agent_did()
                 agent_private_key = None
                 if self.did_manager.identity_package:
-                    agent_private_key = (
-                        self.did_manager.identity_package.agent_did.private_key_jwk
-                    )
+                    agent_private_key = self.did_manager.identity_package.agent_did.private_key_jwk
                 if agent_did and agent_private_key:
                     self.client.set_did_credentials(agent_did, agent_private_key)
 
@@ -1662,9 +1592,7 @@ class Agent(FastAPI):
         decorator_name = name
         decorator_tags = tags
 
-        if decorator_path and (
-            inspect.isfunction(decorator_path) or inspect.ismethod(decorator_path)
-        ):
+        if decorator_path and (inspect.isfunction(decorator_path) or inspect.ismethod(decorator_path)):
             direct_registration = decorator_path
             decorator_path = None
 
@@ -1673,7 +1601,11 @@ class Agent(FastAPI):
             func_name = func.__name__
             reasoner_id = decorator_name or func_name
             if decorator_path:
-                endpoint_path = decorator_path if decorator_path.startswith("/reasoners/") else f"/reasoners/{decorator_path.lstrip('/')}"
+                endpoint_path = (
+                    decorator_path
+                    if decorator_path.startswith("/reasoners/")
+                    else f"/reasoners/{decorator_path.lstrip('/')}"
+                )
             else:
                 endpoint_path = f"/reasoners/{reasoner_id}"
 
@@ -1686,11 +1618,7 @@ class Agent(FastAPI):
             for param_name, param in sig.parameters.items():
                 if param_name not in ["self", "execution_context"]:
                     param_type = type_hints.get(param_name, str)
-                    default_value = (
-                        param.default
-                        if param.default is not inspect.Parameter.empty
-                        else ...
-                    )
+                    default_value = param.default if param.default is not inspect.Parameter.empty else ...
                     input_fields[param_name] = (param_type, default_value)
 
             # NOTE: Removed create_model() - saves ~1.5-2 KB per handler
@@ -1719,11 +1647,24 @@ class Agent(FastAPI):
                         content={"detail": "Invalid JSON body"},
                     )
 
+                # DEBUG: Print raw body received from CP
+                print(
+                    f"[SDK-DEBUG] Raw body keys: {list(body.keys()) if isinstance(body, dict) else type(body)}",
+                    flush=True,
+                )
+                print(f"[SDK-DEBUG] Raw body: {body}", flush=True)
+                print(f"[SDK-DEBUG] handler_input_fields keys: {list(handler_input_fields.keys())}", flush=True)
+
+                # If CP wraps input in an "input" key, unwrap it
+                if isinstance(body, dict) and "input" in body and isinstance(body["input"], dict):
+                    inner = body["input"]
+                    if any(k in handler_input_fields for k in inner):
+                        print(f"[SDK-DEBUG] Unwrapping body['input']", flush=True)
+                        body = inner
+
                 # Validate input at runtime (replaces Pydantic validation)
                 try:
-                    validated_input = self._validate_handler_input(
-                        body, handler_input_fields
-                    )
+                    validated_input = self._validate_handler_input(body, handler_input_fields)
                 except ValueError as e:
                     return JSONResponse(
                         status_code=422,
@@ -1761,9 +1702,7 @@ class Agent(FastAPI):
             # 🔥 ENHANCED: Comprehensive function replacement for unified tracking
             # Use weakref to avoid circular reference: Agent → tracked_func → Agent
             original_func = func
-            workflow_ref = (
-                weakref.ref(self.workflow_handler) if self.workflow_handler else None
-            )
+            workflow_ref = weakref.ref(self.workflow_handler) if self.workflow_handler else None
 
             async def tracked_func(*args, **kwargs):
                 """Enhanced tracked function with unified execution pipeline and context inheritance.
@@ -1786,9 +1725,7 @@ class Agent(FastAPI):
                     if workflow_handler is None:
                         # Agent was garbage collected, call function directly
                         return await original_func(*args, **kwargs)
-                    return await workflow_handler.execute_with_tracking(
-                        original_func, args, kwargs
-                    )
+                    return await workflow_handler.execute_with_tracking(original_func, args, kwargs)
 
             # 🔥 FIX: Store reference to original function for FastAPI endpoint access
             setattr(tracked_func, "_original_func", original_func)
@@ -1807,9 +1744,7 @@ class Agent(FastAPI):
             setattr(tracked_func, "_reasoner_tags", resolved_tags)
 
             # Store in memory-efficient registry (schemas generated on-demand)
-            vc_setting = self._effective_component_vc_setting(
-                reasoner_id, self._reasoner_vc_overrides
-            )
+            vc_setting = self._effective_component_vc_setting(reasoner_id, self._reasoner_vc_overrides)
             self._reasoner_registry[reasoner_id] = ReasonerEntry(
                 id=reasoner_id,
                 func=func,
@@ -1824,9 +1759,7 @@ class Agent(FastAPI):
             # self._reasoner_return_types[reasoner_id] = return_type  # REMOVED - stored in entry
 
             # 🔥 CRITICAL: Comprehensive function replacement (re-enabled for workflow tracking)
-            self.workflow_handler.replace_function_references(
-                original_func, tracked_func, func_name
-            )
+            self.workflow_handler.replace_function_references(original_func, tracked_func, func_name)
 
             if reasoner_id != func_name:
                 setattr(self, reasoner_id, getattr(self, func_name, tracked_func))
@@ -1876,9 +1809,7 @@ class Agent(FastAPI):
 
         did_execution_context = None
         if self.did_enabled and self.did_manager:
-            session_identifier = (
-                execution_context.session_id or execution_context.workflow_id
-            )
+            session_identifier = execution_context.session_id or execution_context.workflow_id
             did_execution_context = self.did_manager.create_execution_context(
                 execution_context.execution_id,
                 execution_context.workflow_id,
@@ -1886,16 +1817,12 @@ class Agent(FastAPI):
                 "agent",
                 reasoner_id,
             )
-            self._populate_execution_context_with_did(
-                execution_context, did_execution_context
-            )
+            self._populate_execution_context_with_did(execution_context, did_execution_context)
 
         try:
             try:
                 if should_convert_args(func):
-                    converted_args, converted_kwargs = convert_function_args(
-                        func, (), payload_dict
-                    )
+                    converted_args, converted_kwargs = convert_function_args(func, (), payload_dict)
                     args = converted_args
                     kwargs = converted_kwargs
                 else:
@@ -1907,9 +1834,7 @@ class Agent(FastAPI):
                 ) from exc
             except Exception as exc:  # pragma: no cover - best effort log
                 if self.dev_mode:
-                    log_debug(
-                        f"⚠️ Warning: Failed to convert arguments for {reasoner_id}: {exc}"
-                    )
+                    log_debug(f"⚠️ Warning: Failed to convert arguments for {reasoner_id}: {exc}")
                 args, kwargs = (), payload_dict
 
             if "execution_context" in signature.parameters:
@@ -1920,13 +1845,9 @@ class Agent(FastAPI):
             else:
                 result = func(*args, **kwargs)
 
-            if did_execution_context and self._should_generate_vc(
-                reasoner_id, self._reasoner_vc_overrides
-            ):
+            if did_execution_context and self._should_generate_vc(reasoner_id, self._reasoner_vc_overrides):
                 if self.dev_mode:
-                    log_debug(
-                        f"Triggering VC generation for execution: {did_execution_context.execution_id}"
-                    )
+                    log_debug(f"Triggering VC generation for execution: {did_execution_context.execution_id}")
                 end_time = time.time()
                 duration_ms = int((end_time - start_time) * 1000)
                 asyncio.create_task(
@@ -2084,17 +2005,11 @@ class Agent(FastAPI):
                 )
                 if 200 <= response.status_code < 300:
                     if self.dev_mode:
-                        log_debug(
-                            f"Sent async status update for {execution_id} (attempt {attempt + 1})"
-                        )
+                        log_debug(f"Sent async status update for {execution_id} (attempt {attempt + 1})")
                     return
-                log_warn(
-                    f"Async status update failed with {response.status_code} for execution {execution_id}"
-                )
+                log_warn(f"Async status update failed with {response.status_code} for execution {execution_id}")
             except Exception as exc:  # pragma: no cover - network errors
-                log_warn(
-                    f"Async status update attempt {attempt + 1} failed for {execution_id}: {exc}"
-                )
+                log_warn(f"Async status update attempt {attempt + 1} failed for {execution_id}: {exc}")
             if attempt < max_retries - 1:
                 await asyncio.sleep(2**attempt)
         log_error(f"Failed to deliver async status for {execution_id} after retries")
@@ -2102,10 +2017,7 @@ class Agent(FastAPI):
     def _build_execution_callback_url(self, execution_id: str) -> Optional[str]:
         if not self.agentfield_server or not execution_id:
             return None
-        return (
-            self.agentfield_server.rstrip("/")
-            + f"/api/v1/executions/{execution_id}/status"
-        )
+        return self.agentfield_server.rstrip("/") + f"/api/v1/executions/{execution_id}/status"
 
     def on_change(self, pattern: Union[str, List[str]]):
         """
@@ -2284,9 +2196,7 @@ class Agent(FastAPI):
         decorator_path = path
         decorator_name = name
 
-        if decorator_tags and (
-            inspect.isfunction(decorator_tags) or inspect.ismethod(decorator_tags)
-        ):
+        if decorator_tags and (inspect.isfunction(decorator_tags) or inspect.ismethod(decorator_tags)):
             direct_registration = decorator_tags
             decorator_tags = None
 
@@ -2308,11 +2218,7 @@ class Agent(FastAPI):
             for param_name, param in sig.parameters.items():
                 if param_name not in ["self", "execution_context"]:
                     param_type = type_hints.get(param_name, str)
-                    default_value = (
-                        param.default
-                        if param.default is not inspect.Parameter.empty
-                        else ...
-                    )
+                    default_value = param.default if param.default is not inspect.Parameter.empty else ...
                     input_fields[param_name] = (param_type, default_value)
 
             # NOTE: Removed create_model() - saves ~1.5-2 KB per handler
@@ -2336,9 +2242,7 @@ class Agent(FastAPI):
 
                 # Validate input at runtime (replaces Pydantic validation)
                 try:
-                    validated_input = self._validate_handler_input(
-                        body, handler_input_fields
-                    )
+                    validated_input = self._validate_handler_input(body, handler_input_fields)
                 except ValueError as e:
                     return JSONResponse(
                         status_code=422,
@@ -2357,9 +2261,7 @@ class Agent(FastAPI):
                 # Create DID execution context if DID system is enabled
                 did_execution_context = None
                 if self.did_enabled and self.did_manager:
-                    session_identifier = (
-                        execution_context.session_id or execution_context.workflow_id
-                    )
+                    session_identifier = execution_context.session_id or execution_context.workflow_id
                     did_execution_context = self.did_manager.create_execution_context(
                         execution_context.execution_id,
                         execution_context.workflow_id,
@@ -2368,9 +2270,7 @@ class Agent(FastAPI):
                         skill_id,  # target function
                     )
                     # Populate execution context with DID information
-                    self._populate_execution_context_with_did(
-                        execution_context, did_execution_context
-                    )
+                    self._populate_execution_context_with_did(execution_context, did_execution_context)
 
                 # Use validated input directly (already a dict)
                 input_payload = validated_input
@@ -2380,9 +2280,7 @@ class Agent(FastAPI):
                 original_func = getattr(func, "_original_func", func)
                 try:
                     if should_convert_args(original_func):
-                        _converted_args, converted_kwargs = convert_function_args(
-                            original_func, (), input_payload
-                        )
+                        _converted_args, converted_kwargs = convert_function_args(original_func, (), input_payload)
                         kwargs = converted_kwargs
                     else:
                         kwargs = dict(input_payload)
@@ -2395,9 +2293,7 @@ class Agent(FastAPI):
                 except Exception as e:
                     # Log conversion errors but continue with original args for backward compatibility
                     if self.dev_mode:
-                        log_warn(
-                            f"Failed to convert arguments for skill '{skill_id}': {e}"
-                        )
+                        log_warn(f"Failed to convert arguments for skill '{skill_id}': {e}")
                     kwargs = dict(input_payload)
 
                 # Inject execution context if the function accepts it
@@ -2429,9 +2325,7 @@ class Agent(FastAPI):
                     duration_ms = int((time.time() - start_time) * 1000)
 
                     # Generate VC asynchronously if DID is enabled
-                    if did_execution_context and self._should_generate_vc(
-                        skill_id, self._skill_vc_overrides
-                    ):
+                    if did_execution_context and self._should_generate_vc(skill_id, self._skill_vc_overrides):
                         asyncio.create_task(
                             self._generate_vc_async(
                                 self.vc_generator,
@@ -2507,11 +2401,7 @@ class Agent(FastAPI):
                 try:
                     bound = sig.bind_partial(*args, **kwargs)
                     bound.apply_defaults()
-                    payload = {
-                        name: value
-                        for name, value in bound.arguments.items()
-                        if name != "self"
-                    }
+                    payload = {name: value for name, value in bound.arguments.items() if name != "self"}
                     return payload
                 except Exception:
                     payload = {f"arg_{idx}": value for idx, value in enumerate(args)}
@@ -2520,9 +2410,7 @@ class Agent(FastAPI):
 
             # Store in memory-efficient registry (schemas generated on-demand)
             resolved_tags = list(decorator_tags) if decorator_tags else []
-            vc_setting = self._effective_component_vc_setting(
-                skill_id, self._skill_vc_overrides
-            )
+            vc_setting = self._effective_component_vc_setting(skill_id, self._skill_vc_overrides)
             self._skill_registry[skill_id] = SkillEntry(
                 id=skill_id,
                 func=func,
@@ -2669,9 +2557,7 @@ class Agent(FastAPI):
             router._attach_agent(self)
             normalized_prefix = prefix.rstrip("/") if prefix else ""
 
-            def _replace_module_reference(
-                original_func: Callable, tracked_func: Callable
-            ) -> None:
+            def _replace_module_reference(original_func: Callable, tracked_func: Callable) -> None:
                 module_name = getattr(original_func, "__module__", None)
                 attr_name = getattr(original_func, "__name__", None)
                 if not module_name or not attr_name:
@@ -2705,9 +2591,7 @@ class Agent(FastAPI):
                 prefix_part = "_".join(parts)
                 return f"{prefix_part}_{base}"
 
-            def _normalize_component_path(
-                path_value: Optional[str], component: str, component_id: str
-            ) -> str:
+            def _normalize_component_path(path_value: Optional[str], component: str, component_id: str) -> str:
                 """Ensure router-registered components map to /reasoners/{id} style paths."""
 
                 marker = f"/{component}/"
@@ -2720,9 +2604,7 @@ class Agent(FastAPI):
 
                 # Preserve any include_router prefix (everything up to and including marker)
                 prefix_part = path_value[: idx + len(marker)]
-                if path_value.endswith(component_id) and path_value.startswith(
-                    prefix_part
-                ):
+                if path_value.endswith(component_id) and path_value.startswith(prefix_part):
                     # Already normalized
                     return path_value
 
@@ -2757,9 +2639,7 @@ class Agent(FastAPI):
                 )
 
                 if auto_path:
-                    resolved_path = _normalize_component_path(
-                        resolved_path, "reasoners", reasoner_id
-                    )
+                    resolved_path = _normalize_component_path(resolved_path, "reasoners", reasoner_id)
 
                 decorated = self.reasoner(
                     path=resolved_path,
@@ -2802,9 +2682,7 @@ class Agent(FastAPI):
                 )
 
                 if auto_path:
-                    resolved_path = _normalize_component_path(
-                        resolved_path, "skills", skill_id
-                    )
+                    resolved_path = _normalize_component_path(resolved_path, "skills", skill_id)
 
                 decorated = self.skill(
                     tags=tag_arg,
@@ -3328,18 +3206,14 @@ class Agent(FastAPI):
                         func = getattr(self, function_name)
                         sig = inspect.signature(func)
                         param_names = [
-                            name
-                            for name, param in sig.parameters.items()
-                            if name not in ["self", "execution_context"]
+                            name for name, param in sig.parameters.items() if name not in ["self", "execution_context"]
                         ]
 
                         # Map positional args to parameter names
                         for i, arg in enumerate(args):
                             if i < len(param_names):
                                 param_name = param_names[i]
-                                if (
-                                    param_name not in final_kwargs
-                                ):  # Don't override explicit kwargs
+                                if param_name not in final_kwargs:  # Don't override explicit kwargs
                                     final_kwargs[param_name] = arg
                             else:
                                 # More args than parameters - use generic names
@@ -3369,12 +3243,8 @@ class Agent(FastAPI):
 
             log_debug(f"🔍 CALL_DEBUG: Making cross-agent call to {target}")
             log_debug(f"  Current execution_id: {current_context.execution_id}")
-            log_debug(
-                f"  Thread-local context exists: {get_current_context() is not None}"
-            )
-            log_debug(
-                f"  Agent-level context exists: {self._current_execution_context is not None}"
-            )
+            log_debug(f"  Thread-local context exists: {get_current_context() is not None}")
+            log_debug(f"  Agent-level context exists: {self._current_execution_context is not None}")
 
         # Prepare headers with proper workflow tracking
         headers = current_context.to_headers()
@@ -3394,9 +3264,7 @@ class Agent(FastAPI):
         if not self.agentfield_connected:
             from agentfield.logger import log_warn
 
-            log_warn(
-                f"AgentField server unavailable - cannot make cross-agent call to {target}"
-            )
+            log_warn(f"AgentField server unavailable - cannot make cross-agent call to {target}")
             raise Exception(
                 f"Cross-agent call to {target} failed: AgentField server unavailable. Agent is running in local mode."
             )
@@ -3412,9 +3280,7 @@ class Agent(FastAPI):
 
                         json.dumps(value, default=str)  # Test serialization
                     except (TypeError, ValueError) as se:
-                        serialization_issues.append(
-                            f"{key}: {type(value).__name__} - {str(se)}"
-                        )
+                        serialization_issues.append(f"{key}: {type(value).__name__} - {str(se)}")
 
                         # Try to convert common non-serializable types
                         if hasattr(value, "value"):  # Enum with .value attribute
@@ -3425,18 +3291,14 @@ class Agent(FastAPI):
                             final_kwargs[key] = str(value)
 
                 if serialization_issues and self.dev_mode:
-                    log_debug(
-                        f"Converted {len(serialization_issues)} non-serializable parameters"
-                    )
+                    log_debug(f"Converted {len(serialization_issues)} non-serializable parameters")
 
                 import asyncio
                 import time
 
                 # Determine how long we're willing to wait for long-running executions.
                 max_timeout = getattr(self.async_config, "max_execution_timeout", None)
-                default_timeout = getattr(
-                    self.async_config, "default_execution_timeout", None
-                )
+                default_timeout = getattr(self.async_config, "default_execution_timeout", None)
                 execution_timeout = max_timeout or default_timeout or 600.0
                 # Guard against misconfiguration resulting in non-positive values.
                 if execution_timeout <= 0:
@@ -3445,10 +3307,7 @@ class Agent(FastAPI):
                 start_time = time.time()
 
                 # Check if async execution is enabled and available
-                use_async_execution = (
-                    self.async_config.enable_async_execution
-                    and self.agentfield_connected
-                )
+                use_async_execution = self.async_config.enable_async_execution and self.agentfield_connected
 
                 if use_async_execution:
                     try:
@@ -3469,9 +3328,7 @@ class Agent(FastAPI):
 
                         elapsed_time = time.time() - start_time
                         if self.dev_mode:
-                            log_debug(
-                                f"Async execute call completed in {elapsed_time:.2f} seconds"
-                            )
+                            log_debug(f"Async execute call completed in {elapsed_time:.2f} seconds")
 
                         if isinstance(result, dict) and "result" in result:
                             return result["result"]
@@ -3479,9 +3336,7 @@ class Agent(FastAPI):
 
                     except Exception as async_error:
                         if self.dev_mode:
-                            log_debug(
-                                f"Async execution failed: {type(async_error).__name__}: {str(async_error)}"
-                            )
+                            log_debug(f"Async execution failed: {type(async_error).__name__}: {str(async_error)}")
 
                         # Never fall back on authorization errors (401/403) —
                         # these are permanent failures that retrying won't fix.
@@ -3493,9 +3348,7 @@ class Agent(FastAPI):
                             raise async_error
 
                         if self.dev_mode:
-                            log_debug(
-                                f"Falling back to sync execution for target: {target}"
-                            )
+                            log_debug(f"Falling back to sync execution for target: {target}")
 
             # Sync execution path (either by choice or as fallback)
             if self.dev_mode and use_async_execution:
@@ -3506,35 +3359,23 @@ class Agent(FastAPI):
             # Wrap the execute call with timeout and progress monitoring
             async def execute_with_monitoring():
                 try:
-                    result = await self.client.execute(
-                        target=target, input_data=final_kwargs, headers=headers
-                    )
+                    result = await self.client.execute(target=target, input_data=final_kwargs, headers=headers)
                     return result
                 except Exception as exec_error:
                     if self.dev_mode:
-                        log_debug(
-                            f"Client execute failed: {type(exec_error).__name__}: {str(exec_error)}"
-                        )
+                        log_debug(f"Client execute failed: {type(exec_error).__name__}: {str(exec_error)}")
                     raise
 
             # Add a timeout to prevent infinite hangs using configured allowance for long workflows
             try:
-                result = await asyncio.wait_for(
-                    execute_with_monitoring(), timeout=execution_timeout
-                )
+                result = await asyncio.wait_for(execute_with_monitoring(), timeout=execution_timeout)
                 elapsed_time = time.time() - start_time
                 if self.dev_mode:
-                    log_debug(
-                        f"Sync execute call completed in {elapsed_time:.2f} seconds"
-                    )
+                    log_debug(f"Sync execute call completed in {elapsed_time:.2f} seconds")
             except asyncio.TimeoutError:
                 elapsed_time = time.time() - start_time
-                log_debug(
-                    f"Execute call timed out after {elapsed_time:.2f} seconds (limit {execution_timeout:.0f}s)"
-                )
-                raise Exception(
-                    f"Cross-agent call to {target} timed out after {int(execution_timeout)} seconds"
-                )
+                log_debug(f"Execute call timed out after {elapsed_time:.2f} seconds (limit {execution_timeout:.0f}s)")
+                raise Exception(f"Cross-agent call to {target} timed out after {int(execution_timeout)} seconds")
 
             # Extract the actual result from the response and return as dict
             if isinstance(result, dict):
@@ -3552,9 +3393,7 @@ class Agent(FastAPI):
 
         except Exception as e:
             if self.dev_mode:
-                log_debug(
-                    f"Cross-agent call failed: {target} - {type(e).__name__}: {str(e)}"
-                )
+                log_debug(f"Cross-agent call failed: {target} - {type(e).__name__}: {str(e)}")
             raise
 
     async def _get_async_execution_manager(self) -> AsyncExecutionManager:
@@ -3671,13 +3510,9 @@ class Agent(FastAPI):
                     if self.dev_mode:
                         from agentfield.logger import log_debug
 
-                        log_debug(
-                            f"NOTE DEBUG: Original api_base: {self.client.api_base}"
-                        )
+                        log_debug(f"NOTE DEBUG: Original api_base: {self.client.api_base}")
                         log_debug(f"NOTE DEBUG: UI api_base: {ui_api_base}")
-                        log_debug(
-                            f"NOTE DEBUG: Full URL: {ui_api_base}/executions/note"
-                        )
+                        log_debug(f"NOTE DEBUG: Full URL: {ui_api_base}/executions/note")
                         log_debug(f"NOTE DEBUG: Payload: {payload}")
                         log_debug(f"NOTE DEBUG: Headers: {headers}")
 
@@ -3691,40 +3526,26 @@ class Agent(FastAPI):
                                 from agentfield.logger import log_debug
 
                                 response_text = await response.text()
-                                log_debug(
-                                    f"NOTE DEBUG: Response status: {response.status}"
-                                )
+                                log_debug(f"NOTE DEBUG: Response status: {response.status}")
                                 log_debug(f"NOTE DEBUG: Response text: {response_text}")
                                 if response.status == 200:
-                                    log_debug(
-                                        f"✅ Note successfully sent to {ui_api_base}/executions/note"
-                                    )
+                                    log_debug(f"✅ Note successfully sent to {ui_api_base}/executions/note")
                                 else:
-                                    log_debug(
-                                        f"❌ Note failed with status {response.status}: {response_text}"
-                                    )
+                                    log_debug(f"❌ Note failed with status {response.status}: {response_text}")
                 except ImportError:
                     # Fallback to requests if aiohttp not available
                     import requests
 
                     try:
                         # Use UI API base URL to match where frontend fetches notes from
-                        ui_api_base = self.client.api_base.replace(
-                            "/api/v1", "/api/ui/v1"
-                        )
+                        ui_api_base = self.client.api_base.replace("/api/v1", "/api/ui/v1")
 
                         if self.dev_mode:
                             from agentfield.logger import log_debug
 
-                            log_debug(
-                                f"NOTE DEBUG (requests): Original api_base: {self.client.api_base}"
-                            )
-                            log_debug(
-                                f"NOTE DEBUG (requests): UI api_base: {ui_api_base}"
-                            )
-                            log_debug(
-                                f"NOTE DEBUG (requests): Full URL: {ui_api_base}/executions/note"
-                            )
+                            log_debug(f"NOTE DEBUG (requests): Original api_base: {self.client.api_base}")
+                            log_debug(f"NOTE DEBUG (requests): UI api_base: {ui_api_base}")
+                            log_debug(f"NOTE DEBUG (requests): Full URL: {ui_api_base}/executions/note")
 
                         response = requests.post(
                             f"{ui_api_base}/executions/note",
@@ -3735,20 +3556,12 @@ class Agent(FastAPI):
                         if self.dev_mode:
                             from agentfield.logger import log_debug
 
-                            log_debug(
-                                f"NOTE DEBUG (requests): Response status: {response.status_code}"
-                            )
-                            log_debug(
-                                f"NOTE DEBUG (requests): Response text: {response.text}"
-                            )
+                            log_debug(f"NOTE DEBUG (requests): Response status: {response.status_code}")
+                            log_debug(f"NOTE DEBUG (requests): Response text: {response.text}")
                             if response.status_code == 200:
-                                log_debug(
-                                    f"✅ Note successfully sent to {ui_api_base}/executions/note"
-                                )
+                                log_debug(f"✅ Note successfully sent to {ui_api_base}/executions/note")
                             else:
-                                log_debug(
-                                    f"❌ Note failed with status {response.status_code}: {response.text}"
-                                )
+                                log_debug(f"❌ Note failed with status {response.status_code}: {response.text}")
                     except Exception as e:
                         if self.dev_mode:
                             from agentfield.logger import log_debug
@@ -3853,8 +3666,12 @@ class Agent(FastAPI):
             # Clean up the future if we couldn't even tell the CP
             await self._pause_manager.resolve(
                 approval_request_id,
-                ApprovalResult(decision="error", feedback="failed to notify control plane",
-                               execution_id=execution_id, approval_request_id=approval_request_id),
+                ApprovalResult(
+                    decision="error",
+                    feedback="failed to notify control plane",
+                    execution_id=execution_id,
+                    approval_request_id=approval_request_id,
+                ),
             )
             raise
 
@@ -3962,9 +3779,7 @@ class Agent(FastAPI):
             return self._current_execution_context
 
         # Create new context if none exists and cache it
-        new_context = ExecutionContext.create_new(
-            agent_node_id=self.node_id, workflow_name=f"{self.node_id}_workflow"
-        )
+        new_context = ExecutionContext.create_new(agent_node_id=self.node_id, workflow_name=f"{self.node_id}_workflow")
         self._current_execution_context = new_context
         return new_context
 
@@ -4012,11 +3827,7 @@ class Agent(FastAPI):
             from pydantic import BaseModel
 
             # If return_type is a Pydantic model, convert the dict to the model
-            if (
-                isinstance(return_type, type)
-                and issubclass(return_type, BaseModel)
-                and isinstance(response_data, dict)
-            ):
+            if isinstance(return_type, type) and issubclass(return_type, BaseModel) and isinstance(response_data, dict):
                 return return_type(**response_data)
 
             # If it's not a Pydantic model or not a dict, return as-is
@@ -4078,9 +3889,7 @@ class Agent(FastAPI):
             import requests
         except ImportError:
             if self.dev_mode:
-                log_warn(
-                    "requests library unavailable, skipping workflow event emission"
-                )
+                log_warn("requests library unavailable, skipping workflow event emission")
             return
 
         payload: Dict[str, Any] = {
@@ -4111,9 +3920,7 @@ class Agent(FastAPI):
                 headers["X-API-Key"] = self.api_key
             response = requests.post(url, json=payload, headers=headers, timeout=5)
             if response.status_code >= 400 and self.dev_mode:
-                log_warn(
-                    f"Workflow event ({status}) for {component_id} failed: {response.status_code} {response.text}"
-                )
+                log_warn(f"Workflow event ({status}) for {component_id} failed: {response.status_code} {response.text}")
         except Exception as exc:
             if self.dev_mode:
                 log_warn(f"Failed to emit workflow event for {component_id}: {exc}")
@@ -4124,9 +3931,7 @@ class Agent(FastAPI):
         """Delegate to server handler for signal setup"""
         return self.server_handler.setup_signal_handlers()
 
-    def _signal_handler(
-        self, signum: int, frame
-    ) -> None:  # pragma: no cover - runtime signal handling
+    def _signal_handler(self, signum: int, frame) -> None:  # pragma: no cover - runtime signal handling
         """Delegate to server handler for signal handling"""
         return self.server_handler.signal_handler(signum, frame)
 
@@ -4138,10 +3943,7 @@ class Agent(FastAPI):
         """
         try:
             # Cleanup async execution manager if it exists
-            if (
-                hasattr(self, "_async_execution_manager")
-                and self._async_execution_manager
-            ):
+            if hasattr(self, "_async_execution_manager") and self._async_execution_manager:
                 try:
                     # Try to cleanup async resources in a new event loop
                     import asyncio
@@ -4355,9 +4157,7 @@ class Agent(FastAPI):
 
                 # Verify signature
                 body = await request.body()
-                if not verifier.verify_signature(
-                    caller_did, signature, timestamp, body, nonce
-                ):
+                if not verifier.verify_signature(caller_did, signature, timestamp, body, nonce):
                     return StarletteJSONResponse(
                         status_code=401,
                         content={
@@ -4373,11 +4173,7 @@ class Agent(FastAPI):
                 # fail-open behavior. The control plane remains the primary policy
                 # enforcement point with full caller context.
                 agent_tags = getattr(agent, "agent_tags", []) or []
-                func_name = (
-                    request.url.path.rstrip("/").split("/")[-1]
-                    if request.url.path
-                    else ""
-                )
+                func_name = request.url.path.rstrip("/").split("/")[-1] if request.url.path else ""
                 if not verifier.evaluate_policy([], agent_tags, func_name, {}):
                     return StarletteJSONResponse(
                         status_code=403,

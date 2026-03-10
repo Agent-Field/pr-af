@@ -34,7 +34,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8004 \
     HOME=/home/praf \
     PYTHONPATH=/app/src \
-    PATH=/home/praf/.opencode/bin:${PATH}
+    PATH=/home/praf/.opencode/bin:${PATH} \
+    XDG_DATA_HOME=/home/praf/.local/share \
+    PR_AF_WORKDIR=/workspaces
 
 WORKDIR /app
 
@@ -45,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd --gid 10001 praf && \
     useradd --uid 10001 --gid praf --create-home --home-dir /home/praf --shell /bin/sh praf && \
     su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
-    mkdir -p /workspaces && \
+    mkdir -p /workspaces /home/praf/.local/share && \
     chown -R praf:praf /app /workspaces /home/praf && \
     rm -rf /var/lib/apt/lists/*
 

@@ -23,7 +23,7 @@ class BudgetConfig(BaseModel):
 
     # Global caps
     max_cost_usd: float = 2.0
-    max_duration_seconds: int = 300  # 5 minutes
+    max_duration_seconds: int = 1800
 
     # Phase-level cost allocation (USD)
     phase_budgets: dict[str, float] = Field(
@@ -104,10 +104,10 @@ class ScoringConfig(BaseModel):
 
     confidence_thresholds: dict[str, float] = Field(
         default_factory=lambda: {
-            "critical": 0.3,  # Keep critical findings even at low confidence
-            "important": 0.4,
-            "suggestion": 0.5,
-            "nitpick": 0.7,  # Only keep nitpicks at high confidence
+            "critical": 0.2,
+            "important": 0.3,
+            "suggestion": 0.4,
+            "nitpick": 0.4,
         }
     )
 
@@ -115,11 +115,12 @@ class ScoringConfig(BaseModel):
 class CommentConfig(BaseModel):
     """Comment formatting and posting preferences."""
 
-    min_severity: str = "suggestion"  # Minimum severity to post (skip nitpicks by default)
+    min_severity: str = "nitpick"  # Minimum severity to include in summary/comments
     max_comments: int = 25  # Cap inline comments to avoid overwhelming
     include_suggestions: bool = True  # Include ```suggestion blocks
     include_dimension_attribution: bool = True  # Show which dimension found it
     include_confidence: bool = True  # Show confidence score
+    suggestion_mode: str = "comment"  # comment | code
 
     severity_emojis: dict[str, str] = Field(
         default_factory=lambda: {
@@ -213,6 +214,9 @@ class ReviewConfig(BaseModel):
 
         if review_input.hints:
             config.hints = review_input.hints
+
+        if hasattr(review_input, "suggestion_mode") and review_input.suggestion_mode:
+            config.comments.suggestion_mode = review_input.suggestion_mode
 
         return config
 

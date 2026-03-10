@@ -46,6 +46,9 @@ class ReviewInput(BaseModel):
     dry_run: bool = False  # Don't post to GitHub, just return findings
     post_pr_number: int | None = None  # For local repo mode: which PR to post to
 
+    # Comment formatting
+    suggestion_mode: str = "comment"  # comment | code — how suggestions are formatted
+
 
 class GitHubPRData(BaseModel):
     """Data fetched from GitHub API for a pull request."""

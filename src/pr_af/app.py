@@ -49,45 +49,76 @@ app = Agent(
 )
 
 
+def _extract_pr_number(pr_url: str) -> int | None:
+    if "github.com" in pr_url and "/pull/" in pr_url:
+        try:
+            return int(pr_url.split("/pull/")[-1].split("/")[0].strip("/"))
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
+    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
+    subprocess.run(
+        ["git", "-C", target_dir, "fetch", "origin", f"pull/{pr_number}/head:pr-review"],
+        env=git_env,
+        timeout=120,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", target_dir, "checkout", "pr-review"],
+        env=git_env,
+        timeout=30,
+        capture_output=True,
+    )
+
+
 def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
+    workdir = os.getenv("PR_AF_WORKDIR", "/workspaces")
     target = repo_path
+    pr_number: int | None = None
+
     if not target and isinstance(pr_url, str) and "github.com" in pr_url and "/pull/" in pr_url:
         parts = pr_url.split("github.com/")[-1].split("/pull/")[0].strip("/")
         if parts.count("/") == 1:
             target = f"https://github.com/{parts}.git"
+        pr_number = _extract_pr_number(pr_url)
 
     if isinstance(target, str) and os.path.isdir(target):
         return str(Path(target).resolve())
 
     if isinstance(target, str) and target.startswith(("https://", "http://", "git@")):
         repo_name = target.rstrip("/").split("/")[-1].replace(".git", "")
-        target_dir = f"/workspaces/{repo_name}"
-        os.makedirs("/workspaces", exist_ok=True)
-
-        if os.path.isdir(target_dir) and os.path.isdir(os.path.join(target_dir, ".git")):
-            subprocess.run(
-                ["git", "pull", "--ff-only"],
-                cwd=target_dir,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
-                timeout=60,
-                capture_output=True,
-            )
-            return target_dir
+        target_dir = os.path.join(workdir, repo_name)
+        os.makedirs(workdir, exist_ok=True)
 
         clone_url = target
         gh_token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
         if gh_token and clone_url.startswith("https://github.com/"):
             clone_url = clone_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
 
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", clone_url, target_dir],
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
-            timeout=120,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise ValueError(f"git clone failed: {result.stderr.strip()}")
+        if os.path.isdir(target_dir) and os.path.isdir(os.path.join(target_dir, ".git")):
+            subprocess.run(
+                ["git", "-C", target_dir, "fetch", "--all"],
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
+                timeout=60,
+                capture_output=True,
+            )
+        else:
+            result = subprocess.run(
+                ["git", "clone", clone_url, target_dir],
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"},
+                timeout=120,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise ValueError(f"git clone failed: {result.stderr.strip()}")
+
+        if pr_number:
+            _checkout_pr_branch(target_dir, pr_number)
+
         return target_dir
 
     return str(Path(os.getenv("PR_AF_REPO_PATH", os.getcwd())).resolve())
@@ -113,6 +144,7 @@ async def review(
     output_format: str = "github",
     dry_run: bool = False,
     post_pr_number: int | None = None,
+    suggestion_mode: str = "comment",
 ) -> dict[str, object]:
     print(
         f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, depth={depth!r}, dry_run={dry_run!r}",
@@ -137,6 +169,7 @@ async def review(
         output_format=output_format,
         dry_run=dry_run,
         post_pr_number=post_pr_number,
+        suggestion_mode=suggestion_mode,
     )
     resolved_repo_path = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:

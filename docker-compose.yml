@@ -28,8 +28,11 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GH_TOKEN=${GH_TOKEN:-}
+      - XDG_DATA_HOME=/home/praf/.local/share
+      - PR_AF_WORKDIR=/workspaces
     volumes:
       - pr-af-workspaces:/workspaces
+      - opencode-data:/home/praf/.local/share
     depends_on:
       agentfield:
         condition: service_started
@@ -44,3 +47,4 @@ services:
 volumes:
   agentfield-data:
   pr-af-workspaces:
+  opencode-data:
