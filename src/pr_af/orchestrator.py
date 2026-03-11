@@ -1321,6 +1321,8 @@ class ReviewOrchestrator:
         if meta_parts:
             lines.extend(["", f"---", f"*{' · '.join(meta_parts)}*"])
 
+        lines.extend(["", "<sub>🤖 Reviewed by [AgentField PR-AF](https://github.com/Agent-Field/pr-af)</sub>"])
+
         return "\n".join(lines).strip()
 
     @staticmethod
@@ -1373,7 +1375,7 @@ class ReviewOrchestrator:
             f"## {rating['emoji']} PR-AF Review — **{rating['label']}**",
             "",
             f"*Automated multi-agent code review · "
-            f"[PR-AF](https://github.com/Agent-Field/agentfield) built with "
+            f"[PR-AF](https://github.com/Agent-Field/pr-af) built with "
             f"[AgentField](https://github.com/Agent-Field/agentfield)*",
             "",
             f"> **{len(findings)} findings** · "
@@ -1424,6 +1426,18 @@ class ReviewOrchestrator:
         lines.extend(self._build_pipeline_stats(intake, duration))
 
         lines.append(f"Review ID: `{self.review_id}`")
+
+        lines.extend(
+            [
+                "",
+                "<br>",
+                '<div align="right">',
+                '  <a href="https://github.com/Agent-Field/pr-af">',
+                '    <img src="https://img.shields.io/badge/Powered_by-AgentField-6366f1?style=flat-square&logo=github" alt="AgentField PR-AF"/>',
+                "  </a>",
+                "</div>",
+            ]
+        )
 
         return "\n".join(lines)
 
