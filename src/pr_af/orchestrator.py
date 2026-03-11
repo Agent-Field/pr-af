@@ -25,8 +25,9 @@ from .github.client import GitHubClient
 from .reasoners.harnesses import (
     adversary_phase,
     anatomy_phase,
+    compound_dedup_phase,
+    compound_finder_phase,
     coverage_gate,
-    cross_ref_phase,
     evidence_verifier,
     intake_phase,
     meta_mechanical,
@@ -47,7 +48,6 @@ from .schemas.output import (
 from .schemas.pipeline import (
     AdversaryResult,
     AnatomyResult,
-    CrossRefInteraction,
     IntakeResult,
     MetaDimensionResult,
     MetaSelectorConfig,
@@ -149,23 +149,20 @@ class ReviewOrchestrator:
         layer_task = asyncio.create_task(self._run_review_layer(plan, findings_queue, anatomy))
 
         _, layer_result = await asyncio.gather(review_task, layer_task)
-        all_findings, cross_refs, adversary_results = layer_result
+        all_findings, adversary_results = layer_result
 
         print(
-            f"[PR-AF] Review+Layer done: {len(all_findings)} findings, {len(cross_refs)} cross-refs, {len(adversary_results)} adversary results",
+            f"[PR-AF] Review+Layer done: {len(all_findings)} findings, {len(adversary_results)} adversary results",
             flush=True,
         )
 
         print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
-        all_findings, cross_refs, adversary_results = await self._run_coverage_loop(
-            plan, anatomy, all_findings, cross_refs, adversary_results
-        )
-        self.cross_ref_count = len(cross_refs)
+        all_findings, adversary_results = await self._run_coverage_loop(plan, anatomy, all_findings, adversary_results)
         self.adversary_challenged_count = sum(1 for result in adversary_results if result.verdict == "challenged")
         self.adversary_confirmed_count = sum(1 for result in adversary_results if result.verdict == "confirmed")
 
         print("[PR-AF] Phase 7: SYNTHESIS", flush=True)
-        scored_findings = self._synthesize(all_findings, cross_refs, adversary_results)
+        scored_findings = self._synthesize(all_findings, adversary_results)
         print(f"[PR-AF] Synthesis complete: {len(scored_findings)} scored findings", flush=True)
 
         print("[PR-AF] Phase 8: OUTPUT", flush=True)
@@ -548,7 +545,7 @@ class ReviewOrchestrator:
         plan: ReviewPlan,
         findings_queue: asyncio.Queue[list[ReviewFinding] | None],
         anatomy: AnatomyResult,
-    ) -> tuple[list[ReviewFinding], list[CrossRefInteraction], list[AdversaryResult]]:
+    ) -> tuple[list[ReviewFinding], list[AdversaryResult]]:
         all_findings: list[ReviewFinding] = []
         while True:
             batch = await findings_queue.get()
@@ -592,29 +589,18 @@ class ReviewOrchestrator:
         challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
         confirmed_findings = [f for f in all_findings if f.title not in challenged_titles]
 
-        cross_refs: list[CrossRefInteraction] = []
-        if confirmed_findings and not self._budget_or_timeout_exhausted("cross_ref"):
-            cross_raw = await cross_ref_phase(
-                findings=[f.model_dump() for f in confirmed_findings],
-                cross_ref_hints=plan.cross_ref_hints,
-                cluster_context=self._build_cluster_context_string(),
-                repo_path=self.input.repo_path or "",
-                evidence_map={k: v.model_dump() for k, v in evidence_map.items()} if evidence_map else None,
-            )
-            self.agent_invocations += 1
-            self._register_cost("cross_ref", self._extract_cost(cross_raw))
-            cross_refs = self._extract_cross_refs(cross_raw)
+        compound_findings = await self._run_compound_analysis(confirmed_findings, evidence_map)
+        all_findings.extend(compound_findings)
 
-        return all_findings, cross_refs, adversary_results
+        return all_findings, adversary_results
 
     async def _run_coverage_loop(
         self,
         plan: ReviewPlan,
         anatomy: AnatomyResult,
         findings: list[ReviewFinding],
-        cross_refs: list[CrossRefInteraction],
         adversary_results: list[AdversaryResult],
-    ) -> tuple[list[ReviewFinding], list[CrossRefInteraction], list[AdversaryResult]]:
+    ) -> tuple[list[ReviewFinding], list[AdversaryResult]]:
         for _ in range(self.config.budget.max_coverage_iterations):
             if self._budget_or_timeout_exhausted("coverage"):
                 break
@@ -669,32 +655,18 @@ class ReviewOrchestrator:
                 adversary_results = await self._run_parallel_adversary(findings, gap_evidence)
 
             challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
-            confirmed_findings = [f for f in findings if f.title not in challenged_titles]
+            findings = [f for f in findings if f.title not in challenged_titles]
 
-            if confirmed_findings and not self._budget_or_timeout_exhausted("cross_ref"):
-                cross_raw = await cross_ref_phase(
-                    findings=[f.model_dump() for f in confirmed_findings],
-                    cross_ref_hints=plan.cross_ref_hints,
-                    cluster_context=self._build_cluster_context_string(),
-                    repo_path=self.input.repo_path or "",
-                    evidence_map={k: v.model_dump() for k, v in gap_evidence.items()} if gap_evidence else None,
-                )
-                self.agent_invocations += 1
-                self._register_cost("cross_ref", self._extract_cost(cross_raw))
-                cross_refs = self._extract_cross_refs(cross_raw)
-
-        return findings, cross_refs, adversary_results
+        return findings, adversary_results
 
     def _synthesize(
         self,
         findings: list[ReviewFinding],
-        cross_refs: list[CrossRefInteraction],
         adversary_results: list[AdversaryResult],
     ) -> list[ScoredFinding]:
         deduped = deduplicate_exact(findings)
         scored = score_findings(
             findings=deduped,
-            cross_refs=cross_refs,
             adversary_results=adversary_results,
             config=self.config.scoring,
             ai_generated=self.intake_result.ai_generated if self.intake_result else 0.0,
@@ -1053,18 +1025,207 @@ class ReviewOrchestrator:
 
         return findings
 
-    def _extract_cross_refs(self, result_raw: object) -> list[CrossRefInteraction]:
+    def _extract_compound_findings(self, result_raw: object) -> list[ReviewFinding]:
         payload = _unwrap(result_raw)
         raw_list: list[dict[str, Any]] = []
         if isinstance(payload, dict):
-            for key in ("interactions", "cross_refs", "results"):
+            for key in ("findings", "results"):
                 value = payload.get(key)
                 if isinstance(value, list):
                     raw_list = cast(list[dict[str, Any]], value)
                     break
         elif isinstance(payload, list):
             raw_list = cast(list[dict[str, Any]], payload)
-        return [CrossRefInteraction.model_validate(item) for item in raw_list]
+        findings: list[ReviewFinding] = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            normalized = {
+                "dimension_id": "compound",
+                "dimension_name": "Compound Analysis",
+                "file_path": item.get("file_path", ""),
+                "line_start": int(item.get("line_start", 0) or 0),
+                "line_end": int(item.get("line_end", item.get("line_start", 0)) or 0),
+                "hunk_context": "",
+                "severity": item.get("severity", "important"),
+                "title": item.get("title", "Untitled compound finding"),
+                "body": item.get("body", ""),
+                "suggestion": item.get("suggestion"),
+                "evidence": item.get("evidence", ""),
+                "confidence": float(item.get("confidence", 0.5) or 0.5),
+                "tags": item.get("tags", []),
+            }
+            findings.append(ReviewFinding.model_validate(normalized))
+        return findings
+
+    async def _dedup_compound_findings(
+        self,
+        compound_findings: list[ReviewFinding],
+        individual_findings: list[ReviewFinding],
+    ) -> list[ReviewFinding]:
+        individual_summary = "\n".join(f"- [{f.severity}] {f.title} ({f.file_path})" for f in individual_findings[:20])
+
+        dedup_raw = await compound_dedup_phase(
+            compound_findings=[f.model_dump() for f in compound_findings],
+            individual_findings_summary=individual_summary,
+        )
+        self.agent_invocations += 1
+        self._register_cost("cross_ref", self._extract_cost(dedup_raw))
+
+        payload = _unwrap(dedup_raw)
+        keep_indices: list[int] = []
+        reasoning = ""
+        if isinstance(payload, dict):
+            keep_indices = payload.get("keep_indices", [])
+            reasoning = payload.get("reasoning", "")
+
+        if not keep_indices:
+            return compound_findings
+
+        deduped = [compound_findings[i] for i in keep_indices if 0 <= i < len(compound_findings)]
+        before = len(compound_findings)
+        after = len(deduped)
+        if before != after:
+            print(
+                f"[PR-AF] Compound dedup: {before} → {after} findings (removed {before - after} duplicates)",
+                flush=True,
+            )
+        return deduped if deduped else compound_findings
+
+    async def _run_compound_analysis(
+        self,
+        confirmed_findings: list[ReviewFinding],
+        evidence_map: dict[str, EvidencePackage] | None,
+    ) -> list[ReviewFinding]:
+        clusters = self._select_compound_clusters(confirmed_findings, evidence_map)
+        if not clusters or self._budget_or_timeout_exhausted("cross_ref"):
+            return []
+
+        print(f"[PR-AF] Phase 5.5: COMPOUND ANALYSIS ({len(clusters)} clusters, parallel)", flush=True)
+        compound_tasks = []
+        for cluster in clusters:
+            cluster_titles = {finding.title for finding in cluster}
+            cluster_evidence = {}
+            if evidence_map:
+                cluster_evidence = {
+                    title: evidence_map[title].model_dump() for title in cluster_titles if title in evidence_map
+                }
+            task = compound_finder_phase(
+                cluster_findings=[finding.model_dump() for finding in cluster],
+                repo_path=self.input.repo_path or "",
+                evidence_map=cluster_evidence or None,
+            )
+            compound_tasks.append(task)
+
+        results = await asyncio.gather(*compound_tasks, return_exceptions=True)
+        compound_findings: list[ReviewFinding] = []
+        for raw_result in results:
+            if isinstance(raw_result, Exception):
+                continue
+            self.agent_invocations += 1
+            self._register_cost("cross_ref", self._extract_cost(raw_result))
+            new_findings = self._extract_compound_findings(raw_result)
+            compound_findings.extend(new_findings)
+
+        if len(compound_findings) > 1:
+            compound_findings = await self._dedup_compound_findings(
+                compound_findings,
+                confirmed_findings,
+            )
+
+        self.cross_ref_count += len(compound_findings)
+        return compound_findings
+
+    def _select_compound_clusters(
+        self,
+        findings: list[ReviewFinding],
+        evidence_map: dict[str, EvidencePackage] | None,
+    ) -> list[list[ReviewFinding]]:
+        if len(findings) < 2:
+            return []
+
+        max_clusters = self.config.budget.max_cross_ref_deep_dives
+        by_title: dict[str, ReviewFinding] = {finding.title: finding for finding in findings}
+
+        candidates: list[tuple[int, int, list[ReviewFinding]]] = []
+        seen_signatures: set[tuple[str, ...]] = set()
+        order = 0
+
+        def add_candidate(priority: int, cluster: list[ReviewFinding]) -> None:
+            nonlocal order
+            unique_by_title = {f.title: f for f in cluster}
+            normalized = list(unique_by_title.values())
+            if len(normalized) < 2:
+                return
+            normalized = sorted(normalized, key=lambda f: f.title)[:4]
+            signature = tuple(sorted(f.title for f in normalized))
+            if signature in seen_signatures:
+                return
+            seen_signatures.add(signature)
+            candidates.append((priority, order, normalized))
+            order += 1
+
+        file_groups: dict[str, list[ReviewFinding]] = {}
+        for finding in findings:
+            if finding.file_path:
+                file_groups.setdefault(finding.file_path, []).append(finding)
+        for group in file_groups.values():
+            if len(group) >= 2:
+                add_candidate(0, group)
+
+        def _import_tokens(title: str) -> set[str]:
+            if not evidence_map or title not in evidence_map:
+                return set()
+            import re
+
+            text = (evidence_map[title].import_context or "").lower()
+            return {tok for tok in re.findall(r"[a-z0-9_./]+", text) if len(tok) > 2}
+
+        import_groups: dict[str, set[str]] = {}
+        for title in by_title:
+            for token in _import_tokens(title):
+                import_groups.setdefault(token, set()).add(title)
+        for titles in import_groups.values():
+            if len(titles) >= 2:
+                add_candidate(1, [by_title[t] for t in sorted(titles) if t in by_title])
+
+        caller_groups: dict[str, set[str]] = {}
+        if evidence_map:
+            for title, finding in by_title.items():
+                package = evidence_map.get(title)
+                if not package:
+                    continue
+                for snippet in package.caller_snippets[:8]:
+                    key = snippet.strip().lower()[:180]
+                    if key:
+                        caller_groups.setdefault(key, set()).add(finding.title)
+        for titles in caller_groups.values():
+            if len(titles) >= 2:
+                add_candidate(3, [by_title[t] for t in sorted(titles) if t in by_title])
+
+        key_tags = {"security", "auth", "validation", "error-handling"}
+        tag_groups: dict[str, list[ReviewFinding]] = {}
+        for finding in findings:
+            for tag in finding.tags:
+                lowered = str(tag).lower()
+                if lowered in key_tags:
+                    tag_groups.setdefault(lowered, []).append(finding)
+        for group in tag_groups.values():
+            if len(group) >= 2:
+                add_candidate(2, group)
+
+        dir_groups: dict[str, list[ReviewFinding]] = {}
+        for finding in findings:
+            if finding.file_path:
+                directory = os.path.dirname(finding.file_path)
+                if directory:
+                    dir_groups.setdefault(directory, []).append(finding)
+        for group in dir_groups.values():
+            if len(group) >= 2:
+                add_candidate(4, group)
+
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        return [cluster for _, _, cluster in candidates[:max_clusters]]
 
     def _extract_adversary_results(self, result_raw: object) -> list[AdversaryResult]:
         payload = _unwrap(result_raw)
@@ -1365,7 +1526,7 @@ class ReviewOrchestrator:
             detail_parts.append("**Cross-Reference & Adversary Analysis:**")
             detail_parts.append("")
             if self.cross_ref_count > 0:
-                detail_parts.append(f"- **{self.cross_ref_count}** cross-change interaction(s) detected")
+                detail_parts.append(f"- **{self.cross_ref_count}** compound finding(s) synthesized")
             total_adv = self.adversary_confirmed_count + self.adversary_challenged_count
             if total_adv > 0:
                 detail_parts.append(

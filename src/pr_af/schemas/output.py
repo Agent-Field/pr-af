@@ -36,7 +36,10 @@ class ReviewSummary(BaseModel):
     total_findings: int = 0
     by_severity: dict[str, int] = Field(default_factory=dict)
     dimensions_run: int = 0
-    cross_ref_interactions: int = 0
+    cross_ref_interactions: int = Field(
+        default=0,
+        description="Backward-compatible field name; value now represents synthesized compound findings.",
+    )
     adversary_challenged: int = 0
     adversary_confirmed: int = 0
     coverage_iterations: int = 0

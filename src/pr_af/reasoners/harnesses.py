@@ -13,7 +13,6 @@ from ..schemas.pipeline import (
     AdversaryResult,
     AnatomyResult,
     ChangeCluster,
-    CrossRefInteraction,
     DiffStats,
     FileChange,
     IntakeResult,
@@ -46,8 +45,27 @@ class _ReviewFindingsResult(BaseModel):
     sub_reviews: list[_SubReviewRequest] = Field(default_factory=list)
 
 
-class _CrossRefResult(BaseModel):
-    interactions: list[CrossRefInteraction] = Field(default_factory=list)
+class _CompoundFinding(BaseModel):
+    title: str = ""
+    severity: str = "suggestion"
+    file_path: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    body: str = ""
+    evidence: str = ""
+    suggestion: str | None = None
+    confidence: float = 0.5
+    tags: list[str] = Field(default_factory=list)
+    contributing_findings: list[str] = Field(default_factory=list)
+
+
+class _CompoundResult(BaseModel):
+    findings: list[_CompoundFinding] = Field(default_factory=list)
+
+
+class _CompoundDedupResult(BaseModel):
+    keep_indices: list[int] = Field(default_factory=list)
+    reasoning: str = ""
 
 
 class _AdversaryPhaseResult(BaseModel):
@@ -935,88 +953,160 @@ async def review_dimension(
 
 
 @router.reasoner()
-async def cross_ref_phase(
-    findings: list[dict],
-    cross_ref_hints: list[str] | None = None,
-    cluster_context: str = "",
+async def compound_finder_phase(
+    cluster_findings: list[dict],
     repo_path: str = "",
     evidence_map: dict[str, dict] | None = None,
 ) -> dict:
     import json as _json
 
-    hints = cross_ref_hints or []
     ev_map = evidence_map or {}
-    validated_findings = [ReviewFinding.model_validate(finding) for finding in findings]
+    validated_findings = [ReviewFinding.model_validate(finding) for finding in cluster_findings]
+    if len(validated_findings) < 2:
+        return {"findings": []}
+
+    cluster_titles = {finding.title for finding in validated_findings}
 
     findings_with_context: list[dict] = []
-    for f in validated_findings[:30]:
+    for f in validated_findings[:4]:
         entry: dict = {
             "title": f.title,
             "severity": f.severity,
             "file_path": f.file_path,
+            "line_start": f.line_start,
+            "line_end": f.line_end,
             "dimension_name": f.dimension_name,
             "body": f.body,
             "evidence": f.evidence,
             "suggestion": f.suggestion,
+            "tags": f.tags,
         }
         ev = ev_map.get(f.title, {})
         if ev:
-            entry["ground_truth_imports"] = ev.get("import_context", "")
-            entry["ground_truth_callers"] = ev.get("caller_snippets", [])[:3]
-            entry["ground_truth_related"] = ev.get("related_code", "")[:1500]
+            entry["evidence_package"] = {
+                "primary_code": ev.get("primary_code", "")[:4000],
+                "import_context": ev.get("import_context", "")[:2500],
+                "caller_snippets": ev.get("caller_snippets", [])[:5],
+                "related_code": ev.get("related_code", "")[:2500],
+                "cross_ref_snippets": ev.get("cross_ref_snippets", [])[:4],
+            }
         findings_with_context.append(entry)
 
-    findings_summary = _json.dumps(findings_with_context, default=str)
+    relevant_evidence: dict[str, dict] = {title: ev_map[title] for title in cluster_titles if title in ev_map}
+    payload = {
+        "cluster_findings": findings_with_context,
+        "cluster_evidence": relevant_evidence,
+    }
+    findings_summary = _json.dumps(payload, default=str)
 
     if len(findings_summary) > 10000 and repo_path:
-        file_path = _write_context_file(findings_summary, "cross_ref_findings.json", repo_path)
+        file_path = _write_context_file(findings_summary, "compound_cluster_findings.json", repo_path)
         findings_ref = (
-            "Full findings with evidence written to: " + file_path + "\nRead this file for complete finding details."
+            "Cluster findings and evidence written to: "
+            + file_path
+            + "\nRead this file for complete compound-analysis context."
         )
     else:
-        findings_ref = "Findings:\n" + findings_summary
+        findings_ref = "Cluster context:\n" + findings_summary
 
-    evidence_section = ""
-    if ev_map:
-        evidence_section = (
-            "## Ground-Truth Evidence\n\n"
-            "Each finding includes `ground_truth_imports` (what the file imports and what "
-            "imports it), `ground_truth_callers` (actual call sites), and `ground_truth_related` "
-            "(code from non-PR files). Use these to verify cross-file interactions are REAL, "
-            "not speculated. If two findings share callers or import chains, that is strong "
-            "evidence of a real interaction.\n\n"
+    result = await router.app.harness(
+        "You are a compound-risk investigator for PR findings. You are given a SMALL cluster "
+        "of findings that might interact. Your task is to investigate whether these findings "
+        "combine into something worse than each finding alone, then synthesize NEW first-class "
+        "findings when that combined risk is real.\n\n"
+        "Use repository access to verify interactions. Treat this as hypothesis-driven analysis, "
+        "not pattern matching: investigate whether there is a real chain or shared mechanism that "
+        "creates an issue an individual reviewer would likely miss.\n\n"
+        "Guidance for investigation depth:\n"
+        "- Check whether one finding creates a precondition that enables another.\n"
+        "- Check whether separately minor issues create an escalation path together.\n"
+        "- Check whether a safety mechanism exists in one place but is disconnected elsewhere.\n"
+        "- Check whether fixing one issue can worsen behavior exposed by another.\n"
+        "- Check whether repeated patterns indicate a systemic control gap.\n\n"
+        "Output contract:\n"
+        "- If no credible compound issue exists, return an empty findings list.\n"
+        "- If a compound issue exists, emit NEW findings only. Do not repeat original findings.\n"
+        "- Each output finding must include: title, severity, file_path, line_start, line_end, "
+        "body, evidence, suggestion, confidence, tags, and contributing_findings.\n"
+        "- `contributing_findings` must list the exact titles from this cluster that combine.\n"
+        "- Only emit findings with confidence >= 0.6 and concrete evidence.\n\n"
+        + findings_ref
+        + "\n\nReturn strict JSON matching the schema.",
+        schema=_CompoundResult,
+        cwd=repo_path or None,
+    )
+    parsed = result.parsed if result.parsed else _CompoundResult()
+    return {"findings": [finding.model_dump() for finding in parsed.findings]}
+
+
+@router.reasoner()
+async def compound_dedup_phase(
+    compound_findings: list[dict],
+    individual_findings_summary: str = "",
+) -> dict:
+    """Deduplicate compound findings via a single harness call.
+
+    The harness receives all compound findings and determines which are
+    genuinely unique insights vs near-duplicates covering the same ground.
+    Returns the 0-based indices of findings to KEEP.
+    """
+    import json as _json
+
+    if len(compound_findings) <= 1:
+        return {"keep_indices": list(range(len(compound_findings))), "reasoning": "single finding, no dedup needed"}
+
+    numbered_findings: list[str] = []
+    for idx, f in enumerate(compound_findings):
+        numbered_findings.append(
+            f"[{idx}] Title: {f.get('title', '')}\n"
+            f"    Severity: {f.get('severity', '')}\n"
+            f"    File: {f.get('file_path', '')}\n"
+            f"    Tags: {f.get('tags', [])}\n"
+            f"    Body: {f.get('body', '')[:500]}\n"
+            f"    Evidence: {f.get('evidence', '')[:300]}"
+        )
+
+    findings_text = "\n\n".join(numbered_findings)
+
+    individual_context = ""
+    if individual_findings_summary:
+        individual_context = (
+            "\n\nFor reference, these are the INDIVIDUAL findings that the compound "
+            "findings were synthesized from:\n" + individual_findings_summary
         )
 
     result = await router.app.harness(
-        "You are analyzing the INTERACTIONS between findings from different review dimensions. "
-        "Individual reviewers examined separate aspects of the PR. Your job is to find where "
-        "their findings COMBINE to create risks that neither reviewer saw alone.\n\n"
-        + evidence_section
-        + "## What to Look For\n\n"
-        "1. **Compound Failures**: Finding A says 'function X changed its error type' and "
-        "Finding B says 'caller Y catches the old error type'. Check the ground_truth_callers "
-        "to verify both findings reference the same call path.\n\n"
-        "2. **Contradictory Assumptions**: One reviewer assumes a lock is held, another's "
-        "finding shows the lock was removed. Check ground_truth_imports to see if both "
-        "files interact through shared modules.\n\n"
-        "3. **Cascade Effects**: A 'suggestion'-level finding in module A becomes 'critical' "
-        "when combined with an 'important' finding in module B. Use ground_truth_related "
-        "to trace the cascade path through actual code.\n\n"
-        "4. **Consistency Gaps**: One part was updated to a new pattern, another still uses "
-        "the old. The ground_truth_imports show if these files are in the same dependency chain.\n\n"
-        "5. **Hidden Dependencies**: Findings in separate files sharing implicit contracts. "
-        "Check ground_truth_callers for overlapping call sites.\n\n"
-        "You have repository access. When checking interactions, read actual files to verify. "
-        "Only report interactions you can TRACE through specific findings and code.\n\n"
-        + findings_ref
-        + "\n\nReview hints: "
-        + str(hints if hints else "none")
-        + ("\n\nCluster context:\n" + cluster_context if cluster_context else ""),
-        schema=_CrossRefResult,
-        cwd=repo_path or None,
+        "You are a deduplication specialist reviewing compound findings from a PR review.\n\n"
+        "Compound findings are synthesized from clusters of individual findings. Because "
+        "clusters are analyzed independently and in parallel, different clusters sometimes "
+        "produce findings that cover the SAME underlying insight from slightly different "
+        "angles.\n\n"
+        "Your task: identify which compound findings represent genuinely DISTINCT insights "
+        "and which are near-duplicates. Two findings are duplicates when they describe the "
+        "same root cause, same attack vector, or same systemic pattern — even if phrased "
+        "differently or using different terminology.\n\n"
+        "When duplicates exist, keep the finding that is:\n"
+        "- Most specific and actionable\n"
+        "- Best evidenced\n"
+        "- Highest severity\n\n"
+        "Also check: does any compound finding merely RESTATE what an individual finding "
+        "already says without adding a genuinely new cross-cutting insight? If so, drop it.\n\n"
+        f"COMPOUND FINDINGS TO EVALUATE ({len(compound_findings)} total):\n\n"
+        + findings_text
+        + individual_context
+        + "\n\nReturn `keep_indices` as a list of 0-based indices of findings to KEEP. "
+        "Include your reasoning.",
+        schema=_CompoundDedupResult,
     )
-    parsed = result.parsed if result.parsed else _CrossRefResult()
-    return {"interactions": [interaction.model_dump() for interaction in parsed.interactions]}
+    parsed = result.parsed if result.parsed else _CompoundDedupResult()
+
+    # Validate indices are in range
+    valid_indices = [i for i in parsed.keep_indices if 0 <= i < len(compound_findings)]
+    if not valid_indices:
+        # Fallback: keep all if harness returned nothing valid
+        valid_indices = list(range(len(compound_findings)))
+
+    return {"keep_indices": valid_indices, "reasoning": parsed.reasoning}
 
 
 @router.reasoner()

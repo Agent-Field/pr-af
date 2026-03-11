@@ -11,12 +11,11 @@ from __future__ import annotations
 
 from .config import ScoringConfig
 from .schemas.output import ScoredFinding
-from .schemas.pipeline import AdversaryResult, CrossRefInteraction, ReviewFinding
+from .schemas.pipeline import AdversaryResult, ReviewFinding
 
 
 def score_findings(
     findings: list[ReviewFinding],
-    cross_refs: list[CrossRefInteraction],
     adversary_results: list[AdversaryResult],
     config: ScoringConfig,
     ai_generated: float = 0.0,
@@ -26,21 +25,13 @@ def score_findings(
 
     Steps:
     1. Apply base severity weights
-    2. Apply multipliers from cross-ref and adversary
+    2. Apply multipliers from adversary and global context
     3. Filter by confidence thresholds
     4. Sort by composite score descending
     """
 
     # Index adversary results by finding title
-    adversary_by_title: dict[str, AdversaryResult] = {
-        ar.finding_title: ar for ar in adversary_results
-    }
-
-    # Index cross-ref interactions by finding titles
-    cross_ref_findings: set[str] = set()
-    for cr in cross_refs:
-        cross_ref_findings.add(cr.finding_a_title)
-        cross_ref_findings.add(cr.finding_b_title)
+    adversary_by_title: dict[str, AdversaryResult] = {ar.finding_title: ar for ar in adversary_results}
 
     scored: list[ScoredFinding] = []
 
@@ -53,11 +44,6 @@ def score_findings(
 
         # Collect active multipliers
         active_multipliers: list[str] = []
-
-        # Cross-ref compound risk
-        if finding.title in cross_ref_findings:
-            score *= config.multipliers.get("cross_ref_compound", 1.5)
-            active_multipliers.append("cross_ref_compound")
 
         # Adversary assessment
         adversary = adversary_by_title.get(finding.title)
