@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false
+import hashlib
+import hmac
+import json
 import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
 
 import agentfield as _agentfield
+import httpx
 from agentfield import Agent, AIConfig
 from dotenv import load_dotenv
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from .config import AIIntegrationConfig, ReviewConfig
 from .orchestrator import ReviewOrchestrator
@@ -204,6 +208,126 @@ async def review(
         raise HTTPException(status_code=500, detail={"error": f"review execution failed: {exc}"}) from exc
 
     return result.model_dump()
+
+
+# ---------------------------------------------------------------------------
+# GitHub Webhook — @mention-triggered PR review
+# ---------------------------------------------------------------------------
+_BOT_MENTION = os.getenv("PR_AF_BOT_MENTION", "@pr-af")
+_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+_CP_URL = os.getenv("AGENTFIELD_SERVER", "http://localhost:8080")
+
+
+def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
+    if not secret:
+        return True  # no secret configured — skip verification
+    expected = "sha256=" + hmac.new(
+        secret.encode(), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+async def _fire_review(
+    pr_url: str, hints: list[str] | None = None
+) -> str | None:
+    """Fire an async review execution via the Control Plane. Returns exec id."""
+    input_payload: dict[str, object] = {
+        "pr_url": pr_url,
+        "depth": "standard",
+        "dry_run": False,
+    }
+    if hints:
+        input_payload["hints"] = hints
+    body = json.dumps({"input": input_payload})
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{_CP_URL}/api/v1/execute/async/pr-af.review",
+                content=body,
+                headers={"Content-Type": "application/json"},
+            )
+            resp.raise_for_status()
+            return resp.json().get("execution_id")
+    except Exception as exc:
+        print(f"[PR-AF] Failed to fire review: {exc}", flush=True)
+        return None
+
+
+def _extract_hints_from_comment(comment_body: str) -> list[str]:
+    """Extract review hints from the text after the @mention."""
+    mention = _BOT_MENTION.lower()
+    lower = comment_body.lower()
+    idx = lower.find(mention)
+    if idx < 0:
+        return []
+    after = comment_body[idx + len(mention) :].strip()
+    if after:
+        return [after]
+    return []
+
+
+def _get_pr_url_from_issue(payload: dict) -> str | None:
+    """Extract PR URL from an issue_comment webhook payload."""
+    issue = payload.get("issue", {})
+    pr_data = issue.get("pull_request", {})
+    return pr_data.get("html_url") or None
+
+
+async def webhook_github(request: Request) -> dict[str, object]:
+    """Handle GitHub webhook for @mention-triggered PR reviews.
+
+    Listens for issue_comment events. When someone comments on a PR with
+    @pr-af (or the configured bot mention), fires an async review via the
+    Control Plane. Any text after the @mention is passed as review hints.
+
+    Examples:
+        "@pr-af" — standard review
+        "@pr-af please focus on error handling and security" — guided review
+    """
+    body = await request.body()
+
+    sig = request.headers.get("x-hub-signature-256", "")
+    if _WEBHOOK_SECRET and not _verify_signature(body, sig, _WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    event = request.headers.get("x-github-event", "")
+    if event == "ping":
+        return {"status": "pong"}
+
+    if event != "issue_comment":
+        return {"status": "ignored", "reason": f"event={event}"}
+
+    payload = json.loads(body)
+    action = payload.get("action", "")
+    if action != "created":
+        return {"status": "ignored", "reason": f"action={action}"}
+
+    comment_body = payload.get("comment", {}).get("body", "")
+    if _BOT_MENTION.lower() not in comment_body.lower():
+        return {"status": "ignored", "reason": "no bot mention"}
+
+    # Only respond to comments on PRs (issue_comment fires for issues too)
+    pr_url = _get_pr_url_from_issue(payload)
+    if not pr_url:
+        return {"status": "ignored", "reason": "not a PR comment"}
+
+    repo_name = payload.get("repository", {}).get("full_name", "")
+    issue_number = payload.get("issue", {}).get("number")
+    hints = _extract_hints_from_comment(comment_body)
+
+    print(
+        f"[PR-AF] Webhook: {_BOT_MENTION} mentioned in "
+        f"{repo_name}#{issue_number} — firing review"
+        + (f" with hints: {hints}" if hints else ""),
+        flush=True,
+    )
+    exec_id = await _fire_review(pr_url, hints=hints or None)
+    return {"status": "review_dispatched", "pr_url": pr_url, "execution_id": exec_id}
+
+
+cast("Any", app).add_api_route(
+    "/webhook/github", webhook_github, methods=["POST"]
+)
 
 
 async def health() -> dict[str, str]:

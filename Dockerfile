@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir --prefix=/install \
     "httpx>=0.27" \
     "python-dotenv>=1.0" \
     "fastapi>=0.100" \
-    "uvicorn>=0.20" && \
+    "uvicorn>=0.20" \
+    "PyJWT[crypto]>=2.8" && \
     pip install --no-cache-dir --prefix=/install --no-deps .
 
 

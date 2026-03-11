@@ -17,6 +17,7 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "fastapi>=0.100",
+    "PyJWT[crypto]>=2.8",
 ]
 
 [project.optional-dependencies]
