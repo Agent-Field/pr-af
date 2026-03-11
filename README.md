@@ -97,3 +97,55 @@ curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
 ```
 
 *(When `dry_run: true`, the agent evaluates the PR but does not actually post the comments to GitHub. Check the Control Plane UI to view the final payload).*
+
+## GitHub Actions CI/CD (Zero Config)
+
+The easiest way to use PR-AF is dropping it into your GitHub Actions. It requires **zero configuration** other than an OpenRouter API key. 
+
+By default, it uses the built-in `GITHUB_TOKEN`, meaning PR-AF will securely post review comments using the standard `github-actions[bot]` account. 
+
+Add this workflow to your repository at `.github/workflows/pr-af-review.yml`. It triggers automatically whenever you add the **`pr-af`** label to a Pull Request.
+
+```yaml
+name: AgentField PR Review
+
+on:
+  pull_request:
+    types: [labeled]
+
+jobs:
+  pr-af-review:
+    if: github.event.label.name == 'pr-af'
+    runs-on: ubuntu-latest
+    
+    # Needs permissions to post comments and read code
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR-AF
+        uses: actions/checkout@v4
+        with:
+          repository: Agent-Field/pr-af
+          path: pr-af
+
+      - name: Start AgentField & PR-AF
+        working-directory: ./pr-af
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker compose up -d
+          # Wait for services to be healthy
+          sleep 15 
+
+      - name: Execute Deep Architectural Audit
+        working-directory: ./pr-af
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          python3 scripts/ci_runner.py
+```
+
+*Note: PR-AF runs a comprehensive multi-agent DAG. Reviews typically take 35-50 minutes depending on PR complexity.*
