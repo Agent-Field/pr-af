@@ -16,11 +16,9 @@
 
 </div>
 
-Most AI code reviewers are incredibly fast and great at spotting surface-level errors (like typos, missing parameters, or unhandled exceptions). 
+Most AI code reviewers are incredibly fast and great at spotting surface-level syntax errors or missing parameters. However, when evaluating large, complex Pull Requests, single-prompt AI tools often hit a ceiling: they generate false positives by guessing how functions interact outside the diff, and they miss systemic vulnerabilities that span across multiple files.
 
-However, when evaluating large, complex Pull Requests, single-prompt AI tools often hit a ceiling: they generate false positives by guessing how functions interact outside the diff, and they miss systemic vulnerabilities that span across multiple files.
-
-**PR-AF** (Pull Request Agent Field) is a specialized, multi-agent pipeline designed to act as a **deep architectural auditor**. Instead of relying on a single large language model call, PR-AF orchestrates dozens of micro-agents that extract hard evidence from your repository, debate findings, and synthesize compound attack chains.
+**PR-AF** (Pull Request Agent Field) is a specialized pipeline designed to act as a **deep architectural auditor**. Instead of relying on a single large language model call, PR-AF orchestrates a massively parallel cognitive architecture that extracts hard evidence from your repository, filters out noise, and synthesizes compound attack chains.
 
 *Zero false positives. Deep architectural insights. Open-source and BYOK (Bring Your Own Keys).*
 
@@ -28,30 +26,30 @@ However, when evaluating large, complex Pull Requests, single-prompt AI tools of
 
 ## How It Works
 
-PR-AF uses a multi-phase agentic pipeline to ensure rigor and depth:
+PR-AF uses a multi-phase cognitive pipeline to ensure rigorous, high-fidelity reviews:
 
 ### 1. Evidence Grounding (0% False Positives)
-LLMs tend to make assumptions. If an agent thinks a parameter is missing, PR-AF doesn't immediately post a comment. Instead, it uses programmatic code extraction to pull the exact caller snippets and import contexts from your repository. An isolated **Evidence Verifier** agent is then forced to validate the claim against this ground-truth data. If the evidence doesn't support the bug, it's silently dropped.
+Language models inherently operate on probability, which leads to assumption-based false positives. If the system flags a missing validation check, PR-AF does not immediately accept it. Instead, it utilizes programmatic AST (Abstract Syntax Tree) extraction to pull the exact caller snippets and import contexts from the broader repository. This raw data is then evaluated through an isolated verification layer. If the initial claim cannot be irrefutably grounded in the extracted code, it is silently pruned.
 
-### 2. Compound Analysis
-Standard tools look at issues in isolation. PR-AF clusters isolated, seemingly minor findings across different files to see if they combine into a larger exploit. For example, finding an unprotected API key in one file and a database merge vulnerability in another will be synthesized into a single critical "Coordinated Injection" finding.
+### 2. Compound Vulnerability Synthesis
+Standard tools analyze code linearly. PR-AF looks at the entire board to identify cross-correlated risks. It clusters isolated, seemingly minor anomalies across different files and evaluates them concurrently to detect whether they coalesce into a larger systemic exploit. For example, identifying an unprotected API key in one module and a database merge vulnerability in another will be synthesized into a single, high-severity "Coordinated Injection" finding.
 
-### 3. Adversarial Red Teaming
-Before any finding makes it to your GitHub PR, it must survive the **Adversary**—a cynical "Red Team" agent tasked exclusively with trying to prove why the reported bug is actually safe, intended behavior, or mitigated elsewhere in the codebase.
+### 3. Falsifiability Gates
+Before any finding is compiled into the final GitHub comment, it must pass through a strict falsifiability framework. The system actively attempts to invalidate its own findings—searching for reasons why the reported anomaly might be safe, intended behavior, or securely mitigated elsewhere in the codebase structure. Only findings that survive this aggressive auto-invalidation process are surfaced to the developer.
 
 ---
 
 ## Ecosystem Comparison
 
-There are excellent AI code review tools on the market. PR-AF is not designed to replace fast, interactive tools; it is designed for comprehensive CI/CD gating where accuracy and architectural depth matter more than speed.
+There are excellent AI code review tools on the market. PR-AF is not designed to replace fast, interactive tools; it is designed for comprehensive CI/CD gating where accuracy and architectural depth matter more than execution speed.
 
 | Feature | PR-AF (AgentField) | Claude Code CLI | Commercial SaaS (e.g. Codex, CodeRabbit) |
 |---|---|---|---|
 | **Best For** | Deep CI/CD architectural audits | Fast, iterative inner-loop development | Clean GitHub UX and chat-based reviews |
 | **Cost** | **Free / Open Source** (BYOK API costs only) | Pay-per-token (BYOK) | ~$20 - $25 / user / month |
-| **Architecture** | Multi-agent orchestrated pipeline | Single-agent interactive loop | Agentic retrieval + LLM review |
+| **Architecture** | Massively parallel cognitive pipeline | Single-thread interactive loop | Context retrieval + LLM review |
 | **Execution Time**| ~35-50 minutes | Seconds to minutes | ~2-5 minutes |
-| **False Positives**| **Extremely low** (Evidence Verifier + Adversary) | Moderate (relies on context window) | Low-to-Moderate (heuristic filtering) |
+| **False Positives**| **Extremely low** (Evidence Grounding) | Moderate (relies on context window) | Low-to-Moderate (heuristic filtering) |
 | **Compound Risks**| **Yes** (Dedicated Compound Synthesizer) | Unlikely (diff-focused) | Partial (depends on retrieval accuracy) |
 
 *We highly recommend using Claude Code for your local development and running PR-AF as your final GitHub Actions gatekeeper.*
@@ -105,4 +103,4 @@ jobs:
           python3 scripts/ci_runner.py
 ```
 
-*Note: PR-AF runs a comprehensive multi-agent pipeline. Reviews typically take 35-50 minutes depending on PR complexity.*
+*Note: PR-AF runs a comprehensive parallel pipeline. Reviews typically take 35-50 minutes depending on PR complexity.*
