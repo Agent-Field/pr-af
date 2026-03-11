@@ -3,20 +3,91 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from typing import TYPE_CHECKING
 
 import httpx
+import jwt
 
 from ..schemas.input import ChangedFile, GitHubPRData
 
 if TYPE_CHECKING:
     from ..schemas.output import GitHubReview
 
+# GitHub App credentials (set via env vars on Railway)
+_GITHUB_APP_ID = os.getenv("GITHUB_APP_ID", "")
+_GITHUB_APP_PRIVATE_KEY = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
+
+# Cache for installation tokens: {installation_id: (token, expires_at)}
+_token_cache: dict[int, tuple[str, float]] = {}
+
+
+def _generate_app_jwt() -> str:
+    """Generate a short-lived JWT for GitHub App authentication."""
+    now = int(time.time())
+    payload = {
+        "iat": now - 60,  # issued at (60s clock skew buffer)
+        "exp": now + (10 * 60),  # expires in 10 minutes (max allowed)
+        "iss": _GITHUB_APP_ID,
+    }
+    return jwt.encode(payload, _GITHUB_APP_PRIVATE_KEY, algorithm="RS256")
+
+
+async def _get_installation_token(owner: str, repo: str) -> str:
+    """Get an installation access token for a specific repo.
+
+    First finds the installation ID for the repo, then exchanges
+    the App JWT for a scoped installation token. Tokens are cached
+    until 5 minutes before expiry.
+    """
+    app_jwt = _generate_app_jwt()
+    headers = {
+        "Authorization": f"Bearer {app_jwt}",
+        "Accept": "application/vnd.github+json",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        # Find installation for this repo
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/installation",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        installation_id = resp.json()["id"]
+
+        # Check cache
+        if installation_id in _token_cache:
+            token, expires_at = _token_cache[installation_id]
+            if time.time() < expires_at - 300:  # 5 min buffer
+                return token
+
+        # Generate new installation token
+        resp = await client.post(
+            f"https://api.github.com/app/installations/{installation_id}/access_tokens",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        token = data["token"]
+        # Parse ISO 8601 expiry: "2024-01-01T00:00:00Z"
+        from datetime import datetime
+
+        expires_at = datetime.fromisoformat(
+            data["expires_at"].replace("Z", "+00:00")
+        ).timestamp()
+        _token_cache[installation_id] = (token, expires_at)
+        return token
+
+
+def _is_github_app_configured() -> bool:
+    return bool(_GITHUB_APP_ID and _GITHUB_APP_PRIVATE_KEY)
+
 
 class GitHubClient:
     def __init__(self, token: str | None = None):
         self.token = token or os.getenv("GITHUB_TOKEN", "")
         self.base_url = "https://api.github.com"
+        self._use_app_auth = _is_github_app_configured()
 
     @staticmethod
     def parse_pr_url(url: str) -> tuple[str, str, int]:
@@ -32,14 +103,26 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
 
+    async def _headers_for_repo(self, owner: str, repo: str) -> dict[str, str]:
+        """Get auth headers, preferring GitHub App installation token."""
+        headers = {"Accept": "application/vnd.github+json"}
+        if self._use_app_auth:
+            token = await _get_installation_token(owner, repo)
+            headers["Authorization"] = f"Bearer {token}"
+        elif self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
     async def fetch_pr(self, pr_url: str) -> GitHubPRData:
         """Fetch PR metadata, diff, and changed files from GitHub API."""
         owner, repo, number = self.parse_pr_url(pr_url)
 
+        auth_headers = await self._headers_for_repo(owner, repo)
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             pr_resp = await client.get(
                 f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}",
-                headers=self._headers(),
+                headers=auth_headers,
             )
             pr_resp.raise_for_status()
             pr_data = pr_resp.json()
@@ -49,7 +132,7 @@ class GitHubClient:
             while True:
                 files_resp = await client.get(
                     f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}/files",
-                    headers=self._headers(),
+                    headers=auth_headers,
                     params={"per_page": 100, "page": page},
                 )
                 files_resp.raise_for_status()
@@ -78,7 +161,7 @@ class GitHubClient:
             while True:
                 commits_resp = await client.get(
                     f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}/commits",
-                    headers=self._headers(),
+                    headers=auth_headers,
                     params={"per_page": 100, "page": commit_page},
                 )
                 commits_resp.raise_for_status()
@@ -95,8 +178,7 @@ class GitHubClient:
                     break
                 commit_page += 1
 
-            diff_headers = self._headers()
-            diff_headers["Accept"] = "application/vnd.github.v3.diff"
+            diff_headers = {**auth_headers, "Accept": "application/vnd.github.v3.diff"}
             diff_resp = await client.get(
                 f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}",
                 headers=diff_headers,
@@ -149,14 +231,16 @@ class GitHubClient:
         print(
             f"[PR-AF] Posting review to {owner}/{repo}#{pr_number}: "
             f"event={review.event}, {len(review.comments)} comments, "
-            f"commit_sha={commit_sha[:12] if commit_sha else 'none'}",
+            f"commit_sha={commit_sha[:12] if commit_sha else 'none'}"
+            f", auth={'app' if self._use_app_auth else 'pat'}",
             flush=True,
         )
 
+        auth_headers = await self._headers_for_repo(owner, repo)
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{self.base_url}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
-                headers=self._headers(),
+                headers=auth_headers,
                 json=payload,
             )
             if response.status_code >= 400:
@@ -175,11 +259,14 @@ class GitHubClient:
         shallow: bool = True,
     ) -> str:
         """Clone repository to local path. Returns the path."""
-        token = os.getenv("GH_TOKEN") or self.token or os.getenv("GITHUB_TOKEN", "")
+        if self._use_app_auth:
+            token = await _get_installation_token(owner, repo)
+        else:
+            token = os.getenv("GH_TOKEN") or self.token or os.getenv("GITHUB_TOKEN", "")
         if not token:
             raise ValueError("GitHub token is required for clone_repo")
 
-        repo_url = f"https://{token}@github.com/{owner}/{repo}.git"
+        repo_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
         command = ["git", "clone"]
         if shallow:
             command.extend(["--depth", "1"])
