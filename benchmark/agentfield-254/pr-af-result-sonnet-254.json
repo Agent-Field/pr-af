@@ -1,0 +1,1139 @@
+{
+    "execution_id": "exec_20260310_165506_23twwiqt",
+    "run_id": "run_20260310_165506_1qym4blk",
+    "status": "succeeded",
+    "result": {
+        "findings": [
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "The `MockStorageProvider` in `config_test.go` (and identically in `execute_test.go`) implements `SetConfig` and `GetConfig` with signatures that do **not** match the `StorageProvider` interface defined in `storage/storage.go:133-136`.\n\n**Interface (storage.go:133-136):**\n```go\nSetConfig(ctx context.Context, key string, value string, updatedBy string) error\nGetConfig(ctx context.Context, key string) (*ConfigEntry, error)\nListConfigs(ctx context.Context) ([]*ConfigEntry, error)\nDeleteConfig(ctx context.Context, key string) error\n```\n\n**Mock (config_test.go:289-297):**\n```go\nfunc (m *MockStorageProvider) SetConfig(ctx context.Context, key string, value interface{}) error\nfunc (m *MockStorageProvider) GetConfig(ctx context.Context, key string) (interface{}, error)\n```\n\nDifferences:\n1. `SetConfig`: interface takes `(value string, updatedBy string)`, mock takes `(value interface{})` \u2014 wrong parameter count AND wrong type\n2. `GetConfig`: interface returns `(*ConfigEntry, error)`, mock returns `(interface{}, error)` \u2014 wrong return type\n3. `ListConfigs` is **entirely absent** from the mock\n4. `DeleteConfig` is **entirely absent** from the mock\n\nBecause both files carry `//go:build integration`, these compile errors are **suppressed during default `go test ./...` runs** and will only surface when running with the `integration` build tag. This means the broken mocks are silently excluded from CI unless integration tests are explicitly exercised, creating a false sense of correctness.",
+                "confidence": 0.98,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "interface-compliance",
+                "dimension_name": "StorageProvider Interface Implementation Completeness",
+                "evidence": "Step 1: Interface at storage/storage.go:133 defines `SetConfig(ctx context.Context, key string, value string, updatedBy string) error` with two string parameters after key.\nStep 2: Interface at storage/storage.go:134 defines `GetConfig(ctx context.Context, key string) (*ConfigEntry, error)` returning a concrete pointer type.\nStep 3: Mock at config_test.go:289 implements `SetConfig(ctx context.Context, key string, value interface{}) error` \u2014 only one parameter after key, and typed as `interface{}` not `string`.\nStep 4: Mock at config_test.go:294 implements `GetConfig(ctx context.Context, key string) (interface{}, error)` \u2014 returns `interface{}` not `*storage.ConfigEntry`.\nStep 5: Searching config_test.go for `ListConfigs` and `DeleteConfig` returns 0 matches \u2014 both methods are entirely absent.\nStep 6: execute_test.go:173 and :176 contain identical wrong signatures.\nStep 7: Both files are `//go:build integration` (config_test.go:1, execute_test.go:1), so these compile errors are hidden from default test runs but will break `go test -tags integration ./...`.",
+                "file_path": "control-plane/internal/handlers/ui/config_test.go",
+                "id": "f_000",
+                "line_end": 297,
+                "line_start": 289,
+                "score": 1.529,
+                "severity": "critical",
+                "suggestion": "Update both mock files to match the current interface signatures exactly:\n```go\nfunc (m *MockStorageProvider) SetConfig(ctx context.Context, key string, value string, updatedBy string) error {\n    args := m.Called(ctx, key, value, updatedBy)\n    return args.Error(0)\n}\nfunc (m *MockStorageProvider) GetConfig(ctx context.Context, key string) (*storage.ConfigEntry, error) {\n    args := m.Called(ctx, key)\n    if args.Get(0) == nil {\n        return nil, args.Error(1)\n    }\n    return args.Get(0).(*storage.ConfigEntry), args.Error(1)\n}\nfunc (m *MockStorageProvider) ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error) {\n    args := m.Called(ctx)\n    if args.Get(0) == nil {\n        return nil, args.Error(1)\n    }\n    return args.Get(0).([]*storage.ConfigEntry), args.Error(1)\n}\nfunc (m *MockStorageProvider) DeleteConfig(ctx context.Context, key string) error {\n    args := m.Called(ctx, key)\n    return args.Error(0)\n}\n```\nApply the same fix to `internal/handlers/execute_test.go`.",
+                "tags": [
+                    "interface-mismatch",
+                    "test",
+                    "compile-error",
+                    "integration-test"
+                ],
+                "title": "MockStorageProvider implements SetConfig/GetConfig with wrong signatures and is missing ListConfigs and DeleteConfig entirely"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "When `AGENTFIELD_CONFIG_SOURCE=db` is set, `mergeDBConfig` in `config_db.go:87-89` replaces the **entire** `target.Features.DID` struct \u2014 including `Authorization.AdminToken` and `Authorization.InternalToken` \u2014 with values from the DB-stored YAML if `dbCfg.Features.DID.Method != \"\"`.\n\n```go\n// config_db.go:86-89\nif dbCfg.Features.DID.Method != \"\" {\n    target.Features.DID = dbCfg.Features.DID  // replaces AdminToken, InternalToken, all auth config\n}\n```\n\nThe comment at line 94 says `// API settings (but never override API key from DB for security)` and correctly protects `API.Auth.APIKey`. However, `AdminToken` (used to guard admin routes including tag approval, policy management, and the config routes themselves) and `InternalToken` (used as bearer for agent-to-agent calls) are both nested under `Features.DID.Authorization` and are **not similarly protected**.\n\nAttack chain:\n1. Attacker calls `PUT /api/v1/configs/agentfield.yaml` with a YAML body containing `features.did.method: did:key` and `features.did.authorization.admin_token: attacker-controlled-token` (unauthenticated, due to Finding 1).\n2. Attacker calls `POST /api/v1/configs/reload` to trigger `overlayDBConfig`.\n3. `mergeDBConfig` sees `dbCfg.Features.DID.Method == \"did:key\"` (non-empty), replaces `target.Features.DID` entirely, overwriting `AdminToken` with the attacker-controlled value.\n4. Attacker now has full `X-Admin-Token` admin access over tag approval, policy management, and all future admin routes.",
+                "confidence": 0.92,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "auth-config-crud",
+                "dimension_name": "Config CRUD Route Authorization Gap",
+                "evidence": "Step 1: Attacker sends `PUT /api/v1/configs/agentfield.yaml` with body `features:\\n  did:\\n    method: did:key\\n    authorization:\\n      admin_token: evil-token` \u2014 unauthenticated because `APIKeyAuth` is a no-op when `api_key` is empty (Finding 1).\nStep 2: `SetConfig` at config_storage.go:85 calls `h.storage.SetConfig(ctx, \"agentfield.yaml\", body, \"api\")` \u2014 no validation or sanitization of the YAML content.\nStep 3: Attacker sends `POST /api/v1/configs/reload`. `ReloadConfig` at config_storage.go:121 calls `h.reloadFn()` which calls `overlayDBConfig(s.config, s.storage)` (server.go:440).\nStep 4: `overlayDBConfig` at config_db.go:37-42 parses the stored YAML into `dbCfg` and calls `mergeDBConfig(cfg, &dbCfg)`.\nStep 5: `mergeDBConfig` at config_db.go:87-89: `dbCfg.Features.DID.Method == \"did:key\"` (non-empty), so `target.Features.DID = dbCfg.Features.DID` executes, replacing `Authorization.AdminToken` with `evil-token`.\nStep 6: Subsequent requests using `X-Admin-Token: evil-token` are accepted by `AdminTokenAuth` at middleware/auth.go:99.",
+                "file_path": "control-plane/internal/server/config_db.go",
+                "id": "f_008",
+                "line_end": 89,
+                "line_start": 87,
+                "score": 1.435,
+                "severity": "critical",
+                "suggestion": "Add explicit protection in `mergeDBConfig` for security-sensitive fields inside `Features.DID`, mirroring the API key protection at line 94:\n\n```go\nif dbCfg.Features.DID.Method != \"\" {\n    // Preserve security-sensitive authorization tokens \u2014 must come from file/env only\n    savedAdminToken := target.Features.DID.Authorization.AdminToken\n    savedInternalToken := target.Features.DID.Authorization.InternalToken\n    target.Features.DID = dbCfg.Features.DID\n    target.Features.DID.Authorization.AdminToken = savedAdminToken\n    target.Features.DID.Authorization.InternalToken = savedInternalToken\n}\n```\n\nLong-term, fixing Finding 1 (adding AdminTokenAuth to the config routes) removes the unauthenticated write path, making this a defense-in-depth item. Both fixes should be applied.",
+                "tags": [
+                    "security",
+                    "authorization-bypass",
+                    "config-injection",
+                    "token-overwrite"
+                ],
+                "title": "PUT /configs/agentfield.yaml can overwrite admin_token and internal_token via mergeDBConfig when DID.Method is set"
+            },
+            {
+                "active_multipliers": [
+                    "ai_generated_pr"
+                ],
+                "body": "The comment at line 1550 says `// Config storage routes (admin-authenticated)` but **no `AdminTokenAuth` middleware is applied**. The routes are registered directly on `agentAPI` (the bare `/api/v1` group) with no sub-group and no `.Use(middleware.AdminTokenAuth(...))` call.\n\nCompare this with lines 1532\u20131545 where the actual admin-protected routes are set up:\n\n```go\n// Lines 1532-1545 \u2014 ACTUAL admin auth\nadminGroup := agentAPI.Group(\"\")\nadminGroup.Use(middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken))\n```\n\nBut the config routes at lines 1551\u20131554 are:\n\n```go\n// Lines 1550-1555 \u2014 NO admin auth applied\n{\n    configHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n    configHandlers.RegisterRoutes(agentAPI)  // directly on agentAPI, NOT on adminGroup\n}\n```\n\nThe **only** protection is the global `middleware.APIKeyAuth` at line 881. As confirmed in `middleware/auth.go:26-29`, when `config.APIKey == \"\"` the middleware is an explicit no-op (`c.Next()` is called immediately). The default `agentfield.yaml` in the repo has **no `api.auth.api_key` field at all**, meaning `cfg.API.Auth.APIKey` is the zero value (empty string). The dev environment therefore runs fully unauthenticated.\n\nThis means on any default or dev deployment:\n- `GET /api/v1/configs` \u2014 lists **all** stored configuration entries including `agentfield.yaml`\n- `GET /api/v1/configs/agentfield.yaml` \u2014 returns the full config YAML including `admin_token`, `internal_token`, `webhook_secret`, DID keystore config\n- `PUT /api/v1/configs/agentfield.yaml` \u2014 overwrites the stored config, and if `AGENTFIELD_CONFIG_SOURCE=db` is set, `POST /api/v1/configs/reload` activates it, allowing an attacker to replace `admin_token`, `cors.allowed_origins`, DID authorization settings, etc.\n- `DELETE /api/v1/configs/:key` \u2014 deletes any stored configuration key",
+                "confidence": 0.98,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "auth-config-crud",
+                "dimension_name": "Config CRUD Route Authorization Gap",
+                "evidence": "Step 1: `setupRoutes()` (server.go:831) registers global middleware including `middleware.APIKeyAuth(middleware.AuthConfig{APIKey: s.config.API.Auth.APIKey, ...})` at line 881.\nStep 2: `middleware.APIKeyAuth` at `middleware/auth.go:26-29` returns `c.Next()` immediately when `config.APIKey == \"\"`.\nStep 3: `agentfield.yaml` (config/agentfield.yaml) has no `api.auth.api_key` key at all. `AuthConfig.APIKey` is an untagged Go string, defaulting to `\"\"`. The `applyEnvOverrides` function at config.go:263 only overrides if `AGENTFIELD_API_KEY` env var is non-empty.\nStep 4: With no API key set, the global middleware is a no-op. No other middleware guards the `/api/v1/configs` routes.\nStep 5: `configHandlers.RegisterRoutes(agentAPI)` at server.go:1553 calls `group.GET(\"/configs\", ...)`, `group.GET(\"/configs/:key\", ...)`, `group.PUT(\"/configs/:key\", ...)`, `group.DELETE(\"/configs/:key\", ...)`, and `group.POST(\"/configs/reload\", ...)` directly on the unauthenticated `agentAPI` group (server.go:1164 `agentAPI := s.Router.Group(\"/api/v1\")`).\nStep 6: `GetConfig` at config_storage.go:51-63 calls `h.storage.GetConfig(ctx, key)` and returns the full entry value without redaction. `ListConfigs` at config_storage.go:35-48 returns all entries.\nStep 7: Any unauthenticated HTTP client can `curl http://localhost:8080/api/v1/configs/agentfield.yaml` and receive the stored YAML including secrets.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_007",
+                "line_end": 1555,
+                "line_start": 1550,
+                "score": 1.176,
+                "severity": "critical",
+                "suggestion": "Create a dedicated sub-group with `AdminTokenAuth` applied before registering config routes, mirroring the pattern used for tag-approval and access-policy admin routes (lines 1532\u20131545):\n\n```go\n// Config storage routes \u2014 require admin token\nconfigAdminGroup := agentAPI.Group(\"\")\nconfigAdminGroup.Use(middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken))\nconfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\nconfigHandlers.RegisterRoutes(configAdminGroup)\n```\n\nNote: `AdminTokenAuth` is itself a no-op when `adminToken == \"\"` (see `middleware/auth.go:92-94`), so the admin token must also be required to be non-empty for this to be effective in production. Add a startup warning (similar to line 268) if the config routes are reachable but `AdminToken` is empty.",
+                "tags": [
+                    "security",
+                    "authentication",
+                    "authorization",
+                    "missing-auth"
+                ],
+                "title": "Config CRUD routes are not admin-authenticated: comment is false, no AdminTokenAuth applied"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "The `ReloadConfig` handler returns:\n\n```json\n{\"message\": \"config reloaded from database\"}\n```\n\nwith `HTTP 200` when `reloadFn()` succeeds. However, `reloadFn` is `overlayDBConfig`, which **only mutates the in-memory `*config.Config` struct**. As established by the other findings in this review, the overwhelming majority of services that consume config values have already copied those values at construction time and will not observe any change:\n\n- `ExecutionCleanupService` \u2014 reads retention period, cleanup interval, batch size from its own frozen copy\n- `HealthMonitor` \u2014 uses a frozen check interval ticker\n- `WebhookDispatcher` \u2014 uses a frozen `http.Client` timeout\n- `ExecuteHandler`/`ExecuteAsyncHandler` \u2014 use a frozen agent-call timeout\n- `ApprovalWebhookHandler` \u2014 uses a frozen HMAC secret\n- CORS middleware \u2014 configured once at `setupRoutes()` from the config values at that time\n- API key auth middleware \u2014 similarly frozen at route registration\n\nThe only fields that _are_ lazily re-read (because handlers call `s.config.*` directly) are a small subset of route-guard conditions checked on each request. But these are not what callers typically expect to change via a config reload.\n\nThere is **no documented contract** in the handler, any comment block, or any API response body that tells callers which fields are applied immediately versus which require a restart. A caller who updates `execution_cleanup.retention_period` in the DB, calls `POST /configs/reload`, receives `HTTP 200 \"config reloaded from database\"`, and concludes the cleanup service is now running with the new retention period is completely misled.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-reload-behavioral-contract",
+                "dimension_name": "Config Reload Behavioral Contract",
+                "evidence": "Step 1: `config_storage.go:121` calls `h.reloadFn()` which is `overlayDBConfig(s.config, s.storage)` (server.go:440).\nStep 2: `overlayDBConfig` calls `mergeDBConfig` which writes to fields of `*config.Config` in place (config_db.go:42,54-102).\nStep 3: All background services examined hold value copies of the mutated fields (see companion findings above).\nStep 4: `config_storage.go:128` returns `{\"message\": \"config reloaded from database\"}` \u2014 no qualification, no list of affected vs. unaffected subsystems.\nStep 5: No code comment, no API documentation file, and no OpenAPI annotation in the target files describes which fields are hot-reloadable.",
+                "file_path": "control-plane/internal/handlers/config_storage.go",
+                "id": "f_018",
+                "line_end": 128,
+                "line_start": 121,
+                "score": 1.037,
+                "severity": "important",
+                "suggestion": "The response body should be honest about what was applied. At minimum, add a disclaimer: return a structured body listing which config sections were merged and a note that changes to cleanup intervals, health monitor timings, webhook settings, and execution timeouts require a server restart to take effect. Longer term, either (a) implement true hot-reload for each service via `Reconfigure()` methods and enumerate the actually-reloaded subsystems in the response, or (b) make the API contract explicit in documentation and return a `partial_reload` status with a list of fields that only take effect after restart.",
+                "tags": [
+                    "api-contract",
+                    "config-reload",
+                    "misleading-response",
+                    "behavioral-contract"
+                ],
+                "title": "POST /configs/reload returns HTTP 200 with a success message even though most running services are unaffected by the reload"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "The `config_storage` table is created via two independent mechanisms that are never coordinated:\n\n1. **GORM AutoMigrate** (`migrations.go:236`): `&ConfigStorageModel{}` is included in the `autoMigrateSchema` call, which runs unconditionally on every server startup for **both** `local` (SQLite) and `postgres` modes.\n2. **Goose SQL migration** (`028_create_config_storage.sql`): A standalone DDL file intended to be run manually via `goose -dir ./migrations postgres ... up` before the server starts in PostgreSQL mode.\n\nEvery other model that has a Goose migration file also relies on GORM AutoMigrate for its schema (e.g., `DIDDocumentModel` \u2194 `019_create_did_documents.sql`, `AccessPolicyModel` \u2194 `021_create_access_policies.sql`, `AgentTagVCModel` \u2194 `022_create_agent_tag_vcs.sql`). This is the **established pattern** for this codebase: Goose files are the PostgreSQL-mode canonical DDL, and GORM AutoMigrate handles schema reconciliation on startup. `config_storage` follows this same dual-path \u2014 so the pattern is consistent \u2014 but the **design itself** is an undocumented hazard for future maintainers.\n\nThe critical risk is schema divergence over time. If a developer adds a column to `ConfigStorageModel` (e.g., `Tags string`), GORM AutoMigrate will silently add that column to both SQLite and PostgreSQL. But Goose migration `028` will not be updated. The reverse is equally true: if someone adds a `CHECK` constraint in a new Goose migration `029_alter_config_storage.sql`, GORM AutoMigrate will not reproduce it on a fresh install that skips Goose. Because neither mechanism has visibility into what the other has done, schema drift is a when-not-if scenario.",
+                "confidence": 0.92,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "dual-track-schema-management",
+                "dimension_name": "Dual-Track Schema Management: AutoMigrate vs Goose",
+                "evidence": "Step 1: `StorageFactory.CreateStorage` (storage.go:350) calls `pgStorage.Initialize(ctx, ...)` for postgres mode.\nStep 2: `Initialize` (local.go:534) calls `ls.initializePostgres(ctx)`.\nStep 3: `initializePostgres` (local.go:734) calls `ls.createSchema(ctx)`.\nStep 4: `createSchema` (local.go:862) calls `ls.autoMigrateSchema(ctx)` unconditionally, which includes `&ConfigStorageModel{}` (migrations.go:236), creating the table via GORM.\nStep 5: The CLAUDE.md documentation instructs operators to also run `goose -dir ./migrations postgres ... up` before starting in PostgreSQL mode, which would also execute `028_create_config_storage.sql` (with `CREATE TABLE IF NOT EXISTS`, so no hard error, but the DDL is effectively applied twice from two separate sources).\nStep 6: No mechanism prevents `ConfigStorageModel` fields from being changed in models.go without a corresponding Goose migration update.",
+                "file_path": "control-plane/internal/storage/migrations.go",
+                "id": "f_003",
+                "line_end": 236,
+                "line_start": 236,
+                "score": 1.005,
+                "severity": "important",
+                "suggestion": "Document explicitly (in a comment in `migrations.go` near the AutoMigrate list, and in a header comment in `028_create_config_storage.sql`) that for PostgreSQL mode, the Goose file is the authoritative DDL for initial creation and structural constraints, while GORM AutoMigrate handles additive column additions. Add a CI check or test that compares the column set of the GORM model struct against the columns created by the corresponding Goose migration, to detect drift early. Alternatively, adopt the stricter approach used by `kv_store`, `distributed_locks`, and `memory_events` tables: create them entirely via `ensurePostgres*` helper functions (Go code with `CREATE TABLE IF NOT EXISTS`), removing the Goose SQL file entirely for purely application-managed tables.",
+                "tags": [
+                    "schema-management",
+                    "migration-pattern",
+                    "maintenance-hazard",
+                    "postgresql"
+                ],
+                "title": "Dual-path schema creation for config_storage breaks the established single-source-of-truth migration pattern"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "The comment on `AdminTokenAuth` says *\"falls back to global API key auth\"* when `adminToken` is empty. However, the global API key auth is **also** a no-op when `api_key` is empty (confirmed above). The combination means: in the default `agentfield.yaml` configuration where `admin_token: \"admin-secret\"` is set, admin routes are protected \u2014 but any operator who forgets to set `admin_token` in production leaves admin routes fully open.\n\nMore critically for the existing admin group (lines 1532\u20131545), the empty-token guard for `AdminTokenAuth` is the **only** runtime protection difference between DID being enabled and not. The code at server.go:1531 wraps the admin group in a conditional `if s.config.Features.DID.Authorization.Enabled`, but if `Enabled` is `true` and `AdminToken` is `\"\"`, `AdminTokenAuth` is still a no-op.\n\nWhile the default `agentfield.yaml` does ship with `admin_token: \"admin-secret\"` (line 96 of agentfield.yaml), this is a **well-known default credential** that many operators will fail to rotate, providing essentially no real protection.",
+                "confidence": 0.88,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "auth-config-crud",
+                "dimension_name": "Config CRUD Route Authorization Gap",
+                "evidence": "Step 1: `agentfield.yaml:96` sets `admin_token: \"admin-secret\"` \u2014 a known hardcoded default.\nStep 2: If an operator deploys without overriding this, `s.config.Features.DID.Authorization.AdminToken == \"admin-secret\"`.\nStep 3: `AdminTokenAuth(\"admin-secret\")` at middleware/auth.go:99 requires `X-Admin-Token: admin-secret`. Since this value is in the public repo, any attacker who reads the documentation or source code can trivially provide this header.\nStep 4: For the no-api-key case, `middleware.APIKeyAuth` no-ops at line 26-29, so the fallback described in the comment provides zero protection.\nStep 5: `middleware/auth.go:92-94`: `if adminToken == \"\" { c.Next(); return }` \u2014 if AdminToken is unset, all admin route requests pass through.",
+                "file_path": "control-plane/internal/server/middleware/auth.go",
+                "id": "f_009",
+                "line_end": 95,
+                "line_start": 90,
+                "score": 0.961,
+                "severity": "important",
+                "suggestion": "1. Add a hard startup failure (not just a warning) when `Authorization.Enabled == true && AdminToken == \"\"`. The existing log message at server.go:268 is a warning; it should be a fatal error or at minimum should disable the admin routes entirely.\n2. Consider shipping with an empty `admin_token` in the default config and requiring operators to explicitly set it, rather than shipping a known-bad default (`admin-secret`).\n3. When `AdminTokenAuth` receives an empty token, it should deny all requests rather than being a no-op, since a missing token configuration is a security misconfiguration, not a deliberate bypass.",
+                "tags": [
+                    "security",
+                    "default-credentials",
+                    "misconfiguration",
+                    "no-op-middleware"
+                ],
+                "title": "AdminTokenAuth is a no-op when adminToken is empty \u2014 existing admin routes (tag approval, policy management) are unprotected in default dev config"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "`GetConfig` at line 5186 checks for the not-found condition by comparing the error's string representation:\n\n```go\nif err.Error() == \"sql: no rows in result set\" {\n    return nil, nil\n}\n```\n\nThis is fragile for two reasons:\n\n1. **Driver-dependent string**: The message `\"sql: no rows in result set\"` is the canonical text for `sql.ErrNoRows`, but the comparison bypasses the sentinel value. If any driver wraps `sql.ErrNoRows` (e.g., with `fmt.Errorf(\"...: %w\", sql.ErrNoRows)`), `errors.Is` would still match, but the string comparison would fail \u2014 causing a generic `\"failed to get config\"` error instead of the intended `nil, nil` (not-found) return.\n\n2. **Inconsistency**: Every other `GetX` method in `local.go` uses the idiomatic `errors.Is(err, sql.ErrNoRows)` pattern (e.g., `GetWorkflowRun` at line 300: `if errors.Is(err, sql.ErrNoRows) { return nil, nil }`). This deviation from the established pattern is a latent defect.\n\nThe downstream caller `config_db.go:27` relies on `entry == nil` to mean \"not found\" and prints an informational message. If the string comparison fails under a different driver or future wrapping, `overlayDBConfig` would instead return an error and potentially block server startup.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "interface-compliance",
+                "dimension_name": "StorageProvider Interface Implementation Completeness",
+                "evidence": "Step 1: `GetConfig` at local.go:5185-5188 checks `err.Error() == \"sql: no rows in result set\"` to detect missing rows.\nStep 2: `sql.ErrNoRows` is defined in `database/sql` as `var ErrNoRows = errors.New(\"sql: no rows in result set\")` \u2014 the string match coincidentally works today with direct `sql.QueryRowContext` usage.\nStep 3: But `errors.Is(err, sql.ErrNoRows)` is the correct, future-proof idiom \u2014 used by the same file at line 300 (`GetWorkflowRun`), line 302: `if errors.Is(err, sql.ErrNoRows)`.\nStep 4: If the underlying row scan ever returns a wrapped error (driver upgrade, middleware), `err.Error()` will not equal the bare string, causing a generic error to propagate instead of the nil-not-found signal.\nStep 5: `config_db.go:27-29` consumes the nil return from `GetConfig` as \"no config in DB\" and silently continues; a spurious error here would cause `overlayDBConfig` to return an error, propagating to server startup.",
+                "file_path": "control-plane/internal/storage/local.go",
+                "id": "f_001",
+                "line_end": 5187,
+                "line_start": 5186,
+                "score": 0.928,
+                "severity": "important",
+                "suggestion": "Replace the string comparison with the standard sentinel check, consistent with the rest of the file:\n```go\nif errors.Is(err, sql.ErrNoRows) {\n    return nil, nil\n}\n```\nThe `errors` package is already imported at line 8 of `local.go`.",
+                "tags": [
+                    "error-handling",
+                    "fragile-comparison",
+                    "not-found"
+                ],
+                "title": "GetConfig uses fragile string comparison instead of errors.Is(sql.ErrNoRows) for not-found detection"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "The `GetConfig` implementation detects a missing key by comparing the error string:\n\n```go\nif err.Error() == \"sql: no rows in result set\" {\n    return nil, nil\n}\n```\n\nThis is the critical code path that `overlayDBConfig` depends on for safe early-return when `agentfield.yaml` does not exist in the DB. The guard in `overlayDBConfig` at line 27 (`if entry == nil { return nil }`) is only safe **if** `GetConfig` reliably returns `(nil, nil)` for a not-found key.\n\nThe string comparison is fragile for two concrete reasons:\n\n1. **Standard library contract:** `database/sql` defines `sql.ErrNoRows` as a sentinel error. The idiomatic and safe check is `errors.Is(err, sql.ErrNoRows)`. The string `\"sql: no rows in result set\"` is the `.Error()` text of `sql.ErrNoRows` \u2014 but it is not part of the public API and could change between Go versions.\n\n2. **Wrapped errors:** If any middleware, driver wrapper, or future refactoring wraps the `sql.ErrNoRows` error (e.g., `fmt.Errorf(\"scan failed: %w\", err)`), `err.Error()` will no longer match the literal string, but `errors.Is(err, sql.ErrNoRows)` would still return `true`. A wrapped error would fall through to the generic error path and return `(nil, wrappedError)`, causing `overlayDBConfig` to fail with `\"failed to read config from database\"` instead of silently skipping the DB config \u2014 a behavioral regression that would break startup whenever the DB config key is absent.\n\nWhile the current code works today (the string is stable in the standard `database/sql` implementation), this is an API contract violation that creates a latent bug.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-db-runtime-trace",
+                "dimension_name": "overlayDBConfig Runtime Execution Trace",
+                "evidence": "Step 1: `overlayDBConfig` (config_db.go:23) calls `store.GetConfig(ctx, \"agentfield.yaml\")`.\nStep 2: `LocalStorage.GetConfig` (local.go) executes `SELECT ... WHERE key = ?` / `$1`.\nStep 3: If key is absent, `row.Scan` returns `sql.ErrNoRows`.\nStep 4: The implementation checks `err.Error() == \"sql: no rows in result set\"` \u2014 a string literal, not `errors.Is(err, sql.ErrNoRows)`.\nStep 5: If the error is wrapped at any layer (now or in a future refactor), `err.Error()` no longer matches the literal, the condition is false, and the function returns `(nil, fmt.Errorf(\"failed to get config %q: %w\", key, err))`.\nStep 6: `overlayDBConfig` receives `(nil, nonNilError)`, hits the `if err != nil` branch at line 24, and returns `fmt.Errorf(\"failed to read config from database: %w\", err)`.\nStep 7: Server startup fails with an error even though no DB config was intended \u2014 a silent regression triggered by any error-wrapping change in the storage stack.",
+                "file_path": "control-plane/internal/storage/local.go",
+                "id": "f_013",
+                "line_end": 5183,
+                "line_start": 5179,
+                "score": 0.928,
+                "severity": "important",
+                "suggestion": "Replace the string comparison with `errors.Is`:\n\n```go\nimport (\n    \"database/sql\"\n    \"errors\"\n)\n\nif errors.Is(err, sql.ErrNoRows) {\n    return nil, nil\n}\n```\n\nThis is both idiomatic Go and resilient to error wrapping. No behavioral change for the current code path.",
+                "tags": [
+                    "error-handling",
+                    "api-contract",
+                    "sql",
+                    "fragile-comparison",
+                    "startup-path"
+                ],
+                "title": "Fragile `no rows` detection via string comparison instead of `errors.Is(sql.ErrNoRows)`"
+            },
+            {
+                "active_multipliers": [
+                    "ai_generated_pr"
+                ],
+                "body": "The config storage routes (`GET/PUT/DELETE /api/v1/configs/:key`, `GET /api/v1/configs`, `POST /api/v1/configs/reload`) are registered directly on the `agentAPI` group at line 1553 via `configHandlers.RegisterRoutes(agentAPI)`. The `agentAPI` group itself has **no middleware** \u2014 authentication is only provided by the global `s.Router.Use(middleware.APIKeyAuth(...))` applied at line 881.\n\nThe `APIKeyAuth` middleware has an explicit early-return when the configured key is empty:\n```go\n// No auth configured, allow everything.\nif config.APIKey == \"\" {\n    c.Next()\n    return\n}\n```\n\nWhen `AGENTFIELD_API_KEY` / `s.config.API.Auth.APIKey` is not set (which is the default in local/dev mode), **every** config endpoint \u2014 including `PUT /api/v1/configs/:key` (write arbitrary config), `DELETE /api/v1/configs/:key`, and `POST /api/v1/configs/reload` \u2014 is fully unauthenticated and accessible to any HTTP client with network access.\n\nContrast this with the comment on line 1550 which says \"admin-authenticated\": this is **misleading** \u2014 no admin token (`AdminTokenAuth`) is enforced here. The connector-facing duplicate at line 1572\u20131578 at least sits behind `ConnectorTokenAuth` + `ConnectorCapabilityCheck`. The `agentAPI`-facing endpoints have no equivalent protection beyond the optional global API key.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "dual-config-route-registration",
+                "dimension_name": "Dual Registration of Config Routes",
+                "evidence": "Step 1: Global auth is registered at server.go:881 \u2014 `s.Router.Use(middleware.APIKeyAuth(middleware.AuthConfig{APIKey: s.config.API.Auth.APIKey, ...}))`. Step 2: `middleware.APIKeyAuth` (middleware/auth.go:26) returns early with `c.Next()` when `config.APIKey == \"\"`. Step 3: `agentAPI` is created at server.go:1164 as `s.Router.Group(\"/api/v1\")` with no middleware of its own. Step 4: `configHandlers.RegisterRoutes(agentAPI)` at server.go:1553 registers `PUT /api/v1/configs/:key`, `DELETE /api/v1/configs/:key`, and `POST /api/v1/configs/reload` directly on that group. Step 5: With default configuration (no API key set), any unauthenticated HTTP request to `PUT /api/v1/configs/some-key` with arbitrary body will write to the config store and return 200 OK.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_011",
+                "line_end": 1555,
+                "line_start": 1550,
+                "score": 0.798,
+                "severity": "important",
+                "suggestion": "Register the config routes on a sub-group that requires the admin token middleware, consistent with how other admin-only routes are handled (e.g., the `adminGroup` created at line 1532). Replace:\n```go\n// Config storage routes (admin-authenticated)\n{\n    configHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n    configHandlers.RegisterRoutes(agentAPI)\n}\n```\nwith:\n```go\n// Config storage routes (admin-authenticated)\n{\n    cfgAdminGroup := agentAPI.Group(\"\")\n    cfgAdminGroup.Use(middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken))\n    configHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n    configHandlers.RegisterRoutes(cfgAdminGroup)\n}\n```\nAlternatively, reuse the existing `adminGroup` (lines 1532\u20131545) if DID authorization is enabled, but ensure a fallback exists when it is not.",
+                "tags": [
+                    "security",
+                    "authentication",
+                    "misconfiguration"
+                ],
+                "title": "Config routes registered on unauthenticated `agentAPI` group \u2014 no dedicated auth guard"
+            },
+            {
+                "active_multipliers": [
+                    "ai_generated_pr"
+                ],
+                "body": "Multiple handler and service constructors eagerly copy scalar config values at startup, making them permanently immune to reload:\n\n**1. WebhookDispatcher** (`server.go:366-371`) copies `WebhookTimeout`, `WebhookMaxAttempts`, `WebhookRetryBackoff`, and `WebhookMaxRetryBackoff` into a `WebhookDispatcherConfig` struct stored by value in `webhookDispatcher.cfg`. The `http.Client` timeout (`webhook_dispatcher.go:71-73`) is set once from this config and never updated.\n\n**2. `ExecuteHandler` and `ExecuteAsyncHandler`** (`server.go:1246-1247`) copy `cfg.AgentField.ExecutionQueue.AgentCallTimeout` and `cfg.Features.DID.Authorization.InternalToken` as bare `time.Duration` and `string` values into the `executionController` struct (`execute.go:198-212`). Even if `overlayDBConfig` were to update these fields, the registered route closures hold independent copies.\n\n**3. `ApprovalWebhookHandler`** (`server.go:1267`) passes `cfg.AgentField.Approval.WebhookSecret` as a `string` argument. The `webhookApprovalController` captures this string at registration time (`webhook_approval.go:127-129`). A DB reload that changes the HMAC secret will leave the running handler verifying against the old secret.\n\nIn all three cases, the issue is the same: `setupRoutes()` is called once at `Start()` time, and all handler constructors receive primitive copies of config fields. There is no mechanism to re-register routes or re-inject values after `configReloadFn` runs.",
+                "confidence": 0.93,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-reload-behavioral-contract",
+                "dimension_name": "Config Reload Behavioral Contract",
+                "evidence": "Step 1: `server.go:366-371` constructs `WebhookDispatcherConfig` by copying four scalar values from `cfg`; `webhook_dispatcher.go:66-74` stores this config by value and bakes the timeout into `http.Client{Timeout: normalized.Timeout}`.\nStep 2: `server.go:1246` passes `s.config.AgentField.ExecutionQueue.AgentCallTimeout` as a `time.Duration` argument; `execute.go:169,198-212` stores it in `executionController.timeout` \u2014 a plain struct field.\nStep 3: `server.go:1267` passes `s.config.AgentField.Approval.WebhookSecret` as a `string`; `webhook_approval.go:127-129` stores it in `webhookApprovalController.webhookSecret`.\nStep 4: `server.go:439-441` shows `configReloadFn` only mutates `s.config` in memory; `setupRoutes()` is never called again, so no handler is re-registered with new values.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_017",
+                "line_end": 371,
+                "line_start": 366,
+                "score": 0.781,
+                "severity": "important",
+                "suggestion": "For operational parameters that must be hot-reloadable (timeouts, retry counts, secrets), pass the parent `*config.Config` pointer into handlers and read values lazily on each request, or wrap the values behind an `atomic.Value` / `sync.RWMutex`-protected struct updated by the reload function. For the webhook secret specifically, changing HMAC validation secrets mid-flight is a security-sensitive operation that should be explicitly documented as requiring a restart, since there is a window where in-flight requests with the old signature will be rejected.",
+                "tags": [
+                    "eager-copy",
+                    "config-reload",
+                    "behavioral-contract",
+                    "webhook",
+                    "security"
+                ],
+                "title": "WebhookDispatcher and ExecuteHandler/ApprovalWebhookHandler capture config values eagerly: reload cannot change webhook timeouts, agent-call timeout, secrets, or internal token"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "**`ExecutionCleanupService`** stores `config.ExecutionCleanupConfig` as a **value copy** (not a pointer) in its struct field:\n\n```go\n// execution_cleanup.go:16\ntype ExecutionCleanupService struct {\n    storage   storage.StorageProvider\n    config    config.ExecutionCleanupConfig  // value copy, not *config.ExecutionCleanupConfig\n    ...\n}\n```\n\nAt construction time (`server.go:392`), the current value of `cfg.AgentField.ExecutionCleanup` is copied into the service struct:\n\n```go\ncleanupService := handlers.NewExecutionCleanupService(storageProvider, cfg.AgentField.ExecutionCleanup)\n```\n\nThe `cleanupLoop` (`execution_cleanup.go:96`) creates a `time.NewTicker(ecs.config.CleanupInterval)` from this value-copy and then **never re-reads the config**. The `performCleanup` method reads `ecs.config.RetentionPeriod`, `ecs.config.BatchSize`, and `ecs.config.StaleExecutionTimeout` directly from the same frozen copy.\n\nWhen `POST /configs/reload` is called, `overlayDBConfig` mutates the in-memory `*config.Config` struct (e.g., updating `cfg.AgentField.ExecutionCleanup.RetentionPeriod`), but the running `ExecutionCleanupService` goroutine holds its own copy \u2014 those fields are **never updated**. A caller who changes the retention period from 72h to 24h via the DB config and then calls reload will see the old 72h behavior continue until the server restarts.",
+                "confidence": 0.97,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-reload-behavioral-contract",
+                "dimension_name": "Config Reload Behavioral Contract",
+                "evidence": "Step 1: `server.go:392` calls `handlers.NewExecutionCleanupService(storageProvider, cfg.AgentField.ExecutionCleanup)` \u2014 passing the config struct by value.\nStep 2: `execution_cleanup.go:29-35` stores this value in `ecs.config config.ExecutionCleanupConfig` (not a pointer).\nStep 3: `execution_cleanup.go:96` calls `time.NewTicker(ecs.config.CleanupInterval)` \u2014 ticker interval is baked in at goroutine start.\nStep 4: `execution_cleanup.go:124,125,134,147,164` read `ecs.config.RetentionPeriod`, `ecs.config.BatchSize`, `ecs.config.StaleExecutionTimeout` from the frozen copy on every invocation.\nStep 5: `server.go:439-441` (configReloadFn) calls `overlayDBConfig(s.config, s.storage)` which mutates `s.config.AgentField.ExecutionCleanup` in place.\nStep 6: The `cleanupService` struct holds a completely independent copy \u2014 no path exists from the mutated `s.config` to the running service's fields.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_015",
+                "line_end": 392,
+                "line_start": 392,
+                "score": 0.407,
+                "severity": "important",
+                "suggestion": "Change `ExecutionCleanupService.config` to a pointer (`*config.ExecutionCleanupConfig`) or wrap it in an atomic/sync-protected accessor. Then pass a pointer at construction: `handlers.NewExecutionCleanupService(storageProvider, &cfg.AgentField.ExecutionCleanup)`. The cleanup loop and `performCleanup` will then read through the pointer and observe any in-place mutations made by `overlayDBConfig`. Alternatively, if pointer semantics are avoided, add a `UpdateConfig(cfg config.ExecutionCleanupConfig)` method and call it from within `configReloadFn`.",
+                "tags": [
+                    "eager-copy",
+                    "config-reload",
+                    "behavioral-contract",
+                    "cleanup-service"
+                ],
+                "title": "ExecutionCleanupService copies config by value at construction: reload has zero effect on running behavior"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "**`HealthMonitor`** receives a `HealthMonitorConfig` struct **by value** at construction and stores it as `hm.config HealthMonitorConfig` (not a pointer):\n\n```go\n// health_monitor.go:50\ntype HealthMonitor struct {\n    config        HealthMonitorConfig  // value copy\n    ...\n}\n```\n\nThe `Start()` method at `health_monitor.go:217` creates a ticker from the frozen copy:\n\n```go\nticker := time.NewTicker(hm.config.CheckInterval)\n```\n\nThis ticker is never reset after construction. When `POST /configs/reload` mutates `s.config.AgentField.NodeHealth.CheckInterval` via `overlayDBConfig` (`config_db.go:59-61`), the health monitor's loop continues running at the original check interval indefinitely.\n\nSimilarly, `cfg.AgentField.NodeHealth.HeartbeatStaleThreshold` is copied at construction into `StatusManagerConfig` (`server.go:137`), and that struct is also stored by value in the `StatusManager`. None of these operational parameters take effect until restart.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-reload-behavioral-contract",
+                "dimension_name": "Config Reload Behavioral Contract",
+                "evidence": "Step 1: `server.go:160-165` constructs `healthMonitorConfig` from `cfg.AgentField.NodeHealth.*` by value.\nStep 2: `server.go:166` passes this value to `services.NewHealthMonitor(...)`, which stores it in `hm.config` at `health_monitor.go:85`.\nStep 3: `health_monitor.go:217` calls `time.NewTicker(hm.config.CheckInterval)` once; the ticker is never recreated.\nStep 4: `config_db.go:59-61` shows `mergeDBConfig` updates `target.AgentField.NodeHealth = dbCfg.AgentField.NodeHealth` on reload.\nStep 5: `server.go:439-441` shows `configReloadFn` updates `s.config` via `overlayDBConfig`, but the running `healthMonitor` field holds a fully independent value copy with no reference back to `s.config`.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_016",
+                "line_end": 166,
+                "line_start": 160,
+                "score": 0.399,
+                "severity": "important",
+                "suggestion": "Pass a pointer to the config, or add a `Reconfigure(cfg HealthMonitorConfig)` method that stops the existing ticker and restarts the loop with new intervals. For the common case where only the interval changes, the stop/start approach is straightforward: call `hm.Stop()` then restart with the new config. If the goal is zero-downtime reconfiguration, store config behind a `sync/atomic.Value` or `sync.RWMutex` and re-read it at each tick loop iteration.",
+                "tags": [
+                    "eager-copy",
+                    "config-reload",
+                    "behavioral-contract",
+                    "health-monitor"
+                ],
+                "title": "HealthMonitor copies config by value at construction: NodeHealth interval/timeout changes on reload are silently ignored"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "**`setupRoutes()`** is called once from `Start()` and constructs a `cors.Config` value by copying fields directly from `s.config.API.CORS`:\n\n```go\ncorsConfig := cors.Config{\n    AllowOrigins:     s.config.API.CORS.AllowedOrigins,\n    AllowMethods:     s.config.API.CORS.AllowedMethods,\n    AllowHeaders:     s.config.API.CORS.AllowedHeaders,\n    ExposeHeaders:    s.config.API.CORS.ExposedHeaders,\n    AllowCredentials: s.config.API.CORS.AllowCredentials,\n}\ns.Router.Use(cors.New(corsConfig))\n```\n\nThe `gin-contrib/cors` middleware is a `gin.HandlerFunc` closure that captures the `cors.Config` by value at the time `cors.New()` is called. Even though `mergeDBConfig` (`config_db.go:95-97`) explicitly handles CORS updates:\n\n```go\nif len(dbCfg.API.CORS.AllowedOrigins) > 0 {\n    target.API.CORS = dbCfg.API.CORS\n}\n```\n\n...this update reaches `s.config.API.CORS`, but the already-registered Gin middleware closure is completely unaffected. Requests after a reload continue to use the original CORS policy.\n\nThis is particularly notable because CORS is one of the primary reasons an operator would want a runtime config reload \u2014 e.g., to add a new allowed origin for a newly deployed frontend. The API surface implies this is a supported use case, but it does not work.",
+                "confidence": 0.92,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-reload-behavioral-contract",
+                "dimension_name": "Config Reload Behavioral Contract",
+                "evidence": "Step 1: `server.go:831` `setupRoutes()` is called from `server.go:447` (`s.setupRoutes()`) inside `Start()`.\nStep 2: `server.go:833-839` constructs `cors.Config` from `s.config.API.CORS.*` \u2014 these are value copies (slice headers are copied, not the underlying arrays, but a new CORS config replaces them with new slice references that the middleware never sees).\nStep 3: `server.go:852` calls `s.Router.Use(cors.New(corsConfig))` \u2014 the `gin-contrib/cors` middleware captures this struct at call time.\nStep 4: `config_db.go:95-97` shows `mergeDBConfig` updates `target.API.CORS` in the live `*config.Config`, but the Gin router's middleware chain is immutable after `setupRoutes()` returns.\nStep 5: `configReloadFn` (server.go:439-441) never calls `setupRoutes()` again.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_019",
+                "line_end": 852,
+                "line_start": 831,
+                "score": 0.386,
+                "severity": "important",
+                "suggestion": "Use a `sync.RWMutex`-protected wrapper around the CORS config and implement a custom middleware that reads the live config pointer on each request rather than using `cors.New()` at setup time. Alternatively, replace the static middleware with a dynamic closure:\n```go\ns.Router.Use(func(c *gin.Context) {\n    // Read current CORS config on each request\n    cfg := s.config.API.CORS  // reads through the *config.Config pointer\n    cors.New(cors.Config{AllowOrigins: cfg.AllowedOrigins, ...})(c)\n})\n```\nNote: this has performance implications (allocates a new middleware on each request). A better approach is to cache the `cors.Handler` behind an `atomic.Pointer[cors.Config]` and swap it on reload.",
+                "tags": [
+                    "eager-copy",
+                    "config-reload",
+                    "cors",
+                    "middleware",
+                    "behavioral-contract"
+                ],
+                "title": "CORS middleware is registered once at startup: reloading API.CORS config has no effect on running requests"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "Tables with `updated_at` columns in the Goose migrations for this codebase are paired with `BEFORE UPDATE` triggers that call `update_updated_at_column()`. For example:\n- `workflow_runs` (migration 011) has `CREATE TRIGGER update_workflow_runs_updated_at BEFORE UPDATE ... EXECUTE FUNCTION update_updated_at_column()`\n- `workflow_steps` (migration 011) has the same pattern\n\nMigration `028_create_config_storage.sql` defines `updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()` but **does not create an `BEFORE UPDATE` trigger** to keep `updated_at` current on row modifications.\n\nFor the `SetConfig` raw SQL path (local.go:5138-5147), `updated_at` is manually set by the application code (`updated_at = EXCLUDED.updated_at` where `EXCLUDED.updated_at` is the Go `now` variable). This means correctness depends entirely on every code path that touches `config_storage` explicitly setting `updated_at`. GORM's `autoUpdateTime` tag on `ConfigStorageModel.UpdatedAt` only fires when GORM ORM methods are used; the `SetConfig` / `GetConfig` / `DeleteConfig` implementations bypass GORM entirely and use raw `database/sql` queries.\n\nCurrently `SetConfig` does correctly set `updated_at`, so this is not an active bug. But the lack of a DB-level trigger means:\n1. Any future raw SQL that `UPDATE config_storage SET value = ... WHERE key = ...` without explicitly setting `updated_at` will silently leave `updated_at` stale.\n2. The schema contract is different from peer tables, making it a maintenance trap for contributors who see the trigger pattern on `workflow_runs` and assume it also exists on `config_storage`.",
+                "confidence": 0.85,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "dual-track-schema-management",
+                "dimension_name": "Dual-Track Schema Management: AutoMigrate vs Goose",
+                "evidence": "Step 1: `028_create_config_storage.sql` lines 10-11 declare `updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()` but contain no trigger DDL.\nStep 2: `011_create_workflow_runs_and_steps.sql` lines 47-54 show the expected pattern: `CREATE TRIGGER update_workflow_runs_updated_at BEFORE UPDATE ON workflow_runs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()`.\nStep 3: `SetConfig` in local.go:5137-5147 does manually pass `updated_at = EXCLUDED.updated_at` in the ON CONFLICT clause, so the current implementation is correct.\nStep 4: However, any future `UPDATE config_storage SET value = $1 WHERE key = $2` without an explicit `updated_at` clause would leave the column stale \u2014 the DB trigger pattern that prevents this on other tables is absent here.",
+                "file_path": "control-plane/migrations/028_create_config_storage.sql",
+                "id": "f_004",
+                "line_end": 11,
+                "line_start": 10,
+                "score": 0.357,
+                "severity": "important",
+                "suggestion": "Add a `BEFORE UPDATE` trigger to migration `028_create_config_storage.sql` mirroring the pattern in migration `011`:\n```sql\nCREATE TRIGGER update_config_storage_updated_at\n    BEFORE UPDATE ON config_storage\n    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();\n```\nAnd add its DROP to the `-- +goose Down` section. This makes `updated_at` maintenance a DB invariant rather than an application-layer responsibility, consistent with how `workflow_runs` and `workflow_steps` are managed.",
+                "tags": [
+                    "schema-consistency",
+                    "trigger-missing",
+                    "updated_at",
+                    "maintenance-hazard"
+                ],
+                "title": "Goose migration for config_storage omits the updated_at auto-update trigger that equivalent tables have, and GORM autoUpdateTime does not replace it"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "`SetConfig` at config_storage.go:67 accepts any `key` from the URL parameter and any raw body as the value. There is no allowlist of permitted keys, no validation that the value is well-formed YAML when the key implies a YAML config file, and no protection against overwriting critical system keys.\n\nSpecific concerns:\n1. **Key `agentfield.yaml`** can be written with arbitrary content. When loaded via `overlayDBConfig`, a YAML parse error at `config_db.go:37` only returns a warning \u2014 the server does not crash but the config is partially loaded in an inconsistent state.\n2. **Arbitrary key injection**: An attacker can store keys like `../../../../etc/passwd` \u2014 while the storage layer likely sanitizes this, there is no explicit check in the handler.\n3. **No content-type enforcement**: The handler accepts any body as a raw string regardless of content type. The comment says \"Accepts raw YAML/text body\" but this is not validated.\n4. The `updatedBy` field at line 80-83 is taken directly from the `X-Updated-By` header with no sanitization \u2014 this is stored in the audit log and could be used for log injection.",
+                "confidence": 0.82,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "auth-config-crud",
+                "dimension_name": "Config CRUD Route Authorization Gap",
+                "evidence": "Step 1: `PUT /api/v1/configs/<any-key>` calls `SetConfig` at config_storage.go:67.\nStep 2: `key := c.Param(\"key\")` at line 68 \u2014 raw URL parameter, no validation.\nStep 3: `body, err := io.ReadAll(c.Request.Body)` at line 70 \u2014 reads entire body as-is.\nStep 4: `h.storage.SetConfig(ctx, key, string(body), updatedBy)` at line 85 \u2014 stores without validation.\nStep 5: `updatedBy := c.GetHeader(\"X-Updated-By\")` at line 80 \u2014 user-controlled string stored in DB audit field.",
+                "file_path": "control-plane/internal/handlers/config_storage.go",
+                "id": "f_010",
+                "line_end": 101,
+                "line_start": 67,
+                "score": 0.344,
+                "severity": "important",
+                "suggestion": "1. Add an allowlist of permitted config keys (e.g., only `agentfield.yaml` or a predefined set), or at minimum validate the key does not contain path traversal characters.\n2. Validate that the body is valid YAML when the key ends in `.yaml` before persisting it.\n3. Sanitize the `X-Updated-By` header value (strip control characters, limit length).\n4. Return a clear error if the key is not in the allowlist.",
+                "tags": [
+                    "security",
+                    "input-validation",
+                    "missing-allowlist"
+                ],
+                "title": "SetConfig accepts arbitrary keys and values with no validation \u2014 allows storing malformed YAML or overwriting critical system keys"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "The `DeleteConfig` HTTP handler at line 106-108 responds with `http.StatusNotFound` (404) for **any** error returned by `storage.DeleteConfig`:\n\n```go\nif err := h.storage.DeleteConfig(c.Request.Context(), key); err != nil {\n    c.JSON(http.StatusNotFound, gin.H{\"error\": err.Error()})\n    return\n}\n```\n\nHowever, the storage implementation (`local.go:5235-5244`) can return two distinct error categories:\n- A not-found sentinel: `fmt.Errorf(\"config %q not found\", key)` when `RowsAffected() == 0`\n- A database execution error: `fmt.Errorf(\"failed to delete config %q: %w\", key, err)` for actual DB failures\n\nMapping a database-level error (connection failure, disk full, constraint violation) to 404 is semantically incorrect and will mislead API clients and operators. A DB failure should produce 500 Internal Server Error.",
+                "confidence": 0.92,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "interface-compliance",
+                "dimension_name": "StorageProvider Interface Implementation Completeness",
+                "evidence": "Step 1: `DeleteConfig` in local.go:5235 executes `DELETE FROM config_storage WHERE key = ?`.\nStep 2: If `db.ExecContext` returns an error (network, disk, constraint), local.go:5237-5239 returns `fmt.Errorf(\"failed to delete config %q: %w\", key, err)`.\nStep 3: If `RowsAffected() == 0`, local.go:5242 returns `fmt.Errorf(\"config %q not found\", key)`.\nStep 4: The handler at config_storage.go:107 maps BOTH error types to `http.StatusNotFound` (404).\nStep 5: A database execution failure will be surfaced to the API client as a 404, concealing the real 5xx nature of the error.",
+                "file_path": "control-plane/internal/handlers/config_storage.go",
+                "id": "f_002",
+                "line_end": 110,
+                "line_start": 104,
+                "score": 0.166,
+                "severity": "suggestion",
+                "suggestion": "Distinguish between not-found and server errors. One approach is to check the error message or define a sentinel type in the storage layer:\n```go\nif err := h.storage.DeleteConfig(c.Request.Context(), key); err != nil {\n    // Check if it's a not-found error vs. a storage failure\n    if strings.Contains(err.Error(), \"not found\") {\n        c.JSON(http.StatusNotFound, gin.H{\"error\": err.Error()})\n    } else {\n        c.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n    }\n    return\n}\n```\nA cleaner solution is to define a typed `ErrNotFound` sentinel in the storage package and use `errors.Is` in the handler.",
+                "tags": [
+                    "error-handling",
+                    "http-status",
+                    "api-contract"
+                ],
+                "title": "DeleteConfig handler returns 404 for all storage errors, including 500-class failures"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "The Goose migration defines `key TEXT NOT NULL UNIQUE` on line 5 (which in PostgreSQL automatically creates a unique B-tree index on `key`) and then explicitly creates `CREATE INDEX IF NOT EXISTS idx_config_storage_key ON config_storage(key)` on line 14. The explicit non-unique index on `key` is redundant because PostgreSQL will always prefer the unique index for lookups on that column.\n\nThis is a minor inefficiency: two indexes occupy storage and must be updated on every INSERT/UPDATE/DELETE to `config_storage`. The duplicate won't cause incorrect behavior, but it wastes space and write amplification.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "dual-track-schema-management",
+                "dimension_name": "Dual-Track Schema Management: AutoMigrate vs Goose",
+                "evidence": "Step 1: `028_create_config_storage.sql` line 5 defines `key TEXT NOT NULL UNIQUE`.\nStep 2: PostgreSQL documentation states a UNIQUE constraint automatically creates a unique B-tree index on the constrained column(s), which can be used for point lookups just as a regular index can.\nStep 3: Line 14 then creates a separate non-unique index `idx_config_storage_key ON config_storage(key)`, duplicating coverage already provided by the unique constraint index.",
+                "file_path": "control-plane/migrations/028_create_config_storage.sql",
+                "id": "f_005",
+                "line_end": 14,
+                "line_start": 14,
+                "score": 0.148,
+                "severity": "nitpick",
+                "suggestion": "Remove the explicit `CREATE INDEX IF NOT EXISTS idx_config_storage_key ON config_storage(key)` from the `-- +goose Up` section and its corresponding `DROP INDEX` from `-- +goose Down`. The UNIQUE constraint already provides an index suitable for all single-column equality lookups on `key`.",
+                "tags": [
+                    "schema",
+                    "redundant-index",
+                    "performance",
+                    "postgresql"
+                ],
+                "title": "Redundant index on config_storage(key): the UNIQUE constraint already implies a unique index"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_confirmed",
+                    "ai_generated_pr"
+                ],
+                "body": "Both the not-found path (line 28) and the success path (line 47) log via `fmt.Println` / `fmt.Printf` rather than the project's structured logger (`zerolog`).\n\nThe CLAUDE.md project guidance specifies:\n> Use zerolog for structured logging: `logger.Logger.Info().Msg(\"message\")`\n\nUsing `fmt.Print*` here:\n- Bypasses log-level filtering (these messages always appear, even in production with `LOG_LEVEL=warn`)\n- Produces unstructured output that cannot be parsed by log aggregation systems\n- Is inconsistent with the rest of the control-plane codebase\n\nThis is a style/maintainability issue, not a correctness bug.",
+                "confidence": 0.95,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "config-db-runtime-trace",
+                "dimension_name": "overlayDBConfig Runtime Execution Trace",
+                "evidence": "Line 28: `fmt.Println(\"[config] No database config found (key: agentfield.yaml), using file/env config only.\")`\nLine 47: `fmt.Printf(\"[config] Loaded config from database (key: %s, version: %d, updated: %s)\\n\", ...)`\nBoth bypass zerolog, the structured logger used throughout the rest of the control-plane (per CLAUDE.md and observed usage in other files).",
+                "file_path": "control-plane/internal/server/config_db.go",
+                "id": "f_014",
+                "line_end": 47,
+                "line_start": 28,
+                "score": 0.148,
+                "severity": "nitpick",
+                "suggestion": "Replace `fmt.Println` / `fmt.Printf` with the zerolog structured logger:\n\n```go\nimport \"github.com/Agent-Field/agentfield/control-plane/internal/logger\"\n\n// not-found path:\nlogger.Logger.Info().Str(\"key\", dbConfigKey).Msg(\"No database config found, using file/env config only\")\n\n// success path:\nlogger.Logger.Info().\n    Str(\"key\", entry.Key).\n    Int(\"version\", entry.Version).\n    Time(\"updated\", entry.UpdatedAt).\n    Msg(\"Loaded config from database\")\n```",
+                "tags": [
+                    "logging",
+                    "style",
+                    "zerolog",
+                    "structured-logging"
+                ],
+                "title": "`fmt.Println`/`fmt.Printf` used for logging instead of the structured logger"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "The `ConfigStorageModel.Version` field is declared with `gorm:\"column:version;not null;default:1\"` and the auto-increment is implemented purely in application SQL via `version = config_storage.version + 1` in `SetConfig` (local.go:5143, 5156). Neither the GORM model nor the Goose migration adds a `CHECK (version > 0)` constraint or a sequence-based mechanism.\n\nThis means:\n1. Any code path that uses GORM ORM methods directly (e.g., `db.Save(&ConfigStorageModel{..., Version: 0, ...})`) will set version to 0 or any arbitrary value, bypassing the increment logic.\n2. The `version` field comment says it is for \"audit trail\" (models.go:478), but without a monotonically-increasing guarantee at the DB level, audit integrity can be violated silently.\n\nThis is a suggestion rather than a critical issue because currently all writes go through the raw-SQL `SetConfig` which correctly increments. But the model struct exposes `Version int` as a writable field, and future GORM-based code would not benefit from the increment.",
+                "confidence": 0.75,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "dual-track-schema-management",
+                "dimension_name": "Dual-Track Schema Management: AutoMigrate vs Goose",
+                "evidence": "Step 1: `ConfigStorageModel.Version` is `int` with `gorm:\"column:version;not null;default:1\"` (models.go:483) \u2014 no GORM constraint prevents setting it to any value.\nStep 2: `SetConfig` increments via `version = config_storage.version + 1` in the ON CONFLICT clause (local.go:5143, 5156) \u2014 this is correct.\nStep 3: But any direct GORM call like `gormDB.Save(&ConfigStorageModel{Key: \"k\", Value: \"v\", Version: 0})` would set version to 0, no DB constraint prevents it.\nStep 4: `028_create_config_storage.sql` line 7 defines `version INTEGER NOT NULL DEFAULT 1` with no CHECK constraint.",
+                "file_path": "control-plane/internal/storage/models.go",
+                "id": "f_006",
+                "line_end": 483,
+                "line_start": 483,
+                "score": 0.135,
+                "severity": "suggestion",
+                "suggestion": "Add a `CHECK (version >= 1)` constraint in migration `028_create_config_storage.sql`:\n```sql\nversion INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),\n```\nThis at minimum prevents accidental version-0 writes. For a stronger audit guarantee, document that GORM's ORM Save/Create methods should never be used directly on `ConfigStorageModel`; only `SetConfig`/`DeleteConfig` are the sanctioned write paths.",
+                "tags": [
+                    "data-integrity",
+                    "audit-trail",
+                    "version-management",
+                    "constraint-missing"
+                ],
+                "title": "Version increment is application-enforced only; no DB-level constraint prevents version regression or skipping"
+            },
+            {
+                "active_multipliers": [
+                    "adversary_challenged",
+                    "ai_generated_pr"
+                ],
+                "body": "The two `configHandlers` declarations are in separate block scopes (lines 1551\u20131555 and 1575\u20131578) with no shadowing of a shared variable. They register routes on distinct base paths:\n\n- First: `agentAPI` \u2192 `/api/v1/configs/...`\n- Second: `configGroup` (= `connectorGroup.Group(\"\")` = `agentAPI.Group(\"/connector\")`) \u2192 `/api/v1/connector/configs/...`\n\nGin's router tree separates these cleanly \u2014 no duplicate-path panic occurs.\n\nThe `:key` parameter name is identical in both registrations (both call the same `RegisterRoutes` method), but since they live in different router-tree path segments (`/configs` under `/api/v1` vs `/configs` under `/api/v1/connector`), there is no wildcard conflict.\n\nBoth calls pass `s.configReloadFn()` which evaluates `os.Getenv(\"AGENTFIELD_CONFIG_SOURCE\")` at setup time and returns either `nil` or a valid reload closure. The connector-facing reload endpoint will return 503 only when the env var is not `\"db\"` \u2014 **exactly the same behavior** as the `agentAPI`-facing endpoint. There is no regression here.\n\nThe variable name reuse (`configHandlers`) inside separate Go block scopes (`{ }`) is cosmetically confusing but harmless \u2014 Go's scoping rules guarantee no aliasing.",
+                "confidence": 0.98,
+                "diff_line": null,
+                "diff_side": "RIGHT",
+                "dimension_id": "dual-config-route-registration",
+                "dimension_name": "Dual Registration of Config Routes",
+                "evidence": "Step 1: `agentAPI` base path = `/api/v1` (server.go:1164). Step 2: `connectorGroup = agentAPI.Group(\"/connector\")` \u2192 base `/api/v1/connector` (server.go:1559). Step 3: `configGroup = connectorGroup.Group(\"\")` \u2192 still `/api/v1/connector` (server.go:1573). Step 4: `RegisterRoutes` registers identical relative paths (`/configs`, `/configs/:key`, `/configs/reload`) on both groups, yielding `/api/v1/configs/...` and `/api/v1/connector/configs/...` \u2014 distinct full paths. Step 5: Both `NewConfigStorageHandlers` calls at lines 1552 and 1576 invoke `s.configReloadFn()` which is the same method returning equivalent closures (or nil). No behavioral divergence.",
+                "file_path": "control-plane/internal/server/server.go",
+                "id": "f_012",
+                "line_end": 1578,
+                "line_start": 1572,
+                "score": 0.059,
+                "severity": "nitpick",
+                "suggestion": "Consider renaming the inner `configHandlers` to `connectorConfigHandlers` for clarity, even though the current code is functionally correct:\n```go\nconnectorConfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\nconnectorConfigHandlers.RegisterRoutes(configGroup)\n```",
+                "tags": [
+                    "routing",
+                    "correctness",
+                    "naming"
+                ],
+                "title": "Verified: no path conflict and no 503 regression from second `configHandlers` instantiation"
+            }
+        ],
+        "metadata": {
+            "agent_invocations": 15,
+            "anatomy": {
+                "blast_radius": [],
+                "clusters": [
+                    {
+                        "description": "",
+                        "files": [
+                            "control-plane/config/agentfield.yaml"
+                        ],
+                        "id": "cluster_0",
+                        "name": "control-plane/config",
+                        "primary_language": "yaml"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "control-plane/internal/handlers/config_storage.go"
+                        ],
+                        "id": "cluster_1",
+                        "name": "control-plane/internal/handlers",
+                        "primary_language": "go"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "control-plane/internal/server/config_db.go",
+                            "control-plane/internal/server/server.go",
+                            "control-plane/internal/server/server_routes_test.go"
+                        ],
+                        "id": "cluster_2",
+                        "name": "control-plane/internal/server",
+                        "primary_language": "go"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "control-plane/internal/storage/local.go",
+                            "control-plane/internal/storage/migrations.go",
+                            "control-plane/internal/storage/models.go",
+                            "control-plane/internal/storage/storage.go"
+                        ],
+                        "id": "cluster_3",
+                        "name": "control-plane/internal/storage",
+                        "primary_language": "go"
+                    },
+                    {
+                        "description": "",
+                        "files": [
+                            "control-plane/migrations/028_create_config_storage.sql"
+                        ],
+                        "id": "cluster_4",
+                        "name": "control-plane/migrations",
+                        "primary_language": "sql"
+                    }
+                ],
+                "context_notes": "The PR is internally consistent in its storage and handler wiring. The primary concern is the unprotected /api/v1/configs route (no AdminToken, only global API key which may be empty), the non-propagating hot-reload, and the data race on shared config pointer. The schema dual-path (GORM AutoMigrate + Goose) is a pre-existing pattern in this codebase and is handled correctly via CREATE TABLE IF NOT EXISTS. The stub storage in server_routes_test.go was correctly updated with no-op implementations of the four new interface methods, maintaining test compilability.",
+                "dependency_graph": {},
+                "files": [
+                    {
+                        "hunks": [
+                            {
+                                "content": "         enabled: true\n       observability_config:\n         enabled: false\n+      config_management:\n+        enabled: true\n+        read_only: false",
+                                "header": "@@ -146,3 +146,6 @@ features:",
+                                "new_count": 6,
+                                "new_start": 146,
+                                "old_count": 3,
+                                "old_start": 146
+                            }
+                        ],
+                        "language": "yaml",
+                        "lines_added": 3,
+                        "lines_removed": 0,
+                        "path": "control-plane/config/agentfield.yaml",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "+package handlers\n+\n+import (\n+\t\"io\"\n+\t\"net/http\"\n+\n+\t\"github.com/Agent-Field/agentfield/control-plane/internal/storage\"\n+\t\"github.com/gin-gonic/gin\"\n+)\n+\n+// ConfigReloadFunc is called to reload configuration from the database.\n+type ConfigReloadFunc func() error\n+\n+// ConfigStorageHandlers provides HTTP handlers for database-backed configuration.\n+type ConfigStorageHandlers struct {\n+\tstorage  storage.StorageProvider\n+\treloadFn ConfigReloadFunc\n+}\n+\n+// NewConfigStorageHandlers creates a new ConfigStorageHandlers instance.\n+func NewConfigStorageHandlers(store storage.StorageProvider, reloadFn ConfigReloadFunc) *ConfigStorageHandlers {\n+\treturn &ConfigStorageHandlers{storage: store, reloadFn: reloadFn}\n+}\n+\n+// RegisterRoutes registers config storage routes on the given router group.\n+func (h *ConfigStorageHandlers) RegisterRoutes(group *gin.RouterGroup) {\n+\tgroup.GET(\"/configs\", h.ListConfigs)\n+\tgroup.GET(\"/configs/:key\", h.GetConfig)\n+\tgroup.PUT(\"/configs/:key\", h.SetConfig)\n+\tgroup.DELETE(\"/configs/:key\", h.DeleteConfig)\n+\tgroup.POST(\"/configs/reload\", h.ReloadConfig)\n+}\n+\n+// ListConfigs returns all stored configuration entries.\n+func (h *ConfigStorageHandlers) ListConfigs(c *gin.Context) {\n+\tentries, err := h.storage.ListConfigs(c.Request.Context())\n+\tif err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\tif entries == nil {\n+\t\tentries = []*storage.ConfigEntry{}\n+\t}\n+\tc.JSON(http.StatusOK, gin.H{\n+\t\t\"configs\": entries,\n+\t\t\"total\":   len(entries),\n+\t})\n+}\n+\n+// GetConfig returns a specific configuration entry by key.\n+func (h *ConfigStorageHandlers) GetConfig(c *gin.Context) {\n+\tkey := c.Param(\"key\")\n+\tentry, err := h.storage.GetConfig(c.Request.Context(), key)\n+\tif err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\tif entry == nil {\n+\t\tc.JSON(http.StatusNotFound, gin.H{\"error\": \"config not found\", \"key\": key})\n+\t\treturn\n+\t}\n+\tc.JSON(http.StatusOK, entry)\n+}\n+\n+// SetConfig creates or updates a configuration entry.\n+// Accepts raw YAML/text body as the config value.\n+func (h *ConfigStorageHandlers) SetConfig(c *gin.Context) {\n+\tkey := c.Param(\"key\")\n+\n+\tbody, err := io.ReadAll(c.Request.Body)\n+\tif err != nil {\n+\t\tc.JSON(http.StatusBadRequest, gin.H{\"error\": \"failed to read request body\"})\n+\t\treturn\n+\t}\n+\tif len(body) == 0 {\n+\t\tc.JSON(http.StatusBadRequest, gin.H{\"error\": \"request body is empty\"})\n+\t\treturn\n+\t}\n+\n+\tupdatedBy := c.GetHeader(\"X-Updated-By\")\n+\tif updatedBy == \"\" {\n+\t\tupdatedBy = \"api\"\n+\t}\n+\n+\tif err := h.storage.SetConfig(c.Request.Context(), key, string(body), updatedBy); err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\n+\t// Return the saved entry\n+\tentry, err := h.storage.GetConfig(c.Request.Context(), key)\n+\tif err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\n+\tc.JSON(http.StatusOK, gin.H{\n+\t\t\"message\": \"config saved\",\n+\t\t\"config\":  entry,\n+\t})\n+}\n+\n+// DeleteConfig removes a configuration entry by key.\n+func (h *ConfigStorageHandlers) DeleteConfig(c *gin.Context) {\n+\tkey := c.Param(\"key\")\n+\tif err := h.storage.DeleteConfig(c.Request.Context(), key); err != nil {\n+\t\tc.JSON(http.StatusNotFound, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\tc.JSON(http.StatusOK, gin.H{\"message\": \"config deleted\", \"key\": key})\n+}\n+\n+// ReloadConfig triggers a hot-reload of configuration from the database.\n+func (h *ConfigStorageHandlers) ReloadConfig(c *gin.Context) {\n+\tif h.reloadFn == nil {\n+\t\tc.JSON(http.StatusServiceUnavailable, gin.H{\n+\t\t\t\"error\": \"config reload not available (AGENTFIELD_CONFIG_SOURCE != db)\",\n+\t\t})\n+\t\treturn\n+\t}\n+\tif err := h.reloadFn(); err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\n+\t\t\t\"error\":   \"config reload failed\",\n+\t\t\t\"details\": err.Error(),\n+\t\t})\n+\t\treturn\n+\t}\n+\tc.JSON(http.StatusOK, gin.H{\"message\": \"config reloaded from database\"})\n+}",
+                                "header": "@@ -0,0 +1,129 @@",
+                                "new_count": 129,
+                                "new_start": 1,
+                                "old_count": 0,
+                                "old_start": 0
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 129,
+                        "lines_removed": 0,
+                        "path": "control-plane/internal/handlers/config_storage.go",
+                        "status": "added"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "+package server\n+\n+import (\n+\t\"context\"\n+\t\"fmt\"\n+\t\"time\"\n+\n+\t\"github.com/Agent-Field/agentfield/control-plane/internal/config\"\n+\t\"github.com/Agent-Field/agentfield/control-plane/internal/storage\"\n+\t\"gopkg.in/yaml.v3\"\n+)\n+\n+const dbConfigKey = \"agentfield.yaml\"\n+\n+// overlayDBConfig loads config from the database and merges it into the\n+// existing config. The storage section is preserved from the original config\n+// to avoid the bootstrap problem (DB connection settings can't come from DB).\n+// Precedence: env vars > DB config > file config > defaults.\n+func overlayDBConfig(cfg *config.Config, store storage.StorageProvider) error {\n+\tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)\n+\tdefer cancel()\n+\n+\tentry, err := store.GetConfig(ctx, dbConfigKey)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to read config from database: %w\", err)\n+\t}\n+\tif entry == nil {\n+\t\tfmt.Println(\"[config] No database config found (key: agentfield.yaml), using file/env config only.\")\n+\t\treturn nil\n+\t}\n+\n+\t// Preserve the storage config \u2014 it must always come from file/env (bootstrap)\n+\tsavedStorage := cfg.Storage\n+\n+\t// Parse the DB-stored YAML into a config struct\n+\tvar dbCfg config.Config\n+\tif err := yaml.Unmarshal([]byte(entry.Value), &dbCfg); err != nil {\n+\t\treturn fmt.Errorf(\"failed to parse database config YAML: %w\", err)\n+\t}\n+\n+\t// Overlay non-zero DB values onto the existing config\n+\tmergeDBConfig(cfg, &dbCfg)\n+\n+\t// Restore storage config (never overridden from DB)\n+\tcfg.Storage = savedStorage\n+\n+\tfmt.Printf(\"[config] Loaded config from database (key: %s, version: %d, updated: %s)\\n\",\n+\t\tentry.Key, entry.Version, entry.UpdatedAt.Format(time.RFC3339))\n+\treturn nil\n+}\n+\n+// mergeDBConfig selectively merges DB config values into the target config.\n+// Only non-zero/non-empty values from the DB config are applied.\n+func mergeDBConfig(target, dbCfg *config.Config) {\n+\t// AgentField settings\n+\tif dbCfg.AgentField.Port != 0 {\n+\t\ttarget.AgentField.Port = dbCfg.AgentField.Port\n+\t}\n+\tif dbCfg.AgentField.NodeHealth.CheckInterval != 0 {\n+\t\ttarget.AgentField.NodeHealth = dbCfg.AgentField.NodeHealth\n+\t}\n+\t// Merge execution cleanup field-by-field to avoid zeroing out unset fields\n+\tif dbCfg.AgentField.ExecutionCleanup.RetentionPeriod != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.RetentionPeriod = dbCfg.AgentField.ExecutionCleanup.RetentionPeriod\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.CleanupInterval != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.CleanupInterval = dbCfg.AgentField.ExecutionCleanup.CleanupInterval\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.BatchSize != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.BatchSize = dbCfg.AgentField.ExecutionCleanup.BatchSize\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.PreserveRecentDuration != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.PreserveRecentDuration = dbCfg.AgentField.ExecutionCleanup.PreserveRecentDuration\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.StaleExecutionTimeout != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.StaleExecutionTimeout = dbCfg.AgentField.ExecutionCleanup.StaleExecutionTimeout\n+\t}\n+\t// Enabled is a bool \u2014 only override if cleanup config is present in DB at all\n+\tif dbCfg.AgentField.ExecutionCleanup.RetentionPeriod != 0 || dbCfg.AgentField.ExecutionCleanup.CleanupInterval != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.Enabled = dbCfg.AgentField.ExecutionCleanup.Enabled\n+\t}\n+\tif dbCfg.AgentField.Approval.WebhookSecret != \"\" || dbCfg.AgentField.Approval.DefaultExpiryHours != 0 {\n+\t\ttarget.AgentField.Approval = dbCfg.AgentField.Approval\n+\t}\n+\n+\t// Features\n+\tif dbCfg.Features.DID.Method != \"\" {\n+\t\ttarget.Features.DID = dbCfg.Features.DID\n+\t}\n+\t// NOTE: Connector config (token, capabilities) is intentionally NOT merged\n+\t// from DB. These are security-sensitive and must come from file/env config,\n+\t// similar to how storage config is protected from the bootstrap problem.\n+\n+\t// API settings (but never override API key from DB for security)\n+\tif len(dbCfg.API.CORS.AllowedOrigins) > 0 {\n+\t\ttarget.API.CORS = dbCfg.API.CORS\n+\t}\n+\n+\t// UI settings\n+\tif dbCfg.UI.Mode != \"\" {\n+\t\ttarget.UI = dbCfg.UI\n+\t}\n+}",
+                                "header": "@@ -0,0 +1,103 @@",
+                                "new_count": 103,
+                                "new_start": 1,
+                                "old_count": 0,
+                                "old_start": 0
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 103,
+                        "lines_removed": 0,
+                        "path": "control-plane/internal/server/config_db.go",
+                        "status": "added"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " \t\treturn nil, err\n \t}\n \n+\t// Overlay database-stored config if AGENTFIELD_CONFIG_SOURCE=db\n+\tif src := os.Getenv(\"AGENTFIELD_CONFIG_SOURCE\"); src == \"db\" {\n+\t\tif err := overlayDBConfig(cfg, storageProvider); err != nil {\n+\t\t\tfmt.Printf(\"Warning: failed to load config from database: %v\\n\", err)\n+\t\t}\n+\t}\n+\n \tRouter := gin.Default()\n \n \t// Sync installed.yaml to database for package visibility",
+                                "header": "@@ -104,6 +104,13 @@ func NewAgentFieldServer(cfg *config.Config) (*AgentFieldServer, error) {",
+                                "new_count": 13,
+                                "new_start": 104,
+                                "old_count": 6,
+                                "old_start": 104
+                            },
+                            {
+                                "content": " \t}, nil\n }\n \n+// configReloadFn returns a function that reloads config from the database,\n+// or nil if AGENTFIELD_CONFIG_SOURCE is not set to \"db\".\n+func (s *AgentFieldServer) configReloadFn() handlers.ConfigReloadFunc {\n+\tif src := os.Getenv(\"AGENTFIELD_CONFIG_SOURCE\"); src != \"db\" {\n+\t\treturn nil\n+\t}\n+\treturn func() error {\n+\t\treturn overlayDBConfig(s.config, s.storage)\n+\t}\n+}\n+\n // Start initializes and starts the AgentFieldServer.\n func (s *AgentFieldServer) Start() error {\n \t// Setup routes",
+                                "header": "@@ -423,6 +430,17 @@ func NewAgentFieldServer(cfg *config.Config) (*AgentFieldServer, error) {",
+                                "new_count": 17,
+                                "new_start": 430,
+                                "old_count": 6,
+                                "old_start": 423
+                            },
+                            {
+                                "content": " \t\t\tlogger.Logger.Info().Msg(\"\ud83d\udccb Authorization admin routes registered\")\n \t\t}\n \n+\t\t// Config storage routes (admin-authenticated)\n+\t\t{\n+\t\t\tconfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n+\t\t\tconfigHandlers.RegisterRoutes(agentAPI)\n+\t\t\tlogger.Logger.Info().Msg(\"Config storage routes registered\")\n+\t\t}\n+\n \t\t// Connector routes (authenticated with separate connector token)\n \t\tif s.config.Features.Connector.Enabled && s.config.Features.Connector.Token != \"\" {\n \t\t\tconnectorGroup := agentAPI.Group(\"/connector\")",
+                                "header": "@@ -1529,6 +1547,13 @@ func (s *AgentFieldServer) setupRoutes() {",
+                                "new_count": 13,
+                                "new_start": 1547,
+                                "old_count": 6,
+                                "old_start": 1529
+                            },
+                            {
+                                "content": " \t\t\t)\n \t\t\tconnectorHandlers.RegisterRoutes(connectorGroup)\n \n+\t\t\t// Config management routes for connector\n+\t\t\tconfigGroup := connectorGroup.Group(\"\")\n+\t\t\tconfigGroup.Use(middleware.ConnectorCapabilityCheck(\"config_management\", s.config.Features.Connector.Capabilities))\n+\t\t\t{\n+\t\t\t\tconfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n+\t\t\t\tconfigHandlers.RegisterRoutes(configGroup)\n+\t\t\t}\n+\n \t\t\tlogger.Logger.Info().Msg(\"\ud83d\udd0c Connector routes registered\")\n \t\t}\n \t}",
+                                "header": "@@ -1544,6 +1569,14 @@ func (s *AgentFieldServer) setupRoutes() {",
+                                "new_count": 14,
+                                "new_start": 1569,
+                                "old_count": 6,
+                                "old_start": 1544
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 33,
+                        "lines_removed": 0,
+                        "path": "control-plane/internal/server/server.go",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " }\n \n // Configuration\n-func (s *stubStorage) SetConfig(ctx context.Context, key string, value interface{}) error { return nil }\n-func (s *stubStorage) GetConfig(ctx context.Context, key string) (interface{}, error) {\n+func (s *stubStorage) SetConfig(ctx context.Context, key string, value string, updatedBy string) error {\n+\treturn nil\n+}\n+func (s *stubStorage) GetConfig(ctx context.Context, key string) (*storage.ConfigEntry, error) {\n+\treturn nil, nil\n+}\n+func (s *stubStorage) ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error) {\n \treturn nil, nil\n }\n+func (s *stubStorage) DeleteConfig(ctx context.Context, key string) error { return nil }\n \n // Reasoner Performance and History\n func (s *stubStorage) GetReasonerPerformanceMetrics(ctx context.Context, reasonerID string) (*types.ReasonerPerformanceMetrics, error) {",
+                                "header": "@@ -230,10 +230,16 @@ func (s *stubStorage) ListAgentGroups(ctx context.Context, teamID string) ([]typ",
+                                "new_count": 16,
+                                "new_start": 230,
+                                "old_count": 10,
+                                "old_start": 230
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 8,
+                        "lines_removed": 2,
+                        "path": "control-plane/internal/server/server_routes_test.go",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " \treturn nil\n }\n \n-// SetConfig stores a configuration key-value pair in SQLite.\n-func (ls *LocalStorage) SetConfig(ctx context.Context, key string, value interface{}) error {\n-\t// Fast-fail if context is already cancelled\n+// SetConfig upserts a configuration entry in the database.\n+// On conflict (duplicate key), it increments the version and updates the value.\n+func (ls *LocalStorage) SetConfig(ctx context.Context, key string, value string, updatedBy string) error {\n \tif err := ctx.Err(); err != nil {\n \t\treturn err\n \t}\n \n-\t// TODO: Implement configuration storage in SQLite\n-\treturn fmt.Errorf(\"SetConfig not yet implemented for LocalStorage\")\n+\tdb := ls.requireSQLDB()\n+\tnow := time.Now().UTC()\n+\n+\tif ls.mode == \"postgres\" {\n+\t\t_, err := db.ExecContext(ctx, `\n+\t\t\tINSERT INTO config_storage (key, value, version, created_by, updated_by, created_at, updated_at)\n+\t\t\tVALUES ($1, $2, 1, $3, $3, $4, $4)\n+\t\t\tON CONFLICT (key) DO UPDATE SET\n+\t\t\t\tvalue = EXCLUDED.value,\n+\t\t\t\tversion = config_storage.version + 1,\n+\t\t\t\tupdated_by = EXCLUDED.updated_by,\n+\t\t\t\tupdated_at = EXCLUDED.updated_at`,\n+\t\t\tkey, value, updatedBy, now)\n+\t\treturn err\n+\t}\n+\n+\t// SQLite\n+\t_, err := db.ExecContext(ctx, `\n+\t\tINSERT INTO config_storage (key, value, version, created_by, updated_by, created_at, updated_at)\n+\t\tVALUES (?, ?, 1, ?, ?, ?, ?)\n+\t\tON CONFLICT (key) DO UPDATE SET\n+\t\t\tvalue = excluded.value,\n+\t\t\tversion = config_storage.version + 1,\n+\t\t\tupdated_by = excluded.updated_by,\n+\t\t\tupdated_at = excluded.updated_at`,\n+\t\tkey, value, updatedBy, updatedBy, now, now)\n+\treturn err\n }\n \n-// GetConfig retrieves a configuration value from SQLite by key.\n-func (ls *LocalStorage) GetConfig(ctx context.Context, key string) (interface{}, error) {\n-\t// Fast-fail if context is already cancelled\n+// GetConfig retrieves a configuration entry by key.\n+func (ls *LocalStorage) GetConfig(ctx context.Context, key string) (*ConfigEntry, error) {\n+\tif err := ctx.Err(); err != nil {\n+\t\treturn nil, err\n+\t}\n+\n+\tdb := ls.requireSQLDB()\n+\tvar entry ConfigEntry\n+\n+\tvar placeholder string\n+\tif ls.mode == \"postgres\" {\n+\t\tplaceholder = \"$1\"\n+\t} else {\n+\t\tplaceholder = \"?\"\n+\t}\n+\n+\trow := db.QueryRowContext(ctx,\n+\t\tfmt.Sprintf(`SELECT key, value, version, COALESCE(created_by, ''), COALESCE(updated_by, ''), created_at, updated_at\n+\t\tFROM config_storage WHERE key = %s`, placeholder), key)\n+\n+\terr := row.Scan(&entry.Key, &entry.Value, &entry.Version,\n+\t\t&entry.CreatedBy, &entry.UpdatedBy, &entry.CreatedAt, &entry.UpdatedAt)\n+\tif err != nil {\n+\t\tif err.Error() == \"sql: no rows in result set\" {\n+\t\t\treturn nil, nil\n+\t\t}\n+\t\treturn nil, fmt.Errorf(\"failed to get config %q: %w\", key, err)\n+\t}\n+\treturn &entry, nil\n+}\n+\n+// ListConfigs returns all stored configuration entries.\n+func (ls *LocalStorage) ListConfigs(ctx context.Context) ([]*ConfigEntry, error) {\n \tif err := ctx.Err(); err != nil {\n \t\treturn nil, err\n \t}\n \n-\t// TODO: Implement configuration retrieval from SQLite\n-\treturn nil, fmt.Errorf(\"GetConfig not yet implemented for LocalStorage\")\n+\tdb := ls.requireSQLDB()\n+\trows, err := db.QueryContext(ctx,\n+\t\t`SELECT key, value, version, COALESCE(created_by, ''), COALESCE(updated_by, ''), created_at, updated_at\n+\t\tFROM config_storage ORDER BY key`)\n+\tif err != nil {\n+\t\treturn nil, fmt.Errorf(\"failed to list configs: %w\", err)\n+\t}\n+\tdefer rows.Close()\n+\n+\tvar entries []*ConfigEntry\n+\tfor rows.Next() {\n+\t\tvar entry ConfigEntry\n+\t\tif err := rows.Scan(&entry.Key, &entry.Value, &entry.Version,\n+\t\t\t&entry.CreatedBy, &entry.UpdatedBy, &entry.CreatedAt, &entry.UpdatedAt); err != nil {\n+\t\t\treturn nil, fmt.Errorf(\"failed to scan config row: %w\", err)\n+\t\t}\n+\t\tentries = append(entries, &entry)\n+\t}\n+\treturn entries, rows.Err()\n+}\n+\n+// DeleteConfig removes a configuration entry by key.\n+func (ls *LocalStorage) DeleteConfig(ctx context.Context, key string) error {\n+\tif err := ctx.Err(); err != nil {\n+\t\treturn err\n+\t}\n+\n+\tdb := ls.requireSQLDB()\n+\tvar placeholder string\n+\tif ls.mode == \"postgres\" {\n+\t\tplaceholder = \"$1\"\n+\t} else {\n+\t\tplaceholder = \"?\"\n+\t}\n+\n+\tresult, err := db.ExecContext(ctx,\n+\t\tfmt.Sprintf(`DELETE FROM config_storage WHERE key = %s`, placeholder), key)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to delete config %q: %w\", key, err)\n+\t}\n+\trows, _ := result.RowsAffected()\n+\tif rows == 0 {\n+\t\treturn fmt.Errorf(\"config %q not found\", key)\n+\t}\n+\treturn nil\n }\n \n // SubscribeToMemoryChanges implements the StorageProvider SubscribeToMemoryChanges method using local pub/sub.",
+                                "header": "@@ -5124,26 +5124,124 @@ func (ls *LocalStorage) UpdateAgentTrafficWeight(ctx context.Context, id string,",
+                                "new_count": 124,
+                                "new_start": 5124,
+                                "old_count": 26,
+                                "old_start": 5124
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 108,
+                        "lines_removed": 10,
+                        "path": "control-plane/internal/storage/local.go",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " \t\t&DIDDocumentModel{},\n \t\t&AccessPolicyModel{},\n \t\t&AgentTagVCModel{},\n+\t\t&ConfigStorageModel{},\n \t}\n \n \tif err := gormDB.WithContext(ctx).AutoMigrate(models...); err != nil {",
+                                "header": "@@ -233,6 +233,7 @@ func (ls *LocalStorage) autoMigrateSchema(ctx context.Context) error {",
+                                "new_count": 7,
+                                "new_start": 233,
+                                "old_count": 6,
+                                "old_start": 233
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 1,
+                        "lines_removed": 0,
+                        "path": "control-plane/internal/storage/migrations.go",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " }\n \n func (AgentTagVCModel) TableName() string { return \"agent_tag_vcs\" }\n+\n+// ConfigStorageModel stores configuration files in the database.\n+// Each record represents a named configuration (e.g. \"agentfield.yaml\")\n+// with versioning for audit trail.\n+type ConfigStorageModel struct {\n+\tID        int64     `gorm:\"column:id;primaryKey;autoIncrement\"`\n+\tKey       string    `gorm:\"column:key;not null;uniqueIndex\"`\n+\tValue     string    `gorm:\"column:value;type:text;not null\"`\n+\tVersion   int       `gorm:\"column:version;not null;default:1\"`\n+\tCreatedBy *string   `gorm:\"column:created_by\"`\n+\tUpdatedBy *string   `gorm:\"column:updated_by\"`\n+\tCreatedAt time.Time `gorm:\"column:created_at;autoCreateTime\"`\n+\tUpdatedAt time.Time `gorm:\"column:updated_at;autoUpdateTime\"`\n+}\n+\n+func (ConfigStorageModel) TableName() string { return \"config_storage\" }",
+                                "header": "@@ -472,3 +472,19 @@ type AgentTagVCModel struct {",
+                                "new_count": 19,
+                                "new_start": 472,
+                                "old_count": 3,
+                                "old_start": 472
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 16,
+                        "lines_removed": 0,
+                        "path": "control-plane/internal/storage/models.go",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": " \tActiveExecutions int\n }\n \n+// ConfigEntry represents a database-stored configuration file.\n+type ConfigEntry struct {\n+\tKey       string    `json:\"key\"`\n+\tValue     string    `json:\"value\"`\n+\tVersion   int       `json:\"version\"`\n+\tCreatedBy string    `json:\"created_by,omitempty\"`\n+\tUpdatedBy string    `json:\"updated_by,omitempty\"`\n+\tCreatedAt time.Time `json:\"created_at\"`\n+\tUpdatedAt time.Time `json:\"updated_at\"`\n+}\n+\n // StorageProvider is the interface for the primary data storage backend.\n type StorageProvider interface {\n \t// Lifecycle",
+                                "header": "@@ -26,6 +26,17 @@ type RunSummaryAggregation struct {",
+                                "new_count": 17,
+                                "new_start": 26,
+                                "old_count": 6,
+                                "old_start": 26
+                            },
+                            {
+                                "content": " \tUpdateAgentVersion(ctx context.Context, id string, version string) error\n \tUpdateAgentTrafficWeight(ctx context.Context, id string, version string, weight int) error\n \n-\t// Configuration\n-\tSetConfig(ctx context.Context, key string, value interface{}) error\n-\tGetConfig(ctx context.Context, key string) (interface{}, error)\n+\t// Configuration Storage (database-backed config files)\n+\tSetConfig(ctx context.Context, key string, value string, updatedBy string) error\n+\tGetConfig(ctx context.Context, key string) (*ConfigEntry, error)\n+\tListConfigs(ctx context.Context) ([]*ConfigEntry, error)\n+\tDeleteConfig(ctx context.Context, key string) error\n \n \t// Reasoner Performance and History\n \tGetReasonerPerformanceMetrics(ctx context.Context, reasonerID string) (*types.ReasonerPerformanceMetrics, error)",
+                                "header": "@@ -118,9 +129,11 @@ type StorageProvider interface {",
+                                "new_count": 11,
+                                "new_start": 129,
+                                "old_count": 9,
+                                "old_start": 118
+                            }
+                        ],
+                        "language": "go",
+                        "lines_added": 16,
+                        "lines_removed": 3,
+                        "path": "control-plane/internal/storage/storage.go",
+                        "status": "modified"
+                    },
+                    {
+                        "hunks": [
+                            {
+                                "content": "+-- +goose Up\n+-- +goose StatementBegin\n+CREATE TABLE IF NOT EXISTS config_storage (\n+    id          BIGSERIAL PRIMARY KEY,\n+    key         TEXT NOT NULL UNIQUE,\n+    value       TEXT NOT NULL,\n+    version     INTEGER NOT NULL DEFAULT 1,\n+    created_by  TEXT,\n+    updated_by  TEXT,\n+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),\n+    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()\n+);\n+\n+CREATE INDEX IF NOT EXISTS idx_config_storage_key ON config_storage(key);\n+-- +goose StatementEnd\n+\n+-- +goose Down\n+-- +goose StatementBegin\n+DROP INDEX IF EXISTS idx_config_storage_key;\n+DROP TABLE IF EXISTS config_storage;\n+-- +goose StatementEnd",
+                                "header": "@@ -0,0 +1,21 @@",
+                                "new_count": 21,
+                                "new_start": 1,
+                                "old_count": 0,
+                                "old_start": 0
+                            }
+                        ],
+                        "language": "sql",
+                        "lines_added": 21,
+                        "lines_removed": 0,
+                        "path": "control-plane/migrations/028_create_config_storage.sql",
+                        "status": "added"
+                    }
+                ],
+                "intent_gaps": [
+                    "The PR description states 'Precedence: env vars > DB config > file config > defaults' but the overlay is a one-time operation at startup (not continuous), and the RELOAD endpoint only re-applies the DB overlay to the already-file+env-merged config. If env vars set a value that was also in the file config, the file value was already overridden by env before overlay. The stated precedence description is accurate for startup, but the description does not clarify that RELOAD does not re-read the file config or re-apply env vars.",
+                    "The PR description claims 'Add connector-scoped config routes gated by config_management capability' but the code also registers the same config routes unconditionally on /api/v1/configs (server.go:1552-1554) without the capability gate. This unauthenticated (modulo global API key) route is not mentioned in the PR description.",
+                    "The PR description mentions 'works on both SQLite and PostgreSQL' for the storage implementation, but the actual SetConfig/GetConfig/ListConfigs/DeleteConfig method bodies are not visible in the diff (the local.go additions are in lines not shown). The claim cannot be verified from the diff alone.",
+                    "The PR description says config_management is added as a new capability, but it is also enabled by default (read_only: false) in the committed agentfield.yaml with the test connector token. The description does not mention this default-on behavior or its security implication for deployments that use the default config.",
+                    "The ReloadConfig handler (handlers/config_storage.go:114-128) is described as a hot-reload mechanism, but because services are initialized with config values at construction time (intervals, timeouts, flags), a reload only affects future reads of config fields that are checked dynamically (e.g., if a handler reads s.config.AgentField.Port at request time). The PR description does not document which settings actually take effect on hot-reload vs. which require a restart."
+                ],
+                "pr_narrative": "This PR introduces a database-backed configuration storage system with the following end-to-end flow:\n\n**1. Schema and Storage Layer**\nA new GORM model `ConfigStorageModel` (`storage/models.go:479-488`) maps to a `config_storage` table with columns: id, key (unique), value (TEXT), version (auto-incremented on update), created_by, updated_by, created_at, updated_at. The model is appended to the GORM `AutoMigrate` list (`storage/migrations.go:236`), meaning the table is created automatically on startup for both SQLite and PostgreSQL. A parallel Goose SQL migration (`028_create_config_storage.sql`) creates the same table for the managed PostgreSQL migration path. A new `ConfigEntry` DTO (`storage/storage.go:30-38`) is defined alongside four new interface methods on `StorageProvider` (`storage/storage.go:132-136`): `SetConfig`, `GetConfig`, `ListConfigs`, `DeleteConfig`. The concrete implementation is in `LocalStorage` via GORM upsert/query/delete using the `ConfigStorageModel` (implementation not in the diff directly, but referenced by the handler and config_db code).\n\n**2. HTTP Handler Layer**\n`handlers/config_storage.go` defines `ConfigStorageHandlers` with five routes: LIST (`GET /configs`), GET (`GET /configs/:key`), SET (`PUT /configs/:key` \u2014 raw body is the YAML value), DELETE (`DELETE /configs/:key`), and RELOAD (`POST /configs/reload`). The `SetConfig` handler reads raw bytes from the request body and accepts an optional `X-Updated-By` header to track who made the change. After writing, it re-reads and returns the saved entry. The RELOAD endpoint invokes a `ConfigReloadFunc` callback; if the function is nil (i.e., `AGENTFIELD_CONFIG_SOURCE` != `db`), it returns 503.\n\n**3. Startup Config Overlay**\n`server/config_db.go` implements `overlayDBConfig`, called from `NewAgentFieldServer` (`server/server.go:108-112`) after storage is initialized, when `AGENTFIELD_CONFIG_SOURCE=db`. It fetches the entry keyed `agentfield.yaml`, parses it as `config.Config` YAML, then calls `mergeDBConfig` which selectively copies non-zero fields from the DB config onto the in-memory config. The `storage` section of the config is unconditionally restored after merge (bootstrap safety). The `connector` config section is also explicitly excluded from merge (`config_db.go:90-92`).\n\n**4. Route Registration**\nIn `setupRoutes` (`server/server.go:1550-1578`), config routes are registered in two places: (a) unconditionally on `agentAPI` (`/api/v1/configs/...`) with no additional authentication beyond the global API key middleware, and (b) inside the connector group at `/api/v1/connector/configs/...` behind both the connector token middleware and a `config_management` capability check. A hot-reload route (`POST /configs/reload`) is registered at both locations.\n\n**5. Config Precedence at Runtime**\nThe stated precedence is: env vars (Viper) > DB config (overlay at startup) > file config > defaults. The DB overlay happens once, at server construction, not continuously. The RELOAD endpoint (`POST /configs/reload`) re-invokes `overlayDBConfig` live, but this modifies the in-memory `*config.Config` struct that was already used to initialize services \u2014 downstream services (health monitor intervals, cleanup, etc.) are NOT reinitialized.\n\n**6. Default Config Change**\n`agentfield.yaml` gains `config_management.enabled: true, read_only: false` under `features.connector.capabilities`, enabling the capability by default for the dev/test token.",
+                "risk_surfaces": [
+                    "AUTHORIZATION GAP \u2014 config CRUD routes at /api/v1/configs/:key (server.go:1552-1554) are registered with no authentication beyond the global API key middleware. If no API key is configured (the default dev/test scenario with api.auth.api_key empty), these endpoints are completely unauthenticated. Any caller can read, write, or delete the server's configuration YAML, including settings like CORS origins, admin_token, and DID authorization flags. The PR description states 'admin-authenticated' in a comment but the code does not use AdminTokenAuth on this route group.",
+                    "HOT-RELOAD DOES NOT PROPAGATE \u2014 overlayDBConfig (config_db.go:19-50) modifies s.config in place, but all services were constructed from that config at startup (health monitor intervals, cleanup batch sizes, webhook timeouts, execution cleanup enabled flag, CORS origins, etc.). Calling POST /configs/reload via the ReloadConfig handler will silently succeed while leaving all service behaviors unchanged until the next server restart. Callers will expect the reload to take effect immediately.",
+                    "DUPLICATE ROUTE REGISTRATION \u2014 ConfigStorageHandlers.RegisterRoutes registers the same five route patterns (GET /configs, GET /configs/:key, PUT /configs/:key, DELETE /configs/:key, POST /configs/reload) twice: once on agentAPI at server.go:1552-1554 and again inside the connector capability group at server.go:1573-1578. Both registrations use the same handler instance but with different middleware chains. In Gin, duplicate route registration panics at startup if patterns conflict. The connector group uses prefix /connector, so the full paths differ (/api/v1/configs vs /api/v1/connector/configs), but this dual registration is non-obvious and the inner configHandlers variable shadows the outer one (server.go:1552 vs 1576).",
+                    "SCHEMA DUAL-PATH DIVERGENCE \u2014 The table is created via two independent mechanisms: GORM AutoMigrate (migrations.go:236) and Goose migration 028. For SQLite (local mode), only GORM AutoMigrate runs. For PostgreSQL in managed deployments using Goose, both run. The GORM model has `version NOT NULL DEFAULT 1` and auto-increments on update via GORM hooks, but the Goose SQL schema has `version INTEGER NOT NULL DEFAULT 1` with no trigger or sequence for auto-increment \u2014 the increment logic must be in the Go GORM layer (Upsert with version+1). If a raw SQL INSERT bypasses GORM, version will always be 1. Additionally, if AutoMigrate runs first on a fresh Postgres DB and then Goose migration 028 also runs, the CREATE TABLE IF NOT EXISTS in 028 is a no-op, so no conflict \u2014 but this dual-track is a maintenance hazard.",
+                    "VERSION INCREMENT CONTRACT \u2014 The ConfigStorageModel has `Version int` with `gorm:\"default:1\"`. SetConfig presumably uses an upsert that increments version, but the diff does not show the actual SetConfig implementation in local.go (the new methods are not in the shown portion of local.go). If the GORM upsert does not explicitly increment version (e.g., uses Save without a version bump expression), the audit trail promise in the PR description is broken. The ConfigEntry DTO exposes Version to API callers who may rely on it for optimistic locking.",
+                    "YAML INJECTION / ARBITRARY CONFIG OVERRIDE \u2014 PUT /configs/:key accepts raw bytes with no YAML schema validation before storage. On load, overlayDBConfig calls yaml.Unmarshal into a config.Config struct. A malformed YAML will return a parse error at startup/reload (safe), but a structurally valid YAML that sets unexpected fields (e.g., changing agentfield.port, did.authorization.admin_token to empty string, or disabling DID) will silently succeed because mergeDBConfig only checks for zero-values before applying. If admin_token is set to a non-empty value in the file but an empty string in the DB config, the zero-value guard (`dbCfg.Features.DID.Method != \"\"` line config_db.go:87) prevents the DID block from being applied \u2014 but the Approval block (config_db.go:82-84) is applied wholesale if either WebhookSecret or DefaultExpiryHours is non-zero.",
+                    "BOOL FIELD OVERRIDE HEURISTIC \u2014 mergeDBConfig uses a heuristic to decide whether to override the boolean ExecutionCleanup.Enabled: it only overrides if RetentionPeriod or CleanupInterval is also non-zero (config_db.go:79-81). This means a DB config that sets `enabled: false` alone will be silently ignored. An operator who stores a config to disable cleanup will be surprised that cleanup keeps running.",
+                    "CONNECTOR CAPABILITY CHECK MIDDLEWARE PLACEMENT \u2014 At server.go:1573-1574, a new middleware.ConnectorCapabilityCheck is applied to a sub-group of the connector group. If ConnectorCapabilityCheck uses c.Abort() correctly, requests without config_management capability will be rejected. However, the capability check middleware is applied to a new group created with connectorGroup.Group(\"\") \u2014 in Gin, middleware from connectorGroup is inherited by this sub-group. If ConnectorCapabilityCheck does not call c.Abort() on failure, requests could fall through to the handlers. This pattern should be verified.",
+                    "CONCURRENT CONFIG MODIFICATION \u2014 s.config (*config.Config) is a pointer shared across goroutines (health monitor, status manager, cleanup service all hold references or read from it). overlayDBConfig modifies the struct fields without any synchronization (no mutex, no atomic swap). Concurrent reads from goroutines checking config values (e.g., cleanup interval, node health thresholds) while a reload is in progress creates a data race.",
+                    "CONTEXT TIMEOUT IN HOT-RELOAD PATH \u2014 overlayDBConfig creates its own 10-second context (config_db.go:20). When invoked from the HTTP RELOAD handler (handlers/config_storage.go:121), this timeout is independent of the request context. If the DB is slow, the reload may succeed from the handler's perspective but the overlay timed out, and the handler returns HTTP 500 (error path at config_db.go:25) while the handler at line 122-126 propagates that as 500. This is fine, but the handler at line 128 returns 200 on success without indicating what changed.",
+                    "MISSING POSTGRESQL IMPLEMENTATION VERIFICATION \u2014 The SetConfig/GetConfig/ListConfigs/DeleteConfig implementations on LocalStorage are not shown in the diff (the local.go diff shows 108 additions but the shown content is pre-existing code). For PostgreSQL mode, the GORM-based implementation must handle the upsert (incrementing version) correctly. If the implementation uses GORM Save() on a new record vs. an existing one, behavior may differ between SQLite and PostgreSQL due to different GORM driver behaviors for upsert with auto-increment fields."
+                ],
+                "stats": {
+                    "files_added": 3,
+                    "files_modified": 7,
+                    "files_removed": 0,
+                    "files_renamed": 0,
+                    "test_files_changed": 1,
+                    "test_to_code_ratio": 0.1111111111111111,
+                    "total_additions": 438,
+                    "total_deletions": 15,
+                    "total_files": 10
+                },
+                "unrelated_changes": [
+                    "agentfield.yaml already has a connector section; adding config_management capability to the default dev config (lines 149-151) is functional but also sets read_only: false with a known test token ('test-connector-token-123'), which means any deployment using the default config file without overriding has this capability enabled with a public token."
+                ]
+            },
+            "budget": {
+                "budget_exhausted": true,
+                "cost_breakdown": {
+                    "adversary": 0,
+                    "anatomy": 0,
+                    "coverage": 0,
+                    "cross_ref": 0,
+                    "intake": 0,
+                    "meta_selectors": 0,
+                    "output": 0,
+                    "review": 0,
+                    "synthesis": 0
+                },
+                "max_cost_usd": 2,
+                "max_duration_seconds": 900,
+                "total_cost_usd": 0
+            },
+            "intake": {
+                "ai_generated": 0.8,
+                "areas_touched": [
+                    "database",
+                    "api",
+                    "tests",
+                    "config"
+                ],
+                "complexity": "complex",
+                "languages": [
+                    "go",
+                    "sql",
+                    "yaml"
+                ],
+                "pr_summary": "## Summary\n- Add `config_storage` table (GORM model + Goose migration 028) for storing configuration files in the database\n- Implement `SetConfig`/`GetConfig`/`ListConfigs`/`DeleteConfig` on the `StorageProvider` interface (works on both SQLite and PostgreSQL)\n- Add `AGENTFIELD_CONFIG_SOURCE=db` environment variable to load config from the database at startup (overlays on top of file config, preserving storage section for bootstrap)\n- Add CRUD API endpoints at `GET/PUT/DELETE /api/v1/configs/:key`\n- Add connector-scoped config routes gated by `config_management` capability\n- Add `config_management` capability to default `agentfield.yaml`\n\n## How It Works\n1. **Store config in DB**: `PUT /api/v1/configs/agentfield.yaml` with YAML body\n2. **Load from DB at startup**: Set `AGENTFIELD_CONFIG_SOURCE=db` \u2192 server reads config from DB after storage init\n3. **Remote management**: SaaS \u2192 connector \u2192 `config_management` capability \u2192 CP config API\n4. **Precedence**: env vars > DB config > file config > defaults\n5. **Bootstrap safety**: The `storage` section is never overridden from DB (DB connection can't come from DB)\n\n## Related PRs\n- Connector: Agent-Field/connector (config_management capability)\n- hax-sdk: Agent-Field/hax-sdk (config editor UI)\n\n## Test plan\n- [x] `go build ./...` passes\n- [x] Server tests pass\n- [x] Storage test failure is pre-existing (FTS5 not available)\n- [ ] Manual test: create config via API, verify it loads on restart with `AGENTFIELD_CONFIG_SOURCE=db`\n- [ ] Manual test: verify connector flow end-to-end\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+                "pr_type": "feature",
+                "review_depth": "standard",
+                "risk_signals": [
+                    "modifies data model or schema-affecting code",
+                    "changes API surface or request/response behavior",
+                    "includes configuration changes",
+                    "test behavior updated"
+                ]
+            },
+            "phases_completed": [
+                "intake",
+                "anatomy",
+                "meta_selectors",
+                "review",
+                "adversary",
+                "cross_ref",
+                "coverage",
+                "synthesis",
+                "output"
+            ],
+            "plan": {
+                "ai_adjusted": false,
+                "cross_ref_hints": [],
+                "dimensions": [
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.5,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "control-plane/config/agentfield.yaml",
+                            "control-plane/internal/server/config_db.go"
+                        ],
+                        "id": "semantic_sem_01",
+                        "name": "Unauthenticated Config Write/Read/Delete via /api/v1/configs",
+                        "priority": 10,
+                        "review_prompt": "The config CRUD routes at /api/v1/configs/:key are registered on agentAPI (server.go:1552-1554) with no authentication beyond the global API key middleware. Investigate: (1) What is the default value of api.auth.api_key in agentfield.yaml and in the dev/test environment? If it is empty or not set, is the global API key middleware a no-op? (2) Is there any AdminTokenAuth or equivalent applied to this route group? The PR description says 'admin-authenticated' but the code must be checked. (3) What data is accessible via GET /configs? Can an unauthenticated caller retrieve the stored agentfield.yaml which may contain admin_token, webhook secrets, DID config, or CORS origins? (4) Can an unauthenticated caller PUT /configs/agentfield.yaml and override security-sensitive config fields (admin_token, did.authorization, cors.allowed_origins)? Focus on the authorization gap between the /api/v1/configs routes and the /api/v1/connector/configs routes (which DO have ConnectorCapabilityCheck). Determine the actual security boundary enforced at runtime.",
+                        "target_files": [
+                            "control-plane/internal/server/server.go",
+                            "control-plane/internal/handlers/config_storage.go"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.5,
+                            "max_duration_seconds": 60,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "control-plane/internal/handlers/config_storage.go",
+                            "control-plane/internal/server/config_db.go"
+                        ],
+                        "id": "mechanical_mech_01",
+                        "name": "StorageProvider Interface Completeness: Missing Method Implementations",
+                        "priority": 10,
+                        "review_prompt": "Verify that ALL concrete types implementing `StorageProvider` (storage/storage.go:132-136) have implementations for the four new methods: `SetConfig`, `GetConfig`, `ListConfigs`, and `DeleteConfig`. Specifically: (1) Check `LocalStorage` in `storage/local.go` \u2014 the diff claims 108 additions but the shown content may not include these methods. Confirm they exist and have the correct signatures matching the interface exactly (parameter types, return types). (2) If there is a PostgreSQL-specific storage type or any mock/stub in tests, confirm it also satisfies the interface or will produce a compile error. (3) Verify the `ConfigEntry` DTO (storage/storage.go:30-38) return type matches what callers in `handlers/config_storage.go` and `server/config_db.go` expect \u2014 e.g., does `GetConfig` return `(*ConfigEntry, error)` or `(ConfigEntry, error)`? Pointer vs value mismatches will cause compile failures or nil-dereference panics at runtime.",
+                        "target_files": [
+                            "control-plane/internal/storage/storage.go",
+                            "control-plane/internal/storage/local.go"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.4,
+                            "max_duration_seconds": 60,
+                            "max_reference_follows": 3
+                        },
+                        "context_files": [
+                            "control-plane/internal/handlers/config_storage.go"
+                        ],
+                        "id": "mechanical_mech_02",
+                        "name": "Gin Route Registration: Duplicate Pattern Panic Risk",
+                        "priority": 9,
+                        "review_prompt": "Inspect `server/server.go:1550-1578` for the dual registration of config routes. In Gin, registering two routes with identical HTTP method + full path will panic at startup. Determine the full resolved paths for both registrations: (a) the `agentAPI` group base path + `/configs`, `/configs/:key`, `/configs/reload` and (b) the connector group base path + the sub-group prefix + the same suffixes. Confirm that the full paths are truly distinct (e.g., `/api/v1/configs/...` vs `/api/v1/connector/configs/...`). Also check whether the `:key` parameter name is consistent \u2014 if one registration uses `:key` and another uses a different param name at the same position within the same router tree segment, Gin will panic with a wildcard conflict error. Additionally, verify that the `configHandlers` variable at server.go:1552 and the re-used or shadowing `configHandlers` at server.go:1576 reference the same `ConfigStorageHandlers` instance with the same `ConfigReloadFunc` \u2014 if the inner declaration creates a new instance without a reload func, the connector-facing RELOAD endpoint will always return 503.",
+                        "target_files": [
+                            "control-plane/internal/server/server.go"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.5,
+                            "max_duration_seconds": 90,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "control-plane/config/agentfield.yaml"
+                        ],
+                        "id": "semantic_sem_02",
+                        "name": "Hot-Reload Does Not Reinitialize Services \u2014 Silent Staleness",
+                        "priority": 8,
+                        "review_prompt": "overlayDBConfig (config_db.go:19-50) modifies the in-memory *config.Config struct in place. However, all services (health monitor, cleanup service, webhook dispatcher, CORS middleware, etc.) were constructed using that config at startup and hold either a copy of config values or a pointer to the struct. Investigate: (1) Do downstream services read config values lazily (via the pointer at call time) or eagerly (copied into local fields at construction)? If eagerly copied, a reload will have zero effect on running behavior. (2) After a successful POST /configs/reload, what actually changes at runtime vs. what the caller expects to change? (3) Does the reload handler (handlers/config_storage.go:121-128) return any indication of what fields were applied? Does it return HTTP 200 with no body to indicate success, even when no services were reinitialized? (4) Is there a documented contract for which config fields take effect on reload vs. which require restart? If not, this is a behavioral contract violation for callers who rely on reload to change operational parameters.",
+                        "target_files": [
+                            "control-plane/internal/server/config_db.go",
+                            "control-plane/internal/handlers/config_storage.go",
+                            "control-plane/internal/server/server.go"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.4,
+                            "max_duration_seconds": 60,
+                            "max_reference_follows": 4
+                        },
+                        "context_files": [
+                            "control-plane/internal/storage/storage.go",
+                            "control-plane/internal/server/server.go"
+                        ],
+                        "id": "mechanical_mech_03",
+                        "name": "overlayDBConfig: yaml.Unmarshal Target Type and Nil Pointer Safety",
+                        "priority": 8,
+                        "review_prompt": "Trace the exact runtime execution of `overlayDBConfig` in `server/config_db.go:19-50`. (1) Verify `GetConfig` returns a type from which the raw YAML bytes/string are accessed \u2014 confirm no nil pointer dereference if the key `agentfield.yaml` does not exist in the DB (the not-found code path must return early without error). (2) Confirm `yaml.Unmarshal` is called with a `*config.Config` target \u2014 if called with a value type, the populated struct is discarded. (3) In `mergeDBConfig`, confirm each field access on `dbCfg` (the unmarshaled struct) is nil-safe \u2014 if `dbCfg.Features` or nested structs are pointer types and the YAML omits those sections, accessing `dbCfg.Features.DID.Method` at config_db.go:87 will panic with a nil pointer dereference. Check whether `config.Config` uses value types or pointer types for nested structs, and whether `yaml.Unmarshal` zero-initializes nested structs or leaves them nil when YAML keys are absent.",
+                        "target_files": [
+                            "control-plane/internal/server/config_db.go"
+                        ]
+                    },
+                    {
+                        "budget": {
+                            "max_child_spawns": 2,
+                            "max_cost_usd": 0.5,
+                            "max_duration_seconds": 60,
+                            "max_reference_follows": 3
+                        },
+                        "context_files": [
+                            "control-plane/internal/storage/storage.go",
+                            "control-plane/internal/storage/local.go"
+                        ],
+                        "id": "systemic_systemic_schema_dual_path",
+                        "name": "Schema Dual-Path Divergence: GORM AutoMigrate vs Goose Migration",
+                        "priority": 8,
+                        "review_prompt": "This PR creates the `config_storage` table via two independent mechanisms: GORM AutoMigrate (storage/migrations.go:236) and a Goose SQL migration (migrations/028_create_config_storage.sql). Investigate whether this dual-track schema management is consistent with how other tables in this codebase are managed. Specifically: (1) Do other models use both AutoMigrate AND a Goose migration, or is one mechanism the established pattern? (2) Does the GORM model schema (version auto-increment via hooks) match the Goose SQL DDL precisely, or are there divergences (e.g., missing triggers, different column constraints)? (3) If AutoMigrate runs first on a fresh PostgreSQL database and Goose migration 028 also runs, is the result deterministic and conflict-free? (4) What is the maintenance risk if the GORM model is updated but the Goose migration is not (or vice versa)? Conclude whether this dual-path is justified or whether it introduces a long-term maintenance hazard inconsistent with the codebase's existing migration strategy.",
+                        "target_files": [
+                            "control-plane/internal/storage/migrations.go",
+                            "control-plane/internal/storage/models.go",
+                            "control-plane/migrations/028_create_config_storage.sql"
+                        ]
+                    }
+                ],
+                "total_budget": {
+                    "max_child_spawns": 2,
+                    "max_cost_usd": 0.5,
+                    "max_duration_seconds": 60,
+                    "max_reference_follows": 3
+                }
+            }
+        },
+        "pr_url": "https://github.com/Agent-Field/agentfield/pull/254",
+        "review": {
+            "body": "## \ud83d\udd34 PR-AF Review \u2014 **Needs Major Rework**\n\n*Automated multi-agent code review \u00b7 [PR-AF](https://github.com/Agent-Field/agentfield) built with [AgentField](https://github.com/Agent-Field/agentfield)*\n\n> **20 findings** \u00b7 \ud83d\udd34 3 critical \u00b7 \ud83d\udfe0 12 important \u00b7 \ud83d\udd35 2 suggestions \u00b7 \u26aa 3 nitpicks\n\n<details>\n<summary><b>PR Overview</b></summary>\n\n## Summary\n- Add `config_storage` table (GORM model + Goose migration 028) for storing configuration files in the database\n- Implement `SetConfig`/`GetConfig`/`ListConfigs`/`DeleteConfig` on the `StorageProvider` interface (works on both SQLite and PostgreSQL)\n- Add `AGENTFIELD_CONFIG_SOURCE=db` environment variable to load config from the database at startup (overlays on top of file config, preserving storage section for bootstrap)\n- Add CRUD API endpoints at `GET/PUT/DELETE /api/v1/configs/:key`\n- Add connector-scoped config routes gated by `config_management` capability\n- Add `config_management` capability to default `agentfield.yaml`\n\n## How It Works\n1. **Store config in DB**: `PUT /api/v1/configs/agentfield.yaml` with YAML body\n2. **Load from DB at startup**: Set `AGENTFIELD_CONFIG_SOURCE=db` \u2192 server reads config from DB after storage init\n3. **Remote management**: SaaS \u2192 connector \u2192 `config_management` capability \u2192 CP config API\n4. **Precedence**: env vars > DB config > file config > defaults\n5. **Bootstrap safety**: The `storage` section is never overridden from DB (DB connection can't come from DB)\n\n## Related PRs\n- Connector: Agent-Field/connector (config_management capability)\n- hax-sdk: Agent-Field/hax-sdk (config editor UI)\n\n## Test plan\n- [x] `go build ./...` passes\n- [x] Server tests pass\n- [x] Storage test failure is pre-existing (FTS5 not available)\n- [ ] Manual test: create config via API, verify it loads on restart with `AGENTFIELD_CONFIG_SOURCE=db`\n- [ ] Manual test: verify connector flow end-to-end\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\n</details>\n\n### Key Findings\n\n**15 issue(s) should be addressed before merge:**\n\n- \ud83d\udd34 **MockStorageProvider implements SetConfig/GetConfig with wrong signatures and is missing ListConfigs and DeleteConfig entirely** (`control-plane/internal/handlers/ui/config_test.go:289`) \u2014 The `MockStorageProvider` in `config_test.go` (and identically in `execute_test.go`) implements `SetConfig` and `GetConfig` with signatures that do **not** match the `StorageProvider` interface define\u2026\n- \ud83d\udd34 **PUT /configs/agentfield.yaml can overwrite admin_token and internal_token via mergeDBConfig when DID.Method is set** (`control-plane/internal/server/config_db.go:87`) \u2014 When `AGENTFIELD_CONFIG_SOURCE=db` is set, `mergeDBConfig` in `config_db.go:87-89` replaces the **entire** `target.Features.DID` struct \u2014 including `Authorization.AdminToken` and `Authorization.Intern\u2026\n- \ud83d\udd34 **Config CRUD routes are not admin-authenticated: comment is false, no AdminTokenAuth applied** (`control-plane/internal/server/server.go:1550`) \u2014 The comment at line 1550 says `// Config storage routes (admin-authenticated)` but **no `AdminTokenAuth` middleware is applied**.\n- \ud83d\udfe0 **POST /configs/reload returns HTTP 200 with a success message even though most running services are unaffected by the reload** (`control-plane/internal/handlers/config_storage.go:121`) \u2014 The `ReloadConfig` handler returns:  ```json {\"message\": \"config reloaded from database\"} ```  with `HTTP 200` when `reloadFn()` succeeds.\n- \ud83d\udfe0 **Dual-path schema creation for config_storage breaks the established single-source-of-truth migration pattern** (`control-plane/internal/storage/migrations.go:236`) \u2014 The `config_storage` table is created via two independent mechanisms that are never coordinated:  1.\n- \ud83d\udfe0 **AdminTokenAuth is a no-op when adminToken is empty \u2014 existing admin routes (tag approval, policy management) are unprotected in default dev config** (`control-plane/internal/server/middleware/auth.go:90`) \u2014 The comment on `AdminTokenAuth` says *\"falls back to global API key auth\"* when `adminToken` is empty.\n- \ud83d\udfe0 **GetConfig uses fragile string comparison instead of errors.Is(sql.ErrNoRows) for not-found detection** (`control-plane/internal/storage/local.go:5186`) \u2014 `GetConfig` at line 5186 checks for the not-found condition by comparing the error's string representation:  ```go if err.Error() == \"sql: no rows in result set\" {     return nil, nil } ```  This is f\u2026\n- \ud83d\udfe0 **Fragile `no rows` detection via string comparison instead of `errors.Is(sql.ErrNoRows)`** (`control-plane/internal/storage/local.go:5179`) \u2014 The `GetConfig` implementation detects a missing key by comparing the error string:  ```go if err.Error() == \"sql: no rows in result set\" {     return nil, nil } ```  This is the critical code path th\u2026\n- \u2026 and 7 more (see All Findings by Severity)\n\n**5 suggestion(s) and style note(s):**\n\n- \ud83d\udd35 DeleteConfig handler returns 404 for all storage errors, including 500-class failures (`control-plane/internal/handlers/config_storage.go:104`)\n- \ud83d\udd35 Version increment is application-enforced only; no DB-level constraint prevents version regression or skipping (`control-plane/internal/storage/models.go:483`)\n- \u26aa Redundant index on config_storage(key): the UNIQUE constraint already implies a unique index (`control-plane/migrations/028_create_config_storage.sql:14`)\n- \u26aa `fmt.Println`/`fmt.Printf` used for logging instead of the structured logger (`control-plane/internal/server/config_db.go:28`)\n- \u26aa Verified: no path conflict and no 503 regression from second `configHandlers` instantiation (`control-plane/internal/server/server.go:1572`)\n\n**Files with findings:** `control-plane/internal/handlers/config_storage.go`, `control-plane/internal/handlers/ui/config_test.go`, `control-plane/internal/server/config_db.go`, `control-plane/internal/server/middleware/auth.go`, `control-plane/internal/server/server.go`, `control-plane/internal/storage/local.go`, `control-plane/internal/storage/migrations.go`, `control-plane/internal/storage/models.go`, `control-plane/migrations/028_create_config_storage.sql`\n\n<details>\n<summary><b>All Findings by Severity</b></summary>\n\n#### \ud83d\udd34 Critical (3)\n\n- **MockStorageProvider implements SetConfig/GetConfig with wrong signatures and is missing ListConfigs and DeleteConfig entirely** `control-plane/internal/handlers/ui/config_test.go:289`\n- **PUT /configs/agentfield.yaml can overwrite admin_token and internal_token via mergeDBConfig when DID.Method is set** `control-plane/internal/server/config_db.go:87`\n- **Config CRUD routes are not admin-authenticated: comment is false, no AdminTokenAuth applied** `control-plane/internal/server/server.go:1550`\n\n#### \ud83d\udfe0 Important (12)\n\n- **POST /configs/reload returns HTTP 200 with a success message even though most running services are unaffected by the reload** `control-plane/internal/handlers/config_storage.go:121`\n- **Dual-path schema creation for config_storage breaks the established single-source-of-truth migration pattern** `control-plane/internal/storage/migrations.go:236`\n- **AdminTokenAuth is a no-op when adminToken is empty \u2014 existing admin routes (tag approval, policy management) are unprotected in default dev config** `control-plane/internal/server/middleware/auth.go:90`\n- **GetConfig uses fragile string comparison instead of errors.Is(sql.ErrNoRows) for not-found detection** `control-plane/internal/storage/local.go:5186`\n- **Fragile `no rows` detection via string comparison instead of `errors.Is(sql.ErrNoRows)`** `control-plane/internal/storage/local.go:5179`\n- **Config routes registered on unauthenticated `agentAPI` group \u2014 no dedicated auth guard** `control-plane/internal/server/server.go:1550`\n- **WebhookDispatcher and ExecuteHandler/ApprovalWebhookHandler capture config values eagerly: reload cannot change webhook timeouts, agent-call timeout, secrets, or internal token** `control-plane/internal/server/server.go:366`\n- **ExecutionCleanupService copies config by value at construction: reload has zero effect on running behavior** `control-plane/internal/server/server.go:392`\n- **HealthMonitor copies config by value at construction: NodeHealth interval/timeout changes on reload are silently ignored** `control-plane/internal/server/server.go:160`\n- **CORS middleware is registered once at startup: reloading API.CORS config has no effect on running requests** `control-plane/internal/server/server.go:831`\n- **Goose migration for config_storage omits the updated_at auto-update trigger that equivalent tables have, and GORM autoUpdateTime does not replace it** `control-plane/migrations/028_create_config_storage.sql:10`\n- **SetConfig accepts arbitrary keys and values with no validation \u2014 allows storing malformed YAML or overwriting critical system keys** `control-plane/internal/handlers/config_storage.go:67`\n\n#### \ud83d\udd35 Suggestion (2)\n\n- **DeleteConfig handler returns 404 for all storage errors, including 500-class failures** `control-plane/internal/handlers/config_storage.go:104`\n- **Version increment is application-enforced only; no DB-level constraint prevents version regression or skipping** `control-plane/internal/storage/models.go:483`\n\n#### \u26aa Nitpick (3)\n\n- **Redundant index on config_storage(key): the UNIQUE constraint already implies a unique index** `control-plane/migrations/028_create_config_storage.sql:14`\n- **`fmt.Println`/`fmt.Printf` used for logging instead of the structured logger** `control-plane/internal/server/config_db.go:28`\n- **Verified: no path conflict and no 503 regression from second `configHandlers` instantiation** `control-plane/internal/server/server.go:1572`\n\n</details>\n\n<details>\n<summary><b>Review Process Details</b></summary>\n\n**Dimensions Analyzed (6):**\n\n- **Unauthenticated Config Write/Read/Delete via /api/v1/configs** \u2014 2 file(s)\n- **StorageProvider Interface Completeness: Missing Method Implementations** \u2014 2 file(s)\n- **Gin Route Registration: Duplicate Pattern Panic Risk** \u2014 1 file(s)\n- **Hot-Reload Does Not Reinitialize Services \u2014 Silent Staleness** \u2014 3 file(s)\n- **overlayDBConfig: yaml.Unmarshal Target Type and Nil Pointer Safety** \u2014 1 file(s)\n- **Schema Dual-Path Divergence: GORM AutoMigrate vs Goose Migration** \u2014 3 file(s)\n\n**Meta-Dimension Lenses (3):**\n\n- **Semantic** \u2014 5 dimension(s), 87% coverage confidence\n- **Mechanical** \u2014 5 dimension(s), 82% coverage confidence\n- **Systemic** \u2014 2 dimension(s), 78% coverage confidence\n\n**Cross-Reference & Adversary Analysis:**\n\n- **17** finding(s) adversarially tested: 9 confirmed, 8 challenged\n\n</details>\n\n<details>\n<summary><b>Pipeline Stats</b></summary>\n\n| Metric | Value |\n|--------|-------|\n| Duration | 1933.7s |\n| Agent invocations | 15 |\n| Coverage iterations | 0 |\n| Estimated cost | N/A (provider does not report cost) |\n| Budget exhausted | Yes (timeout: 1933s > 900s limit) |\n| PR type | feature |\n| Complexity | complex |\n\n</details>\n\nReview ID: `rev_4840f78ef080`",
+            "comments": [
+                {
+                    "body": "\ud83d\udd34 **[CRITICAL] PUT /configs/agentfield.yaml can overwrite admin_token and internal_token via mergeDBConfig when DID.Method is set**\n\nWhen `AGENTFIELD_CONFIG_SOURCE=db` is set, `mergeDBConfig` in `config_db.go:87-89` replaces the **entire** `target.Features.DID` struct \u2014 including `Authorization.AdminToken` and `Authorization.InternalToken` \u2014 with values from the DB-stored YAML if `dbCfg.Features.DID.Method != \"\"`.\n\n```go\n// config_db.go:86-89\nif dbCfg.Features.DID.Method != \"\" {\n    target.Features.DID = dbCfg.Features.DID  // replaces AdminToken, InternalToken, all auth config\n}\n```\n\nThe comment at line 94 says `// API settings (but never override API key from DB for security)` and correctly protects `API.Auth.APIKey`. However, `AdminToken` (used to guard admin routes including tag approval, policy management, and the config routes themselves) and `InternalToken` (used as bearer for agent-to-agent calls) are both nested under `Features.DID.Authorization` and are **not similarly protected**.\n\nAttack chain:\n1. Attacker calls `PUT /api/v1/configs/agentfield.yaml` with a YAML body containing `features.did.method: did:key` and `features.did.authorization.admin_token: attacker-controlled-token` (unauthenticated, due to Finding 1).\n2. Attacker calls `POST /api/v1/configs/reload` to trigger `overlayDBConfig`.\n3. `mergeDBConfig` sees `dbCfg.Features.DID.Method == \"did:key\"` (non-empty), replaces `target.Features.DID` entirely, overwriting `AdminToken` with the attacker-controlled value.\n4. Attacker now has full `X-Admin-Token` admin access over tag approval, policy management, and all future admin routes.\n\n---\n\n> Step 1: Attacker sends `PUT /api/v1/configs/agentfield.yaml` with body `features:\\n  did:\\n    method: did:key\\n    authorization:\\n      admin_token: evil-token` \u2014 unauthenticated because `APIKeyAuth` is a no-op when `api_key` is empty (Finding 1).\n> Step 2: `SetConfig` at config_storage.go:85 calls `h.storage.SetConfig(ctx, \"agentfield.yaml\", body, \"api\")` \u2014 no validation or sanitization of the YAML content.\n> Step 3: Attacker sends `POST /api/v1/configs/reload`. `ReloadConfig` at config_storage.go:121 calls `h.reloadFn()` which calls `overlayDBConfig(s.config, s.storage)` (server.go:440).\n> Step 4: `overlayDBConfig` at config_db.go:37-42 parses the stored YAML into `dbCfg` and calls `mergeDBConfig(cfg, &dbCfg)`.\n> Step 5: `mergeDBConfig` at config_db.go:87-89: `dbCfg.Features.DID.Method == \"did:key\"` (non-empty), so `target.Features.DID = dbCfg.Features.DID` executes, replacing `Authorization.AdminToken` with `evil-token`.\n> Step 6: Subsequent requests using `X-Admin-Token: evil-token` are accepted by `AdminTokenAuth` at middleware/auth.go:99.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd explicit protection in `mergeDBConfig` for security-sensitive fields inside `Features.DID`, mirroring the API key protection at line 94:\n\n```go\nif dbCfg.Features.DID.Method != \"\" {\n    // Preserve security-sensitive authorization tokens \u2014 must come from file/env only\n    savedAdminToken := target.Features.DID.Authorization.AdminToken\n    savedInternalToken := target.Features.DID.Authorization.InternalToken\n    target.Features.DID = dbCfg.Features.DID\n    target.Features.DID.Authorization.AdminToken = savedAdminToken\n    target.Features.DID.Authorization.InternalToken = savedInternalToken\n}\n```\n\nLong-term, fixing Finding 1 (adding AdminTokenAuth to the config routes) removes the unauthenticated write path, making this a defense-in-depth item. Both fixes should be applied.\n\n---\n*`Config CRUD Route Authorization Gap` \u00b7 confidence 92%*",
+                    "line": 87,
+                    "path": "control-plane/internal/server/config_db.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udd34 **[CRITICAL] Config CRUD routes are not admin-authenticated: comment is false, no AdminTokenAuth applied**\n\nThe comment at line 1550 says `// Config storage routes (admin-authenticated)` but **no `AdminTokenAuth` middleware is applied**. The routes are registered directly on `agentAPI` (the bare `/api/v1` group) with no sub-group and no `.Use(middleware.AdminTokenAuth(...))` call.\n\nCompare this with lines 1532\u20131545 where the actual admin-protected routes are set up:\n\n```go\n// Lines 1532-1545 \u2014 ACTUAL admin auth\nadminGroup := agentAPI.Group(\"\")\nadminGroup.Use(middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken))\n```\n\nBut the config routes at lines 1551\u20131554 are:\n\n```go\n// Lines 1550-1555 \u2014 NO admin auth applied\n{\n    configHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n    configHandlers.RegisterRoutes(agentAPI)  // directly on agentAPI, NOT on adminGroup\n}\n```\n\nThe **only** protection is the global `middleware.APIKeyAuth` at line 881. As confirmed in `middleware/auth.go:26-29`, when `config.APIKey == \"\"` the middleware is an explicit no-op (`c.Next()` is called immediately). The default `agentfield.yaml` in the repo has **no `api.auth.api_key` field at all**, meaning `cfg.API.Auth.APIKey` is the zero value (empty string). The dev environment therefore runs fully unauthenticated.\n\nThis means on any default or dev deployment:\n- `GET /api/v1/configs` \u2014 lists **all** stored configuration entries including `agentfield.yaml`\n- `GET /api/v1/configs/agentfield.yaml` \u2014 returns the full config YAML including `admin_token`, `internal_token`, `webhook_secret`, DID keystore config\n- `PUT /api/v1/configs/agentfield.yaml` \u2014 overwrites the stored config, and if `AGENTFIELD_CONFIG_SOURCE=db` is set, `POST /api/v1/configs/reload` activates it, allowing an attacker to replace `admin_token`, `cors.allowed_origins`, DID authorization settings, etc.\n- `DELETE /api/v1/configs/:key` \u2014 deletes any stored configuration key\n\n---\n\n> Step 1: `setupRoutes()` (server.go:831) registers global middleware including `middleware.APIKeyAuth(middleware.AuthConfig{APIKey: s.config.API.Auth.APIKey, ...})` at line 881.\n> Step 2: `middleware.APIKeyAuth` at `middleware/auth.go:26-29` returns `c.Next()` immediately when `config.APIKey == \"\"`.\n> Step 3: `agentfield.yaml` (config/agentfield.yaml) has no `api.auth.api_key` key at all. `AuthConfig.APIKey` is an untagged Go string, defaulting to `\"\"`. The `applyEnvOverrides` function at config.go:263 only overrides if `AGENTFIELD_API_KEY` env var is non-empty.\n> Step 4: With no API key set, the global middleware is a no-op. No other middleware guards the `/api/v1/configs` routes.\n> Step 5: `configHandlers.RegisterRoutes(agentAPI)` at server.go:1553 calls `group.GET(\"/configs\", ...)`, `group.GET(\"/configs/:key\", ...)`, `group.PUT(\"/configs/:key\", ...)`, `group.DELETE(\"/configs/:key\", ...)`, and `group.POST(\"/configs/reload\", ...)` directly on the unauthenticated `agentAPI` group (server.go:1164 `agentAPI := s.Router.Group(\"/api/v1\")`).\n> Step 6: `GetConfig` at config_storage.go:51-63 calls `h.storage.GetConfig(ctx, key)` and returns the full entry value without redaction. `ListConfigs` at config_storage.go:35-48 returns all entries.\n> Step 7: Any unauthenticated HTTP client can `curl http://localhost:8080/api/v1/configs/agentfield.yaml` and receive the stored YAML including secrets.\n\n**\ud83d\udca1 Suggested Fix**\n\nCreate a dedicated sub-group with `AdminTokenAuth` applied before registering config routes, mirroring the pattern used for tag-approval and access-policy admin routes (lines 1532\u20131545):\n\n```go\n// Config storage routes \u2014 require admin token\nconfigAdminGroup := agentAPI.Group(\"\")\nconfigAdminGroup.Use(middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken))\nconfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\nconfigHandlers.RegisterRoutes(configAdminGroup)\n```\n\nNote: `AdminTokenAuth` is itself a no-op when `adminToken == \"\"` (see `middleware/auth.go:92-94`), so the admin token must also be required to be non-empty for this to be effective in production. Add a startup warning (similar to line 268) if the config routes are reachable but `AdminToken` is empty.\n\n---\n*`Config CRUD Route Authorization Gap` \u00b7 confidence 98%*",
+                    "line": 1550,
+                    "path": "control-plane/internal/server/server.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] POST /configs/reload returns HTTP 200 with a success message even though most running services are unaffected by the reload**\n\nThe `ReloadConfig` handler returns:\n\n```json\n{\"message\": \"config reloaded from database\"}\n```\n\nwith `HTTP 200` when `reloadFn()` succeeds. However, `reloadFn` is `overlayDBConfig`, which **only mutates the in-memory `*config.Config` struct**. As established by the other findings in this review, the overwhelming majority of services that consume config values have already copied those values at construction time and will not observe any change:\n\n- `ExecutionCleanupService` \u2014 reads retention period, cleanup interval, batch size from its own frozen copy\n- `HealthMonitor` \u2014 uses a frozen check interval ticker\n- `WebhookDispatcher` \u2014 uses a frozen `http.Client` timeout\n- `ExecuteHandler`/`ExecuteAsyncHandler` \u2014 use a frozen agent-call timeout\n- `ApprovalWebhookHandler` \u2014 uses a frozen HMAC secret\n- CORS middleware \u2014 configured once at `setupRoutes()` from the config values at that time\n- API key auth middleware \u2014 similarly frozen at route registration\n\nThe only fields that _are_ lazily re-read (because handlers call `s.config.*` directly) are a small subset of route-guard conditions checked on each request. But these are not what callers typically expect to change via a config reload.\n\nThere is **no documented contract** in the handler, any comment block, or any API response body that tells callers which fields are applied immediately versus which require a restart. A caller who updates `execution_cleanup.retention_period` in the DB, calls `POST /configs/reload`, receives `HTTP 200 \"config reloaded from database\"`, and concludes the cleanup service is now running with the new retention period is completely misled.\n\n---\n\n> Step 1: `config_storage.go:121` calls `h.reloadFn()` which is `overlayDBConfig(s.config, s.storage)` (server.go:440).\n> Step 2: `overlayDBConfig` calls `mergeDBConfig` which writes to fields of `*config.Config` in place (config_db.go:42,54-102).\n> Step 3: All background services examined hold value copies of the mutated fields (see companion findings above).\n> Step 4: `config_storage.go:128` returns `{\"message\": \"config reloaded from database\"}` \u2014 no qualification, no list of affected vs. unaffected subsystems.\n> Step 5: No code comment, no API documentation file, and no OpenAPI annotation in the target files describes which fields are hot-reloadable.\n\n**\ud83d\udca1 Suggested Fix**\n\nThe response body should be honest about what was applied. At minimum, add a disclaimer: return a structured body listing which config sections were merged and a note that changes to cleanup intervals, health monitor timings, webhook settings, and execution timeouts require a server restart to take effect. Longer term, either (a) implement true hot-reload for each service via `Reconfigure()` methods and enumerate the actually-reloaded subsystems in the response, or (b) make the API contract explicit in documentation and return a `partial_reload` status with a list of fields that only take effect after restart.\n\n---\n*`Config Reload Behavioral Contract` \u00b7 confidence 95%*",
+                    "line": 121,
+                    "path": "control-plane/internal/handlers/config_storage.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Dual-path schema creation for config_storage breaks the established single-source-of-truth migration pattern**\n\nThe `config_storage` table is created via two independent mechanisms that are never coordinated:\n\n1. **GORM AutoMigrate** (`migrations.go:236`): `&ConfigStorageModel{}` is included in the `autoMigrateSchema` call, which runs unconditionally on every server startup for **both** `local` (SQLite) and `postgres` modes.\n2. **Goose SQL migration** (`028_create_config_storage.sql`): A standalone DDL file intended to be run manually via `goose -dir ./migrations postgres ... up` before the server starts in PostgreSQL mode.\n\nEvery other model that has a Goose migration file also relies on GORM AutoMigrate for its schema (e.g., `DIDDocumentModel` \u2194 `019_create_did_documents.sql`, `AccessPolicyModel` \u2194 `021_create_access_policies.sql`, `AgentTagVCModel` \u2194 `022_create_agent_tag_vcs.sql`). This is the **established pattern** for this codebase: Goose files are the PostgreSQL-mode canonical DDL, and GORM AutoMigrate handles schema reconciliation on startup. `config_storage` follows this same dual-path \u2014 so the pattern is consistent \u2014 but the **design itself** is an undocumented hazard for future maintainers.\n\nThe critical risk is schema divergence over time. If a developer adds a column to `ConfigStorageModel` (e.g., `Tags string`), GORM AutoMigrate will silently add that column to both SQLite and PostgreSQL. But Goose migration `028` will not be updated. The reverse is equally true: if someone adds a `CHECK` constraint in a new Goose migration `029_alter_config_storage.sql`, GORM AutoMigrate will not reproduce it on a fresh install that skips Goose. Because neither mechanism has visibility into what the other has done, schema drift is a when-not-if scenario.\n\n---\n\n> Step 1: `StorageFactory.CreateStorage` (storage.go:350) calls `pgStorage.Initialize(ctx, ...)` for postgres mode.\n> Step 2: `Initialize` (local.go:534) calls `ls.initializePostgres(ctx)`.\n> Step 3: `initializePostgres` (local.go:734) calls `ls.createSchema(ctx)`.\n> Step 4: `createSchema` (local.go:862) calls `ls.autoMigrateSchema(ctx)` unconditionally, which includes `&ConfigStorageModel{}` (migrations.go:236), creating the table via GORM.\n> Step 5: The CLAUDE.md documentation instructs operators to also run `goose -dir ./migrations postgres ... up` before starting in PostgreSQL mode, which would also execute `028_create_config_storage.sql` (with `CREATE TABLE IF NOT EXISTS`, so no hard error, but the DDL is effectively applied twice from two separate sources).\n> Step 6: No mechanism prevents `ConfigStorageModel` fields from being changed in models.go without a corresponding Goose migration update.\n\n**\ud83d\udca1 Suggested Fix**\n\nDocument explicitly (in a comment in `migrations.go` near the AutoMigrate list, and in a header comment in `028_create_config_storage.sql`) that for PostgreSQL mode, the Goose file is the authoritative DDL for initial creation and structural constraints, while GORM AutoMigrate handles additive column additions. Add a CI check or test that compares the column set of the GORM model struct against the columns created by the corresponding Goose migration, to detect drift early. Alternatively, adopt the stricter approach used by `kv_store`, `distributed_locks`, and `memory_events` tables: create them entirely via `ensurePostgres*` helper functions (Go code with `CREATE TABLE IF NOT EXISTS`), removing the Goose SQL file entirely for purely application-managed tables.\n\n---\n*`Dual-Track Schema Management: AutoMigrate vs Goose` \u00b7 confidence 92%*",
+                    "line": 236,
+                    "path": "control-plane/internal/storage/migrations.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] GetConfig uses fragile string comparison instead of errors.Is(sql.ErrNoRows) for not-found detection**\n\n`GetConfig` at line 5186 checks for the not-found condition by comparing the error's string representation:\n\n```go\nif err.Error() == \"sql: no rows in result set\" {\n    return nil, nil\n}\n```\n\nThis is fragile for two reasons:\n\n1. **Driver-dependent string**: The message `\"sql: no rows in result set\"` is the canonical text for `sql.ErrNoRows`, but the comparison bypasses the sentinel value. If any driver wraps `sql.ErrNoRows` (e.g., with `fmt.Errorf(\"...: %w\", sql.ErrNoRows)`), `errors.Is` would still match, but the string comparison would fail \u2014 causing a generic `\"failed to get config\"` error instead of the intended `nil, nil` (not-found) return.\n\n2. **Inconsistency**: Every other `GetX` method in `local.go` uses the idiomatic `errors.Is(err, sql.ErrNoRows)` pattern (e.g., `GetWorkflowRun` at line 300: `if errors.Is(err, sql.ErrNoRows) { return nil, nil }`). This deviation from the established pattern is a latent defect.\n\nThe downstream caller `config_db.go:27` relies on `entry == nil` to mean \"not found\" and prints an informational message. If the string comparison fails under a different driver or future wrapping, `overlayDBConfig` would instead return an error and potentially block server startup.\n\n---\n\n> Step 1: `GetConfig` at local.go:5185-5188 checks `err.Error() == \"sql: no rows in result set\"` to detect missing rows.\n> Step 2: `sql.ErrNoRows` is defined in `database/sql` as `var ErrNoRows = errors.New(\"sql: no rows in result set\")` \u2014 the string match coincidentally works today with direct `sql.QueryRowContext` usage.\n> Step 3: But `errors.Is(err, sql.ErrNoRows)` is the correct, future-proof idiom \u2014 used by the same file at line 300 (`GetWorkflowRun`), line 302: `if errors.Is(err, sql.ErrNoRows)`.\n> Step 4: If the underlying row scan ever returns a wrapped error (driver upgrade, middleware), `err.Error()` will not equal the bare string, causing a generic error to propagate instead of the nil-not-found signal.\n> Step 5: `config_db.go:27-29` consumes the nil return from `GetConfig` as \"no config in DB\" and silently continues; a spurious error here would cause `overlayDBConfig` to return an error, propagating to server startup.\n\n**\ud83d\udca1 Suggested Fix**\n\nReplace the string comparison with the standard sentinel check, consistent with the rest of the file:\n```go\nif errors.Is(err, sql.ErrNoRows) {\n    return nil, nil\n}\n```\nThe `errors` package is already imported at line 8 of `local.go`.\n\n---\n*`StorageProvider Interface Implementation Completeness` \u00b7 confidence 85%*",
+                    "line": 5186,
+                    "path": "control-plane/internal/storage/local.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Fragile `no rows` detection via string comparison instead of `errors.Is(sql.ErrNoRows)`**\n\nThe `GetConfig` implementation detects a missing key by comparing the error string:\n\n```go\nif err.Error() == \"sql: no rows in result set\" {\n    return nil, nil\n}\n```\n\nThis is the critical code path that `overlayDBConfig` depends on for safe early-return when `agentfield.yaml` does not exist in the DB. The guard in `overlayDBConfig` at line 27 (`if entry == nil { return nil }`) is only safe **if** `GetConfig` reliably returns `(nil, nil)` for a not-found key.\n\nThe string comparison is fragile for two concrete reasons:\n\n1. **Standard library contract:** `database/sql` defines `sql.ErrNoRows` as a sentinel error. The idiomatic and safe check is `errors.Is(err, sql.ErrNoRows)`. The string `\"sql: no rows in result set\"` is the `.Error()` text of `sql.ErrNoRows` \u2014 but it is not part of the public API and could change between Go versions.\n\n2. **Wrapped errors:** If any middleware, driver wrapper, or future refactoring wraps the `sql.ErrNoRows` error (e.g., `fmt.Errorf(\"scan failed: %w\", err)`), `err.Error()` will no longer match the literal string, but `errors.Is(err, sql.ErrNoRows)` would still return `true`. A wrapped error would fall through to the generic error path and return `(nil, wrappedError)`, causing `overlayDBConfig` to fail with `\"failed to read config from database\"` instead of silently skipping the DB config \u2014 a behavioral regression that would break startup whenever the DB config key is absent.\n\nWhile the current code works today (the string is stable in the standard `database/sql` implementation), this is an API contract violation that creates a latent bug.\n\n---\n\n> Step 1: `overlayDBConfig` (config_db.go:23) calls `store.GetConfig(ctx, \"agentfield.yaml\")`.\n> Step 2: `LocalStorage.GetConfig` (local.go) executes `SELECT ... WHERE key = ?` / `$1`.\n> Step 3: If key is absent, `row.Scan` returns `sql.ErrNoRows`.\n> Step 4: The implementation checks `err.Error() == \"sql: no rows in result set\"` \u2014 a string literal, not `errors.Is(err, sql.ErrNoRows)`.\n> Step 5: If the error is wrapped at any layer (now or in a future refactor), `err.Error()` no longer matches the literal, the condition is false, and the function returns `(nil, fmt.Errorf(\"failed to get config %q: %w\", key, err))`.\n> Step 6: `overlayDBConfig` receives `(nil, nonNilError)`, hits the `if err != nil` branch at line 24, and returns `fmt.Errorf(\"failed to read config from database: %w\", err)`.\n> Step 7: Server startup fails with an error even though no DB config was intended \u2014 a silent regression triggered by any error-wrapping change in the storage stack.\n\n**\ud83d\udca1 Suggested Fix**\n\nReplace the string comparison with `errors.Is`:\n\n```go\nimport (\n    \"database/sql\"\n    \"errors\"\n)\n\nif errors.Is(err, sql.ErrNoRows) {\n    return nil, nil\n}\n```\n\nThis is both idiomatic Go and resilient to error wrapping. No behavioral change for the current code path.\n\n---\n*`overlayDBConfig Runtime Execution Trace` \u00b7 confidence 85%*",
+                    "line": 5179,
+                    "path": "control-plane/internal/storage/local.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Config routes registered on unauthenticated `agentAPI` group \u2014 no dedicated auth guard**\n\nThe config storage routes (`GET/PUT/DELETE /api/v1/configs/:key`, `GET /api/v1/configs`, `POST /api/v1/configs/reload`) are registered directly on the `agentAPI` group at line 1553 via `configHandlers.RegisterRoutes(agentAPI)`. The `agentAPI` group itself has **no middleware** \u2014 authentication is only provided by the global `s.Router.Use(middleware.APIKeyAuth(...))` applied at line 881.\n\nThe `APIKeyAuth` middleware has an explicit early-return when the configured key is empty:\n```go\n// No auth configured, allow everything.\nif config.APIKey == \"\" {\n    c.Next()\n    return\n}\n```\n\nWhen `AGENTFIELD_API_KEY` / `s.config.API.Auth.APIKey` is not set (which is the default in local/dev mode), **every** config endpoint \u2014 including `PUT /api/v1/configs/:key` (write arbitrary config), `DELETE /api/v1/configs/:key`, and `POST /api/v1/configs/reload` \u2014 is fully unauthenticated and accessible to any HTTP client with network access.\n\nContrast this with the comment on line 1550 which says \"admin-authenticated\": this is **misleading** \u2014 no admin token (`AdminTokenAuth`) is enforced here. The connector-facing duplicate at line 1572\u20131578 at least sits behind `ConnectorTokenAuth` + `ConnectorCapabilityCheck`. The `agentAPI`-facing endpoints have no equivalent protection beyond the optional global API key.\n\n---\n\n> Step 1: Global auth is registered at server.go:881 \u2014 `s.Router.Use(middleware.APIKeyAuth(middleware.AuthConfig{APIKey: s.config.API.Auth.APIKey, ...}))`. Step 2: `middleware.APIKeyAuth` (middleware/auth.go:26) returns early with `c.Next()` when `config.APIKey == \"\"`. Step 3: `agentAPI` is created at server.go:1164 as `s.Router.Group(\"/api/v1\")` with no middleware of its own. Step 4: `configHandlers.RegisterRoutes(agentAPI)` at server.go:1553 registers `PUT /api/v1/configs/:key`, `DELETE /api/v1/configs/:key`, and `POST /api/v1/configs/reload` directly on that group. Step 5: With default configuration (no API key set), any unauthenticated HTTP request to `PUT /api/v1/configs/some-key` with arbitrary body will write to the config store and return 200 OK.\n\n**\ud83d\udca1 Suggested Fix**\n\nRegister the config routes on a sub-group that requires the admin token middleware, consistent with how other admin-only routes are handled (e.g., the `adminGroup` created at line 1532). Replace:\n```go\n// Config storage routes (admin-authenticated)\n{\n    configHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n    configHandlers.RegisterRoutes(agentAPI)\n}\n```\nwith:\n```go\n// Config storage routes (admin-authenticated)\n{\n    cfgAdminGroup := agentAPI.Group(\"\")\n    cfgAdminGroup.Use(middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken))\n    configHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n    configHandlers.RegisterRoutes(cfgAdminGroup)\n}\n```\nAlternatively, reuse the existing `adminGroup` (lines 1532\u20131545) if DID authorization is enabled, but ensure a fallback exists when it is not.\n\n---\n*`Dual Registration of Config Routes` \u00b7 confidence 95%*",
+                    "line": 1550,
+                    "path": "control-plane/internal/server/server.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] Goose migration for config_storage omits the updated_at auto-update trigger that equivalent tables have, and GORM autoUpdateTime does not replace it**\n\nTables with `updated_at` columns in the Goose migrations for this codebase are paired with `BEFORE UPDATE` triggers that call `update_updated_at_column()`. For example:\n- `workflow_runs` (migration 011) has `CREATE TRIGGER update_workflow_runs_updated_at BEFORE UPDATE ... EXECUTE FUNCTION update_updated_at_column()`\n- `workflow_steps` (migration 011) has the same pattern\n\nMigration `028_create_config_storage.sql` defines `updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()` but **does not create an `BEFORE UPDATE` trigger** to keep `updated_at` current on row modifications.\n\nFor the `SetConfig` raw SQL path (local.go:5138-5147), `updated_at` is manually set by the application code (`updated_at = EXCLUDED.updated_at` where `EXCLUDED.updated_at` is the Go `now` variable). This means correctness depends entirely on every code path that touches `config_storage` explicitly setting `updated_at`. GORM's `autoUpdateTime` tag on `ConfigStorageModel.UpdatedAt` only fires when GORM ORM methods are used; the `SetConfig` / `GetConfig` / `DeleteConfig` implementations bypass GORM entirely and use raw `database/sql` queries.\n\nCurrently `SetConfig` does correctly set `updated_at`, so this is not an active bug. But the lack of a DB-level trigger means:\n1. Any future raw SQL that `UPDATE config_storage SET value = ... WHERE key = ...` without explicitly setting `updated_at` will silently leave `updated_at` stale.\n2. The schema contract is different from peer tables, making it a maintenance trap for contributors who see the trigger pattern on `workflow_runs` and assume it also exists on `config_storage`.\n\n---\n\n> Step 1: `028_create_config_storage.sql` lines 10-11 declare `updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()` but contain no trigger DDL.\n> Step 2: `011_create_workflow_runs_and_steps.sql` lines 47-54 show the expected pattern: `CREATE TRIGGER update_workflow_runs_updated_at BEFORE UPDATE ON workflow_runs FOR EACH ROW EXECUTE FUNCTION update_updated_at_column()`.\n> Step 3: `SetConfig` in local.go:5137-5147 does manually pass `updated_at = EXCLUDED.updated_at` in the ON CONFLICT clause, so the current implementation is correct.\n> Step 4: However, any future `UPDATE config_storage SET value = $1 WHERE key = $2` without an explicit `updated_at` clause would leave the column stale \u2014 the DB trigger pattern that prevents this on other tables is absent here.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd a `BEFORE UPDATE` trigger to migration `028_create_config_storage.sql` mirroring the pattern in migration `011`:\n```sql\nCREATE TRIGGER update_config_storage_updated_at\n    BEFORE UPDATE ON config_storage\n    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();\n```\nAnd add its DROP to the `-- +goose Down` section. This makes `updated_at` maintenance a DB invariant rather than an application-layer responsibility, consistent with how `workflow_runs` and `workflow_steps` are managed.\n\n---\n*`Dual-Track Schema Management: AutoMigrate vs Goose` \u00b7 confidence 85%*",
+                    "line": 10,
+                    "path": "control-plane/migrations/028_create_config_storage.sql",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udfe0 **[IMPORTANT] SetConfig accepts arbitrary keys and values with no validation \u2014 allows storing malformed YAML or overwriting critical system keys**\n\n`SetConfig` at config_storage.go:67 accepts any `key` from the URL parameter and any raw body as the value. There is no allowlist of permitted keys, no validation that the value is well-formed YAML when the key implies a YAML config file, and no protection against overwriting critical system keys.\n\nSpecific concerns:\n1. **Key `agentfield.yaml`** can be written with arbitrary content. When loaded via `overlayDBConfig`, a YAML parse error at `config_db.go:37` only returns a warning \u2014 the server does not crash but the config is partially loaded in an inconsistent state.\n2. **Arbitrary key injection**: An attacker can store keys like `../../../../etc/passwd` \u2014 while the storage layer likely sanitizes this, there is no explicit check in the handler.\n3. **No content-type enforcement**: The handler accepts any body as a raw string regardless of content type. The comment says \"Accepts raw YAML/text body\" but this is not validated.\n4. The `updatedBy` field at line 80-83 is taken directly from the `X-Updated-By` header with no sanitization \u2014 this is stored in the audit log and could be used for log injection.\n\n---\n\n> Step 1: `PUT /api/v1/configs/<any-key>` calls `SetConfig` at config_storage.go:67.\n> Step 2: `key := c.Param(\"key\")` at line 68 \u2014 raw URL parameter, no validation.\n> Step 3: `body, err := io.ReadAll(c.Request.Body)` at line 70 \u2014 reads entire body as-is.\n> Step 4: `h.storage.SetConfig(ctx, key, string(body), updatedBy)` at line 85 \u2014 stores without validation.\n> Step 5: `updatedBy := c.GetHeader(\"X-Updated-By\")` at line 80 \u2014 user-controlled string stored in DB audit field.\n\n**\ud83d\udca1 Suggested Fix**\n\n1. Add an allowlist of permitted config keys (e.g., only `agentfield.yaml` or a predefined set), or at minimum validate the key does not contain path traversal characters.\n2. Validate that the body is valid YAML when the key ends in `.yaml` before persisting it.\n3. Sanitize the `X-Updated-By` header value (strip control characters, limit length).\n4. Return a clear error if the key is not in the allowlist.\n\n---\n*`Config CRUD Route Authorization Gap` \u00b7 confidence 82%*",
+                    "line": 67,
+                    "path": "control-plane/internal/handlers/config_storage.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udd35 **[SUGGESTION] DeleteConfig handler returns 404 for all storage errors, including 500-class failures**\n\nThe `DeleteConfig` HTTP handler at line 106-108 responds with `http.StatusNotFound` (404) for **any** error returned by `storage.DeleteConfig`:\n\n```go\nif err := h.storage.DeleteConfig(c.Request.Context(), key); err != nil {\n    c.JSON(http.StatusNotFound, gin.H{\"error\": err.Error()})\n    return\n}\n```\n\nHowever, the storage implementation (`local.go:5235-5244`) can return two distinct error categories:\n- A not-found sentinel: `fmt.Errorf(\"config %q not found\", key)` when `RowsAffected() == 0`\n- A database execution error: `fmt.Errorf(\"failed to delete config %q: %w\", key, err)` for actual DB failures\n\nMapping a database-level error (connection failure, disk full, constraint violation) to 404 is semantically incorrect and will mislead API clients and operators. A DB failure should produce 500 Internal Server Error.\n\n---\n\n> Step 1: `DeleteConfig` in local.go:5235 executes `DELETE FROM config_storage WHERE key = ?`.\n> Step 2: If `db.ExecContext` returns an error (network, disk, constraint), local.go:5237-5239 returns `fmt.Errorf(\"failed to delete config %q: %w\", key, err)`.\n> Step 3: If `RowsAffected() == 0`, local.go:5242 returns `fmt.Errorf(\"config %q not found\", key)`.\n> Step 4: The handler at config_storage.go:107 maps BOTH error types to `http.StatusNotFound` (404).\n> Step 5: A database execution failure will be surfaced to the API client as a 404, concealing the real 5xx nature of the error.\n\n**\ud83d\udca1 Suggested Fix**\n\nDistinguish between not-found and server errors. One approach is to check the error message or define a sentinel type in the storage layer:\n```go\nif err := h.storage.DeleteConfig(c.Request.Context(), key); err != nil {\n    // Check if it's a not-found error vs. a storage failure\n    if strings.Contains(err.Error(), \"not found\") {\n        c.JSON(http.StatusNotFound, gin.H{\"error\": err.Error()})\n    } else {\n        c.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n    }\n    return\n}\n```\nA cleaner solution is to define a typed `ErrNotFound` sentinel in the storage package and use `errors.Is` in the handler.\n\n---\n*`StorageProvider Interface Implementation Completeness` \u00b7 confidence 92%*",
+                    "line": 104,
+                    "path": "control-plane/internal/handlers/config_storage.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\u26aa **[NITPICK] Redundant index on config_storage(key): the UNIQUE constraint already implies a unique index**\n\nThe Goose migration defines `key TEXT NOT NULL UNIQUE` on line 5 (which in PostgreSQL automatically creates a unique B-tree index on `key`) and then explicitly creates `CREATE INDEX IF NOT EXISTS idx_config_storage_key ON config_storage(key)` on line 14. The explicit non-unique index on `key` is redundant because PostgreSQL will always prefer the unique index for lookups on that column.\n\nThis is a minor inefficiency: two indexes occupy storage and must be updated on every INSERT/UPDATE/DELETE to `config_storage`. The duplicate won't cause incorrect behavior, but it wastes space and write amplification.\n\n---\n\n> Step 1: `028_create_config_storage.sql` line 5 defines `key TEXT NOT NULL UNIQUE`.\n> Step 2: PostgreSQL documentation states a UNIQUE constraint automatically creates a unique B-tree index on the constrained column(s), which can be used for point lookups just as a regular index can.\n> Step 3: Line 14 then creates a separate non-unique index `idx_config_storage_key ON config_storage(key)`, duplicating coverage already provided by the unique constraint index.\n\n**\ud83d\udca1 Suggested Fix**\n\nRemove the explicit `CREATE INDEX IF NOT EXISTS idx_config_storage_key ON config_storage(key)` from the `-- +goose Up` section and its corresponding `DROP INDEX` from `-- +goose Down`. The UNIQUE constraint already provides an index suitable for all single-column equality lookups on `key`.\n\n---\n*`Dual-Track Schema Management: AutoMigrate vs Goose` \u00b7 confidence 95%*",
+                    "line": 14,
+                    "path": "control-plane/migrations/028_create_config_storage.sql",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\u26aa **[NITPICK] `fmt.Println`/`fmt.Printf` used for logging instead of the structured logger**\n\nBoth the not-found path (line 28) and the success path (line 47) log via `fmt.Println` / `fmt.Printf` rather than the project's structured logger (`zerolog`).\n\nThe CLAUDE.md project guidance specifies:\n> Use zerolog for structured logging: `logger.Logger.Info().Msg(\"message\")`\n\nUsing `fmt.Print*` here:\n- Bypasses log-level filtering (these messages always appear, even in production with `LOG_LEVEL=warn`)\n- Produces unstructured output that cannot be parsed by log aggregation systems\n- Is inconsistent with the rest of the control-plane codebase\n\nThis is a style/maintainability issue, not a correctness bug.\n\n---\n\n> Line 28: `fmt.Println(\"[config] No database config found (key: agentfield.yaml), using file/env config only.\")`\n> Line 47: `fmt.Printf(\"[config] Loaded config from database (key: %s, version: %d, updated: %s)\\n\", ...)`\n> Both bypass zerolog, the structured logger used throughout the rest of the control-plane (per CLAUDE.md and observed usage in other files).\n\n**\ud83d\udca1 Suggested Fix**\n\nReplace `fmt.Println` / `fmt.Printf` with the zerolog structured logger:\n\n```go\nimport \"github.com/Agent-Field/agentfield/control-plane/internal/logger\"\n\n// not-found path:\nlogger.Logger.Info().Str(\"key\", dbConfigKey).Msg(\"No database config found, using file/env config only\")\n\n// success path:\nlogger.Logger.Info().\n    Str(\"key\", entry.Key).\n    Int(\"version\", entry.Version).\n    Time(\"updated\", entry.UpdatedAt).\n    Msg(\"Loaded config from database\")\n```\n\n---\n*`overlayDBConfig Runtime Execution Trace` \u00b7 confidence 95%*",
+                    "line": 28,
+                    "path": "control-plane/internal/server/config_db.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\ud83d\udd35 **[SUGGESTION] Version increment is application-enforced only; no DB-level constraint prevents version regression or skipping**\n\nThe `ConfigStorageModel.Version` field is declared with `gorm:\"column:version;not null;default:1\"` and the auto-increment is implemented purely in application SQL via `version = config_storage.version + 1` in `SetConfig` (local.go:5143, 5156). Neither the GORM model nor the Goose migration adds a `CHECK (version > 0)` constraint or a sequence-based mechanism.\n\nThis means:\n1. Any code path that uses GORM ORM methods directly (e.g., `db.Save(&ConfigStorageModel{..., Version: 0, ...})`) will set version to 0 or any arbitrary value, bypassing the increment logic.\n2. The `version` field comment says it is for \"audit trail\" (models.go:478), but without a monotonically-increasing guarantee at the DB level, audit integrity can be violated silently.\n\nThis is a suggestion rather than a critical issue because currently all writes go through the raw-SQL `SetConfig` which correctly increments. But the model struct exposes `Version int` as a writable field, and future GORM-based code would not benefit from the increment.\n\n---\n\n> Step 1: `ConfigStorageModel.Version` is `int` with `gorm:\"column:version;not null;default:1\"` (models.go:483) \u2014 no GORM constraint prevents setting it to any value.\n> Step 2: `SetConfig` increments via `version = config_storage.version + 1` in the ON CONFLICT clause (local.go:5143, 5156) \u2014 this is correct.\n> Step 3: But any direct GORM call like `gormDB.Save(&ConfigStorageModel{Key: \"k\", Value: \"v\", Version: 0})` would set version to 0, no DB constraint prevents it.\n> Step 4: `028_create_config_storage.sql` line 7 defines `version INTEGER NOT NULL DEFAULT 1` with no CHECK constraint.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd a `CHECK (version >= 1)` constraint in migration `028_create_config_storage.sql`:\n```sql\nversion INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),\n```\nThis at minimum prevents accidental version-0 writes. For a stronger audit guarantee, document that GORM's ORM Save/Create methods should never be used directly on `ConfigStorageModel`; only `SetConfig`/`DeleteConfig` are the sanctioned write paths.\n\n---\n*`Dual-Track Schema Management: AutoMigrate vs Goose` \u00b7 confidence 75%*",
+                    "line": 483,
+                    "path": "control-plane/internal/storage/models.go",
+                    "side": "RIGHT"
+                },
+                {
+                    "body": "\u26aa **[NITPICK] Verified: no path conflict and no 503 regression from second `configHandlers` instantiation**\n\nThe two `configHandlers` declarations are in separate block scopes (lines 1551\u20131555 and 1575\u20131578) with no shadowing of a shared variable. They register routes on distinct base paths:\n\n- First: `agentAPI` \u2192 `/api/v1/configs/...`\n- Second: `configGroup` (= `connectorGroup.Group(\"\")` = `agentAPI.Group(\"/connector\")`) \u2192 `/api/v1/connector/configs/...`\n\nGin's router tree separates these cleanly \u2014 no duplicate-path panic occurs.\n\nThe `:key` parameter name is identical in both registrations (both call the same `RegisterRoutes` method), but since they live in different router-tree path segments (`/configs` under `/api/v1` vs `/configs` under `/api/v1/connector`), there is no wildcard conflict.\n\nBoth calls pass `s.configReloadFn()` which evaluates `os.Getenv(\"AGENTFIELD_CONFIG_SOURCE\")` at setup time and returns either `nil` or a valid reload closure. The connector-facing reload endpoint will return 503 only when the env var is not `\"db\"` \u2014 **exactly the same behavior** as the `agentAPI`-facing endpoint. There is no regression here.\n\nThe variable name reuse (`configHandlers`) inside separate Go block scopes (`{ }`) is cosmetically confusing but harmless \u2014 Go's scoping rules guarantee no aliasing.\n\n---\n\n> Step 1: `agentAPI` base path = `/api/v1` (server.go:1164). Step 2: `connectorGroup = agentAPI.Group(\"/connector\")` \u2192 base `/api/v1/connector` (server.go:1559). Step 3: `configGroup = connectorGroup.Group(\"\")` \u2192 still `/api/v1/connector` (server.go:1573). Step 4: `RegisterRoutes` registers identical relative paths (`/configs`, `/configs/:key`, `/configs/reload`) on both groups, yielding `/api/v1/configs/...` and `/api/v1/connector/configs/...` \u2014 distinct full paths. Step 5: Both `NewConfigStorageHandlers` calls at lines 1552 and 1576 invoke `s.configReloadFn()` which is the same method returning equivalent closures (or nil). No behavioral divergence.\n\n**\ud83d\udca1 Suggested Fix**\n\nConsider renaming the inner `configHandlers` to `connectorConfigHandlers` for clarity, even though the current code is functionally correct:\n```go\nconnectorConfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\nconnectorConfigHandlers.RegisterRoutes(configGroup)\n```\n\n---\n*`Dual Registration of Config Routes` \u00b7 confidence 98%*",
+                    "line": 1572,
+                    "path": "control-plane/internal/server/server.go",
+                    "side": "RIGHT"
+                }
+            ],
+            "event": "REQUEST_CHANGES"
+        },
+        "review_id": "rev_4840f78ef080",
+        "summary": {
+            "adversary_challenged": 8,
+            "adversary_confirmed": 9,
+            "ai_generated_confidence": 0.8,
+            "budget_exhausted": true,
+            "by_severity": {
+                "critical": 3,
+                "important": 12,
+                "nitpick": 3,
+                "suggestion": 2
+            },
+            "cost_usd": 0,
+            "coverage_iterations": 0,
+            "cross_ref_interactions": 0,
+            "dimensions_run": 6,
+            "duration_seconds": 1933.747,
+            "total_findings": 20
+        }
+    },
+    "started_at": "2026-03-10T16:55:06Z",
+    "completed_at": "2026-03-10T17:27:35Z",
+    "duration_ms": 1948494,
+    "webhook_registered": false
+}

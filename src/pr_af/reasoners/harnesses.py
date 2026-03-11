@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from pydantic import BaseModel, Field
 
 from . import router
@@ -97,6 +99,16 @@ def _language_from_path(path: str) -> str:
 def _extract_languages(pr: GitHubPRData) -> list[str]:
     languages = {_language_from_path(changed.path) for changed in pr.changed_files if _language_from_path(changed.path)}
     return sorted(languages)
+
+
+def _write_context_file(content: str, name: str, repo_path: str) -> str:
+    """Write large context to a file for .harness() to read. Returns file path."""
+    ctx_dir = os.path.join(repo_path, ".pr-af-context")
+    os.makedirs(ctx_dir, exist_ok=True)
+    path = os.path.join(ctx_dir, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+    return path
 
 
 def _extract_areas(paths: list[str]) -> list[str]:
@@ -435,39 +447,63 @@ async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", h
 # ---------------------------------------------------------------------------
 
 
-def _build_meta_context(intake: dict, anatomy: dict) -> str:
+def _build_meta_context(intake: dict, anatomy: dict, diff_patches: dict[str, str] | None = None) -> str:
     """Build shared context string for all meta-selectors."""
     import json as _json
 
     intake_result = IntakeResult.model_validate(intake)
     anatomy_result = AnatomyResult.model_validate(anatomy)
 
-    return _json.dumps(
-        {
-            "intake": {
-                "pr_type": intake_result.pr_type,
-                "complexity": intake_result.complexity,
-                "pr_summary": intake_result.pr_summary,
-                "areas_touched": intake_result.areas_touched,
-                "risk_signals": intake_result.risk_signals,
-            },
-            "clusters": _cluster_descriptions(anatomy_result.clusters),
-            "risk_surfaces": anatomy_result.risk_surfaces,
-            "pr_narrative": anatomy_result.pr_narrative,
-            "file_paths": [f.path for f in anatomy_result.files[:30]],
+    payload: dict[str, object] = {
+        "intake": {
+            "pr_type": intake_result.pr_type,
+            "complexity": intake_result.complexity,
+            "pr_summary": intake_result.pr_summary,
+            "areas_touched": intake_result.areas_touched,
+            "risk_signals": intake_result.risk_signals,
         },
-        default=str,
-    )
+        "clusters": _cluster_descriptions(anatomy_result.clusters),
+        "risk_surfaces": anatomy_result.risk_surfaces,
+        "pr_narrative": anatomy_result.pr_narrative,
+        "blast_radius": anatomy_result.blast_radius[:20],
+        "intent_gaps": anatomy_result.intent_gaps,
+        "unrelated_changes": anatomy_result.unrelated_changes,
+        "context_notes": anatomy_result.context_notes,
+        "diff_stats": {
+            "total_files": anatomy_result.stats.total_files,
+            "total_additions": anatomy_result.stats.total_additions,
+            "total_deletions": anatomy_result.stats.total_deletions,
+        },
+        "file_paths": [f.path for f in anatomy_result.files[:30]],
+    }
+
+    if diff_patches:
+        payload["diff_patches"] = dict(list(diff_patches.items())[:15])
+
+    return _json.dumps(payload, default=str)
 
 
 @router.reasoner()
-async def meta_semantic(intake: dict, anatomy: dict, depth: str = "standard") -> dict:
+async def meta_semantic(
+    intake: dict,
+    anatomy: dict,
+    depth: str = "standard",
+    repo_path: str = "",
+    diff_patches: dict[str, str] | None = None,
+) -> dict:
     """Semantic lens: What does this code DO differently?
 
     Focuses on logic, behavior, API contracts, concurrency, security, error handling.
     Asks: "If I run the old code and the new code side by side, where do they diverge?"
     """
-    context = _build_meta_context(intake, anatomy)
+    context = _build_meta_context(intake, anatomy, diff_patches)
+    context_ref = f"{context}"
+    if repo_path and len(context) > 8000:
+        file_path = _write_context_file(context, "meta_semantic_context.json", repo_path)
+        context_ref = (
+            f"\n\nFull analysis context written to: {file_path}\n"
+            f"Read this file for complete PR context including diff patches."
+        )
 
     result = await router.app.harness(
         f"You are a principal engineer designing review dimensions through the SEMANTIC lens.\n\n"
@@ -486,6 +522,16 @@ async def meta_semantic(intake: dict, anatomy: dict, depth: str = "standard") ->
         f"Are there silent swallows or unhandled paths?\n"
         f"- **Data flow**: Does data pass through the same transformations? Are there type "
         f"coercions, format changes, or encoding differences?\n\n"
+        f"## Investigation Protocol\n\n"
+        f"You have full access to the repository. The context below gives you a starting "
+        f"point — PR summary, anatomy, and diff patches.\n\n"
+        f"- START by reading the context to understand WHAT changed.\n"
+        f"- THEN browse the actual source files to understand HOW the changed code fits into "
+        f"the broader codebase.\n"
+        f"- Read the changed functions. Then find their callers. Trace how data flows through "
+        f"them. Check what error paths exist.\n"
+        f"- ADAPT your investigation based on what you discover — if you find a concerning "
+        f"pattern, dig deeper in adjacent files and call paths.\n\n"
         f"## What NOT to Include\n\n"
         f"Do NOT generate dimensions about:\n"
         f"- Code style, naming, formatting (that's Systemic)\n"
@@ -496,13 +542,20 @@ async def meta_semantic(intake: dict, anatomy: dict, depth: str = "standard") ->
         f"Good: 'Does the migration from sync to async preserve error propagation to callers?'\n"
         f"Bad: 'Check for concurrency issues'\n\n"
         f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
-        f"target_files, context_files, and priority (higher = more critical).\n\n"
+        f"target_files, context_files, and priority (higher = more critical).\n"
+        f"The review_prompt must include specific file paths and line ranges discovered during "
+        f"your repository investigation, plus the exact verification steps the reviewer should run.\n\n"
+        f"## Quality Gate\n\n"
+        f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
+        f"by what you discovered in the actual codebase. If your rationale says 'visible in the "
+        f"diff' or 'based on the patches', you have not investigated enough.\n\n"
         f"Depth '{depth}' means: quick=1-2 dimensions, standard=2-3, deep=3-5\n"
         f"If the PR has no semantic risk, return ZERO dimensions. Do not pad.\n\n"
         f"Also provide a rationale explaining your dimension choices and a confidence "
         f"score (0-1) for how completely your dimensions cover the semantic risk surface.\n\n"
-        f"{context}",
+        f"{context_ref}",
         schema=MetaDimensionResult,
+        cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="semantic", dimensions=[])
     parsed.lens = "semantic"
@@ -510,13 +563,26 @@ async def meta_semantic(intake: dict, anatomy: dict, depth: str = "standard") ->
 
 
 @router.reasoner()
-async def meta_mechanical(intake: dict, anatomy: dict, depth: str = "standard") -> dict:
+async def meta_mechanical(
+    intake: dict,
+    anatomy: dict,
+    depth: str = "standard",
+    repo_path: str = "",
+    diff_patches: dict[str, str] | None = None,
+) -> dict:
     """Mechanical lens: Does this code WORK correctly at the language level?
 
     Focuses on types, signatures, calling conventions, decorator effects,
     framework interactions. Asks: "Will this code compile/run without errors?"
     """
-    context = _build_meta_context(intake, anatomy)
+    context = _build_meta_context(intake, anatomy, diff_patches)
+    context_ref = f"{context}"
+    if repo_path and len(context) > 8000:
+        file_path = _write_context_file(context, "meta_mechanical_context.json", repo_path)
+        context_ref = (
+            f"\n\nFull analysis context written to: {file_path}\n"
+            f"Read this file for complete PR context including diff patches."
+        )
 
     result = await router.app.harness(
         f"You are a principal engineer designing review dimensions through the MECHANICAL lens.\n\n"
@@ -539,6 +605,17 @@ async def meta_mechanical(intake: dict, anatomy: dict, depth: str = "standard") 
         f"dependencies? Are optional dependencies guarded?\n"
         f"- **Runtime mechanics**: Will this code actually execute without AttributeError, "
         f"TypeError, KeyError, ImportError? Trace the exact runtime behavior.\n\n"
+        f"## Investigation Protocol\n\n"
+        f"You have full access to the repository. The context below gives you a starting "
+        f"point — PR summary, anatomy, and diff patches.\n\n"
+        f"- START by reading the context to understand WHAT changed.\n"
+        f"- THEN browse the actual source files to understand HOW the changed code fits into "
+        f"the broader codebase.\n"
+        f"- Read the actual function signatures that changed. Then search for all callers of "
+        f"those functions. Check whether callers pass the right arguments and whether import "
+        f"chains still resolve correctly.\n"
+        f"- ADAPT your investigation based on what you discover — if you find one caller or "
+        f"dependency break, keep tracing until you understand blast radius.\n\n"
         f"## What NOT to Include\n\n"
         f"Do NOT generate dimensions about:\n"
         f"- Whether the logic is correct (that's Semantic)\n"
@@ -550,13 +627,20 @@ async def meta_mechanical(intake: dict, anatomy: dict, depth: str = "standard") 
         f"added in this PR?'\n"
         f"Bad: 'Check for type errors'\n\n"
         f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
-        f"target_files, context_files, and priority (higher = more critical).\n\n"
+        f"target_files, context_files, and priority (higher = more critical).\n"
+        f"The review_prompt must include specific file paths and line ranges discovered during "
+        f"your repository investigation, plus the exact call sites/import chains to verify.\n\n"
+        f"## Quality Gate\n\n"
+        f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
+        f"by what you discovered in the actual codebase. If your rationale says 'visible in the "
+        f"diff' or 'based on the patches', you have not investigated enough.\n\n"
         f"Depth '{depth}' means: quick=1-2 dimensions, standard=2-3, deep=3-5\n"
         f"If the PR has no mechanical risk, return ZERO dimensions. Do not pad.\n\n"
         f"Also provide a rationale explaining your dimension choices and a confidence "
         f"score (0-1) for how completely your dimensions cover the mechanical risk surface.\n\n"
-        f"{context}",
+        f"{context_ref}",
         schema=MetaDimensionResult,
+        cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="mechanical", dimensions=[])
     parsed.lens = "mechanical"
@@ -564,13 +648,26 @@ async def meta_mechanical(intake: dict, anatomy: dict, depth: str = "standard") 
 
 
 @router.reasoner()
-async def meta_systemic(intake: dict, anatomy: dict, depth: str = "standard") -> dict:
+async def meta_systemic(
+    intake: dict,
+    anatomy: dict,
+    depth: str = "standard",
+    repo_path: str = "",
+    diff_patches: dict[str, str] | None = None,
+) -> dict:
     """Systemic lens: How does this code FIT the codebase?
 
     Focuses on patterns, complexity, readability, architectural coherence,
     test coverage. Asks: "Does this change make the codebase better or worse?"
     """
-    context = _build_meta_context(intake, anatomy)
+    context = _build_meta_context(intake, anatomy, diff_patches)
+    context_ref = f"{context}"
+    if repo_path and len(context) > 8000:
+        file_path = _write_context_file(context, "meta_systemic_context.json", repo_path)
+        context_ref = (
+            f"\n\nFull analysis context written to: {file_path}\n"
+            f"Read this file for complete PR context including diff patches."
+        )
 
     result = await router.app.harness(
         f"You are a principal engineer designing review dimensions through the SYSTEMIC lens.\n\n"
@@ -593,6 +690,16 @@ async def meta_systemic(intake: dict, anatomy: dict, depth: str = "standard") ->
         f"alternatives? Is the dependency well-maintained?\n"
         f"- **Migration completeness**: If this is part of a larger migration, is it "
         f"complete or does it leave the codebase in a mixed state?\n\n"
+        f"## Investigation Protocol\n\n"
+        f"You have full access to the repository. The context below gives you a starting "
+        f"point — PR summary, anatomy, and diff patches.\n\n"
+        f"- START by reading the context to understand WHAT changed.\n"
+        f"- THEN browse the actual source files to understand HOW the changed code fits into "
+        f"the broader codebase.\n"
+        f"- Browse similar files in the same directories to understand existing patterns and "
+        f"compare the changed code against those patterns.\n"
+        f"- ADAPT your investigation based on what you discover — if the change deviates from "
+        f"an established architecture pattern, trace where else that pattern is enforced.\n\n"
         f"## What NOT to Include\n\n"
         f"Do NOT generate dimensions about:\n"
         f"- Whether the logic produces correct results (that's Semantic)\n"
@@ -604,14 +711,21 @@ async def meta_systemic(intake: dict, anatomy: dict, depth: str = "standard") ->
         f"(stateless, injected deps, interface-first)?'\n"
         f"Bad: 'Check code quality'\n\n"
         f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
-        f"target_files, context_files, and priority (higher = more critical).\n\n"
+        f"target_files, context_files, and priority (higher = more critical).\n"
+        f"The review_prompt must include specific file paths and line ranges discovered during "
+        f"your repository investigation, plus the pattern comparisons the reviewer should validate.\n\n"
+        f"## Quality Gate\n\n"
+        f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
+        f"by what you discovered in the actual codebase. If your rationale says 'visible in the "
+        f"diff' or 'based on the patches', you have not investigated enough.\n\n"
         f"Depth '{depth}' means: quick=0-1 dimensions, standard=1-2, deep=2-3\n"
         f"Systemic concerns are LOWER priority than Semantic and Mechanical. "
         f"If the PR is a focused bugfix with no architectural impact, return ZERO dimensions.\n\n"
         f"Also provide a rationale explaining your dimension choices and a confidence "
         f"score (0-1) for how completely your dimensions cover the systemic risk surface.\n\n"
-        f"{context}",
+        f"{context_ref}",
         schema=MetaDimensionResult,
+        cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="systemic", dimensions=[])
     parsed.lens = "systemic"
@@ -626,9 +740,48 @@ async def review_dimension(
     repo_path: str = "",
     current_depth: int = 0,
     max_depth: int = 2,
+    pr_narrative: str = "",
+    risk_surfaces: list[str] | None = None,
+    intake_summary: str = "",
+    diff_patches: dict[str, str] | None = None,
+    all_dimension_names: list[str] | None = None,
 ) -> dict:
     ctx_files = context_files or []
+    risks = risk_surfaces or []
     can_spawn = current_depth < max_depth
+
+    pr_context_section = ""
+    if pr_narrative or risks:
+        pr_context_section = (
+            "## PR Context\n\n"
+            f"PR narrative: {pr_narrative or 'not provided'}\n"
+            f"Risk surfaces: {', '.join(risks) if risks else 'none provided'}\n\n"
+        )
+
+    intake_section = f"## Intake Summary\n\n{intake_summary}\n\n" if intake_summary else ""
+
+    dimensions_section = (
+        "## Other Review Dimensions\n\n"
+        f"Other dimensions being reviewed in parallel: {', '.join(all_dimension_names or [])}. "
+        "Avoid duplicating findings that clearly belong to another dimension.\n\n"
+    )
+
+    diff_section = ""
+    if diff_patches:
+        relevant_patches = [
+            (path, diff_patches[path]) for path in target_files if path in diff_patches and diff_patches[path]
+        ]
+        if relevant_patches:
+            patches_text = "\n\n".join(f"### {path}\n```diff\n{patch}\n```" for path, patch in relevant_patches)
+            if repo_path and len(patches_text) > 6000:
+                patch_file = _write_context_file(patches_text, "review_dimension_diff_patches.md", repo_path)
+                diff_section = (
+                    "## Diff Patches for Target Files\n\n"
+                    f"Full diff patches written to: {patch_file}\n"
+                    "Read this file for detailed target-file patches.\n\n"
+                )
+            else:
+                diff_section = f"## Diff Patches for Target Files\n\n{patches_text}\n\n"
 
     spawn_instruction = ""
     if can_spawn:
@@ -656,14 +809,22 @@ async def review_dimension(
         f"{review_prompt}\n\n"
         f"**Target files** (read and analyze these): {', '.join(target_files)}\n"
         f"**Context files** (reference as needed): {', '.join(ctx_files) if ctx_files else 'none'}\n\n"
+        f"{pr_context_section}"
+        f"{intake_section}"
+        f"{dimensions_section}"
+        f"{diff_section}"
         f"## How to Review\n\n"
+        f"You have access to the entire repository. READ the actual files, don't just analyze "
+        f"the diff patches. The diff shows you WHAT changed — the repo shows you the FULL "
+        f"context of WHY it matters.\n\n"
         f"Do NOT just scan for surface-level issues. Think deeply about what this code DOES:\n\n"
         f"1. **Read the target files thoroughly.** Understand the control flow, data flow, "
         f"and error paths. Pay attention to what happens at boundaries — function entry/exit, "
         f"exception handlers, early returns, decorator effects.\n\n"
         f"2. **Trace implications.** If a function signature changed, who calls it? "
         f"If a default value changed, where is it consumed? If an import was added or removed, "
-        f"what depended on it? Read context files to verify.\n\n"
+        f"what depended on it? When checking callers/consumers of changed code, actually search "
+        f"the codebase for references and verify call sites in real files.\n\n"
         f"3. **Check behavioral equivalence.** If code was refactored or a library was swapped, "
         f"does the new version handle ALL the same cases? Edge cases matter: empty inputs, "
         f"None values, concurrent access, error conditions, type mismatches.\n\n"
@@ -674,6 +835,8 @@ async def review_dimension(
         f"that WASN'T changed but SHOULD have been. If a method's signature changed, "
         f"every caller needs updating. If an enum added a variant, every switch/match "
         f"needs the new case.\n\n"
+        f"Before reporting a finding, verify your claim against the actual code. Open the file, "
+        f"read the function, and confirm the behavior you are claiming exists.\n\n"
         f"## Severity Calibration\n\n"
         f"Use the FULL severity range. A well-calibrated review has a MIX:\n\n"
         f"- **critical**: Runtime crashes, data corruption, security vulnerabilities, "
@@ -759,7 +922,12 @@ async def review_dimension(
 
 
 @router.reasoner()
-async def cross_ref_phase(findings: list[dict], cross_ref_hints: list[str] | None = None) -> dict:
+async def cross_ref_phase(
+    findings: list[dict],
+    cross_ref_hints: list[str] | None = None,
+    cluster_context: str = "",
+    repo_path: str = "",
+) -> dict:
     import json as _json
 
     hints = cross_ref_hints or []
@@ -772,12 +940,21 @@ async def cross_ref_phase(findings: list[dict], cross_ref_hints: list[str] | Non
                 "severity": f.severity,
                 "file_path": f.file_path,
                 "dimension_name": f.dimension_name,
-                "body": f.body[:200],
+                "body": f.body,
+                "evidence": f.evidence,
+                "suggestion": f.suggestion,
             }
-            for f in validated_findings[:20]
+            for f in validated_findings[:30]
         ],
         default=str,
     )
+
+    if len(findings_summary) > 10000 and repo_path:
+        file_path = _write_context_file(findings_summary, "cross_ref_findings.json", repo_path)
+        findings_ref = f"Full findings written to: {file_path}\nRead this file for complete finding details."
+    else:
+        findings_ref = f"Findings:\n{findings_summary}"
+
     result = await router.app.harness(
         f"You are analyzing the INTERACTIONS between findings from different review dimensions. "
         f"Individual reviewers examined separate aspects of the PR. Your job is to find where "
@@ -796,17 +973,26 @@ async def cross_ref_phase(findings: list[dict], cross_ref_hints: list[str] | Non
         f"but another part (found by a different reviewer) still uses the old pattern.\n\n"
         f"5. **Hidden Dependencies**: Findings in separate files that share an implicit "
         f"contract (same config key, same database table, same API response shape).\n\n"
+        f"You have repository access. When checking interactions between findings, read the "
+        f"actual files to verify that the interaction you describe is real.\n\n"
         f"Only report interactions you can TRACE through specific findings. "
         f"Do not speculate about interactions that 'might' exist.\n\n"
-        f"Findings:\n{findings_summary}\n\nReview hints: {hints if hints else 'none'}",
+        f"{findings_ref}\n\nReview hints: {hints if hints else 'none'}"
+        + (f"\n\nCluster context:\n{cluster_context}" if cluster_context else ""),
         schema=_CrossRefResult,
+        cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else _CrossRefResult()
     return {"interactions": [interaction.model_dump() for interaction in parsed.interactions]}
 
 
 @router.reasoner()
-async def adversary_phase(findings: list[dict], ai_generated_confidence: float = 0.0) -> dict:
+async def adversary_phase(
+    findings: list[dict],
+    ai_generated_confidence: float = 0.0,
+    pr_context: str = "",
+    repo_path: str = "",
+) -> dict:
     import json as _json
 
     validated_findings = [ReviewFinding.model_validate(finding) for finding in findings]
@@ -820,16 +1006,32 @@ async def adversary_phase(findings: list[dict], ai_generated_confidence: float =
                 "title": f.title,
                 "severity": f.severity,
                 "file_path": f.file_path,
-                "body": f.body[:200],
+                "dimension_name": f.dimension_name,
+                "body": f.body,
+                "evidence": f.evidence,
+                "suggestion": f.suggestion,
                 "confidence": f.confidence,
             }
             for f in validated_findings[:20]
         ],
         default=str,
     )
+
+    if len(findings_summary) > 10000 and repo_path:
+        file_path = _write_context_file(findings_summary, "adversary_findings.json", repo_path)
+        findings_ref = f"Full findings written to: {file_path}\nRead this file for complete finding details."
+    else:
+        findings_ref = f"Findings:\n{findings_summary}"
+
     result = await router.app.harness(
         f"You are the adversarial reviewer — your job is to CHALLENGE every finding and "
         f"determine whether it's real or a false positive. You are skeptical by default.\n\n"
+        f"You MUST verify each finding against the actual code. Do NOT trust the reviewer's "
+        f"claims about what the code does — read the actual files yourself. For each finding, "
+        f"open the file mentioned and verify the code actually does what the reviewer claims. "
+        f"If the reviewer says 'function X uses string comparison' but the actual code uses "
+        f"`errors.Is()`, that finding is a false positive. Your verification must be based on "
+        f"the CURRENT state of the repository, not on what the reviewer described.\n\n"
         f"## For Each Finding, Determine:\n\n"
         f"1. **Is the failure scenario actually reachable?** Trace the call path. "
         f"Can the described inputs actually reach this code? Are there guards upstream "
@@ -854,15 +1056,21 @@ async def adversary_phase(findings: list[dict], ai_generated_confidence: float =
         f"Skepticism mode: {skepticism}\n"
         f"AI-generated confidence: {ai_generated_confidence}\n"
         f"{'(Higher AI confidence → be MORE skeptical of trivial findings)' if ai_generated_confidence > 0.5 else ''}\n\n"
-        f"Findings:\n{findings_summary}",
+        + (f"## PR Context\n\n{pr_context}\n\n" if pr_context else "")
+        + f"{findings_ref}",
         schema=_AdversaryPhaseResult,
+        cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
     return {"results": [item.model_dump() for item in parsed.results]}
 
 
 @router.reasoner()
-async def coverage_gate(anatomy: dict, reviewed_clusters: list[str]) -> dict:
+async def coverage_gate(
+    anatomy: dict,
+    reviewed_clusters: list[str],
+    dimension_names_reviewed: list[str] | None = None,
+) -> dict:
     import json as _json
 
     anatomy_result = AnatomyResult.model_validate(anatomy)
@@ -880,6 +1088,7 @@ async def coverage_gate(anatomy: dict, reviewed_clusters: list[str]) -> dict:
         {
             "all_clusters": cluster_payload,
             "reviewed_clusters": reviewed_clusters,
+            "dimensions_reviewed": dimension_names_reviewed or [],
             "risk_surfaces": anatomy_result.risk_surfaces,
         },
         default=str,
@@ -887,6 +1096,7 @@ async def coverage_gate(anatomy: dict, reviewed_clusters: list[str]) -> dict:
     gate = await router.app.ai(
         f"Determine whether review coverage is complete. "
         f"Compare reviewed cluster identifiers against all change clusters. "
+        f"Dimensions already reviewed: {', '.join(dimension_names_reviewed or [])}. "
         f"If gaps exist, return concise gap_descriptions.\n\n{context}",
         system="Analyze the coverage state and return the structured result.",
         schema=CoverageGate,

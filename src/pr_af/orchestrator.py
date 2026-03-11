@@ -30,7 +30,7 @@ from .reasoners.harnesses import (
     meta_mechanical,
     meta_semantic,
     meta_systemic,
-    planning_phase,
+    planning_phase,  # Keep for backward compat
     review_dimension,
 )
 from .schemas.input import ChangedFile, GitHubPRData, ReviewInput
@@ -116,6 +116,7 @@ class ReviewOrchestrator:
         self.cross_ref_count = 0
         self.adversary_confirmed_count = 0
         self.adversary_challenged_count = 0
+        self.effective_depth: str = "standard"
 
     async def run(self) -> ReviewResult:
         print("[PR-AF] Starting 7-phase pipeline", flush=True)
@@ -171,6 +172,8 @@ class ReviewOrchestrator:
             f"[PR-AF] Pipeline complete! {result.summary.total_findings} findings, cost=${result.summary.cost_usd}",
             flush=True,
         )
+
+        self._cleanup_context_dir()
 
         return result
 
@@ -273,6 +276,8 @@ class ReviewOrchestrator:
                 intake=intake.model_dump(),
                 anatomy=anatomy.model_dump(),
                 depth=review_depth,
+                repo_path=self.input.repo_path or "",
+                diff_patches=self._build_file_patches(),
             )
             self.agent_invocations += 1
             self._register_cost("meta_selectors", self._extract_cost(result_raw))
@@ -281,8 +286,10 @@ class ReviewOrchestrator:
         tasks = [run_lens(lens) for lens in lenses if lens in lens_map]
         meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
         self.meta_selector_results = meta_results
+        self.effective_depth = self._escalate_depth(review_depth)
 
         all_dimensions: list[ReviewDimension] = []
+        cross_ref_hints: list[str] = []
         for meta in meta_results:
             for dim in meta.dimensions:
                 dim = dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
@@ -303,14 +310,15 @@ class ReviewOrchestrator:
             flush=True,
         )
 
-        return ReviewPlan(dimensions=all_dimensions, cross_ref_hints=[])
+        return ReviewPlan(dimensions=all_dimensions, cross_ref_hints=cross_ref_hints)
 
     def _dedup_cross_meta(self, dimensions: list[ReviewDimension]) -> list[ReviewDimension]:
         seen_targets: dict[str, ReviewDimension] = {}
         deduped: list[ReviewDimension] = []
 
         for dim in dimensions:
-            key_str = "|".join(sorted(dim.target_files))
+            key = tuple(sorted(dim.target_files))
+            key_str = "|".join(key)
             if key_str in seen_targets:
                 existing = seen_targets[key_str]
                 if dim.priority > existing.priority:
@@ -343,6 +351,8 @@ class ReviewOrchestrator:
             adversary_raw = await adversary_phase(
                 findings=[f.model_dump() for f in batch],
                 ai_generated_confidence=ai_confidence,
+                pr_context=self._build_pr_context_string(),
+                repo_path=self.input.repo_path or "",
             )
             self.agent_invocations += 1
             self._register_cost("adversary", self._extract_cost(adversary_raw))
@@ -369,6 +379,9 @@ class ReviewOrchestrator:
             if self._budget_or_timeout_exhausted("review"):
                 return
             async with semaphore:
+                all_patches = self._build_file_patches()
+                dim_patches = {f: p for f, p in all_patches.items() if f in dim.target_files}
+
                 result_raw = await review_dimension(
                     review_prompt=dim.review_prompt,
                     target_files=dim.target_files,
@@ -376,6 +389,11 @@ class ReviewOrchestrator:
                     repo_path=self.input.repo_path or "",
                     current_depth=depth,
                     max_depth=max_depth,
+                    pr_narrative=self.anatomy_result.pr_narrative if self.anatomy_result else "",
+                    risk_surfaces=self.anatomy_result.risk_surfaces if self.anatomy_result else [],
+                    intake_summary=self.intake_result.pr_summary if self.intake_result else "",
+                    diff_patches=dim_patches if dim_patches else None,
+                    all_dimension_names=[d.name for d in plan.dimensions if d.id != dim.id],
                 )
                 self.agent_invocations += 1
                 self._register_cost("review", self._extract_cost(result_raw))
@@ -450,6 +468,8 @@ class ReviewOrchestrator:
             cross_raw = await cross_ref_phase(
                 findings=[f.model_dump() for f in confirmed_findings],
                 cross_ref_hints=plan.cross_ref_hints,
+                cluster_context=self._build_cluster_context_string(),
+                repo_path=self.input.repo_path or "",
             )
             self.agent_invocations += 1
             self._register_cost("cross_ref", self._extract_cost(cross_raw))
@@ -470,9 +490,11 @@ class ReviewOrchestrator:
                 break
 
             reviewed_clusters = self._reviewed_clusters(anatomy, findings)
+            dimension_names = [d.name for d in plan.dimensions]
             gate_raw = await coverage_gate(
                 anatomy=anatomy.model_dump(),
                 reviewed_clusters=reviewed_clusters,
+                dimension_names_reviewed=dimension_names,
             )
             self.agent_invocations += 1
             self._register_cost("coverage", self._extract_cost(gate_raw))
@@ -514,6 +536,8 @@ class ReviewOrchestrator:
                 cross_raw = await cross_ref_phase(
                     findings=[f.model_dump() for f in confirmed_findings],
                     cross_ref_hints=plan.cross_ref_hints,
+                    cluster_context=self._build_cluster_context_string(),
+                    repo_path=self.input.repo_path or "",
                 )
                 self.agent_invocations += 1
                 self._register_cost("cross_ref", self._extract_cost(cross_raw))
@@ -573,6 +597,80 @@ class ReviewOrchestrator:
             else:
                 ranges[cf.path] = [(1, 999999)]
         return ranges
+
+    def _build_file_patches(self) -> dict[str, str]:
+        if not self.pr_data:
+            return {}
+        patches: dict[str, str] = {}
+        for cf in self.pr_data.changed_files:
+            if cf.patch:
+                patches[cf.path] = cf.patch
+        return patches
+
+    def _build_pr_context_string(self) -> str:
+        parts = []
+        if self.intake_result:
+            parts.append(f"PR Type: {self.intake_result.pr_type}")
+            parts.append(f"Complexity: {self.intake_result.complexity}")
+            parts.append(f"Summary: {self.intake_result.pr_summary}")
+            if self.intake_result.risk_signals:
+                parts.append(f"Risk Signals: {', '.join(self.intake_result.risk_signals)}")
+        if self.anatomy_result:
+            parts.append(f"PR Narrative: {self.anatomy_result.pr_narrative}")
+            if self.anatomy_result.intent_gaps:
+                parts.append(f"Intent Gaps: {', '.join(self.anatomy_result.intent_gaps)}")
+        return "\n".join(parts)
+
+    def _build_cluster_context_string(self) -> str:
+        if not self.anatomy_result:
+            return ""
+        parts = []
+        for cluster in self.anatomy_result.clusters:
+            parts.append(f"- {cluster.name}: {cluster.description or ', '.join(cluster.files[:5])}")
+        return "\n".join(parts)
+
+    def _escalate_depth(self, current_depth: str) -> str:
+        if current_depth == "deep":
+            return "deep"
+
+        escalation_signals = 0
+
+        if self.anatomy_result:
+            if len(self.anatomy_result.blast_radius) > 10:
+                escalation_signals += 1
+            if len(self.anatomy_result.intent_gaps) > 0:
+                escalation_signals += 1
+            if len(self.anatomy_result.risk_surfaces) > 3:
+                escalation_signals += 1
+            if self.anatomy_result.stats.total_additions > 500:
+                escalation_signals += 1
+
+        if self.meta_selector_results:
+            low_confidence = sum(1 for m in self.meta_selector_results if m.confidence < 0.5)
+            if low_confidence >= 2:
+                escalation_signals += 1
+
+        if escalation_signals >= 2 and current_depth == "quick":
+            print(f"[PR-AF] Depth escalation: quick → standard (signals={escalation_signals})", flush=True)
+            return "standard"
+        if escalation_signals >= 3 and current_depth == "standard":
+            print(f"[PR-AF] Depth escalation: standard → deep (signals={escalation_signals})", flush=True)
+            return "deep"
+
+        return current_depth
+
+    def _cleanup_context_dir(self) -> None:
+        repo_path = self.input.repo_path or ""
+        if not repo_path:
+            return
+        ctx_dir = os.path.join(repo_path, ".pr-af-context")
+        if os.path.isdir(ctx_dir):
+            import shutil
+
+            try:
+                shutil.rmtree(ctx_dir)
+            except OSError:
+                pass
 
     async def _generate_output(
         self,
@@ -1096,6 +1194,13 @@ class ReviewOrchestrator:
         lines: list[str] = []
         detail_parts: list[str] = []
 
+        if plan and plan.dimensions:
+            detail_parts.append(f"**Dimensions Analyzed ({len(plan.dimensions)}):**")
+            detail_parts.append("")
+            for dim in plan.dimensions:
+                detail_parts.append(f"- **{dim.name}** — {len(dim.target_files)} file(s)")
+            detail_parts.append("")
+
         if self.meta_selector_results:
             detail_parts.append(f"**Meta-Dimension Lenses ({len(self.meta_selector_results)}):**")
             detail_parts.append("")
@@ -1105,13 +1210,6 @@ class ReviewOrchestrator:
                 detail_parts.append(
                     f"- **{meta.lens.title()}** — {dim_count} dimension(s), {conf_pct}% coverage confidence"
                 )
-            detail_parts.append("")
-
-        if plan and plan.dimensions:
-            detail_parts.append(f"**Dimensions Analyzed ({len(plan.dimensions)}):**")
-            detail_parts.append("")
-            for dim in plan.dimensions:
-                detail_parts.append(f"- **{dim.name}** — {len(dim.target_files)} file(s)")
             detail_parts.append("")
 
         sub_review_dims = {f.dimension_name for f in findings if "→" in f.dimension_name}
