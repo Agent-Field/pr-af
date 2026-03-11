@@ -10,9 +10,8 @@
 [![More from Agent-Field](https://img.shields.io/badge/More_from-Agent--Field-111827?style=for-the-badge&logo=github)](https://github.com/Agent-Field)
 
 <p>
-  <a href="#the-problem">The Problem</a> •
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#compound-analysis">Compound Risk</a> •
+  <a href="#the-ai-code-review-problem">The Problem</a> •
+  <a href="#architectural-intelligence">Why It Works</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="benchmark/agentfield-254/EVALUATION.md">Benchmarks</a>
 </p>
@@ -27,44 +26,41 @@ Single-agent code reviewers are fast, but they suffer from high false-positive r
 
 ---
 
-## The Problem: The Single-Agent Ceiling
+## The AI Code Review Problem
 
-Most AI code reviewers pass a git diff into a single LLM prompt and ask it to find bugs. This approaches the problem at the surface level. 
+Most "AI PR Reviewers" just pipe a git diff into a single LLM prompt and ask it to find bugs. This creates three fatal flaws:
 
-1. **They hallucinate:** Without full repository context, single agents guess how functions interact.
-2. **They are naive:** They spot mechanical errors (e.g., missing parameters) but miss systemic flaws (e.g., a combination of three isolated changes creates an auth bypass).
-3. **They lack rigor:** They rarely verify their own assumptions against actual source code.
+1. **The Hallucination Trap:** Without traversing the actual repository, the LLM guesses how functions interact. It flags missing error handling that is actually handled cleanly three layers up. You get noisy, frustrating false positives.
+2. **The Myopic View:** They spot surface-level, mechanical errors (e.g., missing parameters) but miss systemic flaws. They cannot see how three isolated, seemingly benign changes combine to create an exploit.
+3. **The Static Prompt Ceiling:** Using the same "You are an expert reviewer" prompt for a CSS tweak and a highly concurrent database migration yields generic, unhelpful advice.
 
-## How It Works: Composite Intelligence
+## Architectural Intelligence
 
-PR-AF is built on the [Composite Intelligence](https://github.com/Agent-Field/agentfield) philosophy. The intelligence isn't just in the LLM—it's encoded in the **architecture itself**. 
+PR-AF is built on the [Composite Intelligence](https://github.com/Agent-Field/agentfield) philosophy. We don't rely on a magical, omniscient model. Instead, the intelligence is encoded in the **architecture itself**. 
 
-Instead of a single prompt, PR-AF runs an 8-Phase multi-agent pipeline spanning roughly ~100 synchronous micro-agent tasks.
+By composing ~100 synchronous micro-agent tasks, PR-AF achieves results impossible for a single agent.
 
-### The 8-Phase Review Pipeline
+### 1. Evidence Grounding: Achieving Zero False Positives
+LLMs are notoriously lazy and eager to please. If you ask them to find a bug, they will invent one. PR-AF solves this using a **Hybrid Evidence Layer**. 
 
-| Phase | Description | Architecture |
-|---|---|---|
-| **1. INTAKE** | Classifies PR complexity and depth. | `.ai()` |
-| **2. ANATOMY** | Groups the changed files into logical clusters. | `.ai()` |
-| **3. META-DIMENSIONS** | Evaluates the PR through 3 parallel lenses (Semantic, Mechanical, Systemic) to dynamically generate custom review prompts tailored to this specific PR. | `.harness()` (3x parallel) |
-| **4. REVIEW** | Dispatches specific sub-agents (e.g., a "Security Auditor", an "API Contract Specialist") to investigate the repo based on the custom dimensions. | `.harness()` (Nx parallel) |
-| **5. EVIDENCE LAYER** | Uses programmatic Python AST parsing to pull exact caller snippets, import contexts, and cross-references. An **Evidence Verifier** harness attempts to falsify the Reviewers' claims using this ground truth. | Hybrid (Code + `.harness()`) |
-| **6. ADVERSARY** | A cynical "Red Team" agent tries to disprove remaining findings. | `.harness()` |
-| **7. COMPOUND ANALYSIS** | Clusters isolated, minor findings to determine if their combination creates a novel, first-class exploit chain. | `.harness()` (Nx parallel) |
-| **8. SYNTHESIS** | Scores, dedups, filters, and formats the findings as inline GitHub comments. | Code |
+When an agent flags a vulnerability, PR-AF uses fast programmatic AST parsing to extract the exact caller snippets, import contexts, and cross-references from the repository. This hard data is fed into an isolated **Evidence Verifier** harness. Its sole job: prove the first agent wrong. If a claim cannot be irrefutably backed by the extracted code snippets, it is silently dropped. **In our benchmarks, this dropped the false positive rate to 0%.**
 
-## The Differentiator: Compound Analysis
+### 2. Synthesizing Compound Attack Chains
+Where a single-agent reviewer stops at "you forgot to validate this field," PR-AF looks at the whole board. 
 
-Where single-agent reviewers stop at "you forgot to protect this field," PR-AF looks at the whole board. 
+In our benchmark of a complex configuration migration PR, PR-AF's parallel agents found three isolated, medium-severity bugs across different files: an AdminToken override, an APIKey vulnerability, and a WebhookSecret overwrite. 
 
-During our benchmarks on a complex configuration migration PR, PR-AF's individual reviewers found three separate, medium-severity bugs: an AdminToken override, an APIKey vulnerability, and a WebhookSecret overwrite. 
-
-The **Phase 7 Compound Analyzer** clustered these findings together, stepped back, and synthesized a critical zero-day exploit that the single-agent baseline missed:
+PR-AF's **Compound Analyzer** clustered these findings together and synthesized a critical zero-day exploit that the single-agent baseline missed entirely:
 
 > **Complete System Compromise via Coordinated DB Config Injection**
 > *Severity: Critical | Score: 1.104*
 > The combination of multiple unprotected security-sensitive fields in the DB config merge logic creates a complete authentication and authorization bypass chain. An attacker with database write access can simultaneously inject malicious values across all authentication vectors. This is not an isolated missing validation, but a systemic control gap.
+
+### 3. Adversarial Red Teaming
+Before any finding reaches the user, it must survive the **Adversary**. This is a cynical "Red Team" agent tasked exclusively with finding reasons why the reported bug is actually safe, intended behavior, or mitigated elsewhere in the codebase. Only findings that survive this adversarial tension make it to the PR comment.
+
+### 4. Dynamic Meta-Dimensions
+PR-AF does not use static review prompts. It begins by running the PR through three parallel lenses: *Semantic* (logic/behavior), *Mechanical* (types/signatures), and *Systemic* (architecture/patterns). These meta-selectors dynamically generate custom, highly specific review criteria tailored exactly to the PR's anatomy, which are then used to dispatch the actual reviewing agents.
 
 *(See the full [Evaluation & Benchmarks](benchmark/agentfield-254/EVALUATION.md) against Claude Code)*
 
