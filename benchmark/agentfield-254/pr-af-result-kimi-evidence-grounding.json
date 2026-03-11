@@ -1,0 +1,1283 @@
+{
+  "findings": [
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `MockStorageProvider` in `config_test.go` has obsolete method signatures for `SetConfig` and `GetConfig` that do not match the updated `StorageProvider` interface. The interface was changed in `storage.go` to use `string` parameters and `*ConfigEntry` return types, plus added `ListConfigs` and `DeleteConfig` methods. The mock still uses the old `interface{}` signatures and lacks the new methods entirely.\n\n**Interface signature (storage.go:132-136):**\n```go\nSetConfig(ctx context.Context, key string, value string, updatedBy string) error\nGetConfig(ctx context.Context, key string) (*ConfigEntry, error)\nListConfigs(ctx context.Context) ([]*ConfigEntry, error)\nDeleteConfig(ctx context.Context, key string) error\n```\n\n**Mock signature (config_test.go:289-297):**\n```go\nSetConfig(ctx context.Context, key string, value interface{}) error  // WRONG: missing updatedBy, wrong type\nGetConfig(ctx context.Context, key string) (interface{}, error)       // WRONG: wrong return type\n// ListConfigs - MISSING entirely\n// DeleteConfig - MISSING entirely\n```\n\nThis is a **compile-breaking issue**. Go's strict interface satisfaction rules mean `MockStorageProvider` no longer implements `StorageProvider`, causing build failures.",
+      "confidence": 1,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "storage-provider-interface-mismatch",
+      "dimension_name": "StorageProvider Interface Implementation Verification",
+      "evidence": "Step 1: StorageProvider interface defines SetConfig with signature `(ctx context.Context, key string, value string, updatedBy string) error` at storage.go:133\nStep 2: MockStorageProvider defines SetConfig with signature `(ctx context.Context, key string, value interface{}) error` at config_test.go:289\nStep 3: Parameter mismatch: interface expects 4 parameters (ctx, key, value, updatedBy) but mock has 3 parameters (ctx, key, value)\nStep 4: Type mismatch: interface expects `value string` but mock accepts `value interface{}`\nStep 5: Return type mismatch for GetConfig: interface expects `(*ConfigEntry, error)` but mock returns `(interface{}, error)` at config_test.go:294-297\nStep 6: Missing methods: MockStorageProvider lacks ListConfigs(ctx) ([]*ConfigEntry, error) and DeleteConfig(ctx, key string) error required by interface at storage.go:135-136",
+      "file_path": "control-plane/internal/handlers/ui/config_test.go",
+      "id": "f_004",
+      "line_end": 297,
+      "line_start": 289,
+      "score": 1.2,
+      "severity": "critical",
+      "suggestion": "Update the MockStorageProvider in config_test.go to match the new interface signatures:\n1. Change `SetConfig(ctx context.Context, key string, value interface{}) error` to `SetConfig(ctx context.Context, key string, value string, updatedBy string) error`\n2. Change `GetConfig(ctx context.Context, key string) (interface{}, error)` to `GetConfig(ctx context.Context, key string) (*storage.ConfigEntry, error)`\n3. Add `ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error)` method\n4. Add `DeleteConfig(ctx context.Context, key string) error` method",
+      "tags": [
+        "compile-error",
+        "interface-mismatch",
+        "test-mock",
+        "breaking-change"
+      ],
+      "title": "MockStorageProvider.SetConfig/GetConfig have obsolete signatures - interface mismatch"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `MockStorageProvider` in `execute_test.go` has obsolete method signatures for `SetConfig` and `GetConfig` that do not match the updated `StorageProvider` interface. The interface was changed in `storage.go` to use `string` parameters and `*ConfigEntry` return types, plus added `ListConfigs` and `DeleteConfig` methods. The mock still uses the old `interface{}` signatures and lacks the new methods entirely.\n\n**Interface signature (storage.go:132-136):**\n```go\nSetConfig(ctx context.Context, key string, value string, updatedBy string) error\nGetConfig(ctx context.Context, key string) (*ConfigEntry, error)\nListConfigs(ctx context.Context) ([]*ConfigEntry, error)\nDeleteConfig(ctx context.Context, key string) error\n```\n\n**Mock signature (execute_test.go:173-178):**\n```go\nSetConfig(ctx context.Context, key string, value interface{}) error  // WRONG: missing updatedBy, wrong type\nGetConfig(ctx context.Context, key string) (interface{}, error)       // WRONG: wrong return type\n// ListConfigs - MISSING entirely\n// DeleteConfig - MISSING entirely\n```\n\nThis is a **compile-breaking issue**. Go's strict interface satisfaction rules mean `MockStorageProvider` no longer implements `StorageProvider`, causing build failures.",
+      "confidence": 1,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "storage-provider-interface-mismatch",
+      "dimension_name": "StorageProvider Interface Implementation Verification",
+      "evidence": "Step 1: StorageProvider interface defines SetConfig with signature `(ctx context.Context, key string, value string, updatedBy string) error` at storage.go:133\nStep 2: MockStorageProvider defines SetConfig with signature `(ctx context.Context, key string, value interface{}) error` at execute_test.go:173\nStep 3: Parameter mismatch: interface expects 4 parameters (ctx, key, value, updatedBy) but mock has 3 parameters (ctx, key, value)\nStep 4: Type mismatch: interface expects `value string` but mock accepts `value interface{}`\nStep 5: Return type mismatch for GetConfig: interface expects `(*ConfigEntry, error)` but mock returns `(interface{}, error)` at execute_test.go:176-178\nStep 6: Missing methods: MockStorageProvider lacks ListConfigs(ctx) ([]*ConfigEntry, error) and DeleteConfig(ctx, key string) error required by interface at storage.go:135-136",
+      "file_path": "control-plane/internal/handlers/execute_test.go",
+      "id": "f_005",
+      "line_end": 178,
+      "line_start": 173,
+      "score": 1.2,
+      "severity": "critical",
+      "suggestion": "Update the MockStorageProvider in execute_test.go to match the new interface signatures:\n1. Change `SetConfig(ctx context.Context, key string, value interface{}) error` to `SetConfig(ctx context.Context, key string, value string, updatedBy string) error`\n2. Change `GetConfig(ctx context.Context, key string) (interface{}, error)` to `GetConfig(ctx context.Context, key string) (*storage.ConfigEntry, error)`\n3. Add `ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error)` method\n4. Add `DeleteConfig(ctx context.Context, key string) error` method",
+      "tags": [
+        "compile-error",
+        "interface-mismatch",
+        "test-mock",
+        "breaking-change"
+      ],
+      "title": "MockStorageProvider.SetConfig/GetConfig have obsolete signatures - interface mismatch"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `MockStorageProvider` in `config_test.go` is missing the two new configuration methods added to the `StorageProvider` interface: `ListConfigs` and `DeleteConfig`. These were added as part of the database-backed configuration storage feature in the PR.\n\n**Required by interface (storage.go:135-136):**\n```go\nListConfigs(ctx context.Context) ([]*ConfigEntry, error)\nDeleteConfig(ctx context.Context, key string) error\n```\n\n**Current state:** Neither method exists in MockStorageProvider\n\nThis causes the mock to fail to implement the interface, resulting in a compile error.",
+      "confidence": 1,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "storage-provider-interface-mismatch",
+      "dimension_name": "StorageProvider Interface Implementation Verification",
+      "evidence": "Step 1: StorageProvider interface at storage.go:40 defines four configuration methods at lines 133-136\nStep 2: MockStorageProvider at config_test.go:25 only implements SetConfig and GetConfig at lines 289-297\nStep 3: ListConfigs method is NOT present in the mock (grep found no match)\nStep 4: DeleteConfig method is NOT present in the mock (grep found no match)\nStep 5: Go compiler will report: 'MockStorageProvider does not implement StorageProvider (missing ListConfigs method)' and similar for DeleteConfig",
+      "file_path": "control-plane/internal/handlers/ui/config_test.go",
+      "id": "f_006",
+      "line_end": 30,
+      "line_start": 25,
+      "score": 1.2,
+      "severity": "critical",
+      "suggestion": "Add the missing methods to MockStorageProvider:\n\n```go\nfunc (m *MockStorageProvider) ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error) {\n    args := m.Called(ctx)\n    if args.Get(0) == nil {\n        return nil, args.Error(1)\n    }\n    return args.Get(0).([]*storage.ConfigEntry), args.Error(1)\n}\n\nfunc (m *MockStorageProvider) DeleteConfig(ctx context.Context, key string) error {\n    args := m.Called(ctx, key)\n    return args.Error(0)\n}\n```",
+      "tags": [
+        "compile-error",
+        "interface-mismatch",
+        "test-mock",
+        "missing-methods"
+      ],
+      "title": "MockStorageProvider missing ListConfigs and DeleteConfig methods"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `MockStorageProvider` in `execute_test.go` is missing the two new configuration methods added to the `StorageProvider` interface: `ListConfigs` and `DeleteConfig`. These were added as part of the database-backed configuration storage feature in the PR.\n\n**Required by interface (storage.go:135-136):**\n```go\nListConfigs(ctx context.Context) ([]*ConfigEntry, error)\nDeleteConfig(ctx context.Context, key string) error\n```\n\n**Current state:** Neither method exists in MockStorageProvider\n\nThis causes the mock to fail to implement the interface, resulting in a compile error.",
+      "confidence": 1,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "storage-provider-interface-mismatch",
+      "dimension_name": "StorageProvider Interface Implementation Verification",
+      "evidence": "Step 1: StorageProvider interface at storage.go:40 defines four configuration methods at lines 133-136\nStep 2: MockStorageProvider at execute_test.go:22 only implements SetConfig and GetConfig at lines 173-178\nStep 3: ListConfigs method is NOT present in the mock (grep found no match)\nStep 4: DeleteConfig method is NOT present in the mock (grep found no match)\nStep 5: Go compiler will report: 'MockStorageProvider does not implement StorageProvider (missing ListConfigs method)' and similar for DeleteConfig",
+      "file_path": "control-plane/internal/handlers/execute_test.go",
+      "id": "f_007",
+      "line_end": 25,
+      "line_start": 22,
+      "score": 1.2,
+      "severity": "critical",
+      "suggestion": "Add the missing methods to MockStorageProvider:\n\n```go\nfunc (m *MockStorageProvider) ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error) {\n    return nil, nil\n}\n\nfunc (m *MockStorageProvider) DeleteConfig(ctx context.Context, key string) error {\n    return nil\n}\n```",
+      "tags": [
+        "compile-error",
+        "interface-mismatch",
+        "test-mock",
+        "missing-methods"
+      ],
+      "title": "MockStorageProvider missing ListConfigs and DeleteConfig methods"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `version` column is auto-incremented during upsert operations but there's no database-level constraint or application-level check to prevent lost updates. When two admins simultaneously update the same config key via `PUT /api/v1/configs/:key`, the second write will overwrite the first without any warning or conflict detection.\n\nThe storage implementation at `local.go:5129-5160` uses `ON CONFLICT DO UPDATE` with `version = config_storage.version + 1`, which is atomic but doesn't validate that the admin read the latest version before updating. This means:\n\n1. Admin A reads config version 5\n2. Admin B reads config version 5\n3. Admin A saves \u2192 version becomes 6\n4. Admin B saves \u2192 version becomes 7 (silently overwriting Admin A's changes)\n\n**Impact**: Configuration changes can be silently lost in multi-admin environments, potentially causing production misconfiguration.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_4",
+      "dimension_name": "Coverage Gap - Database Migration",
+      "evidence": "Step 1: Migration defines `version INTEGER NOT NULL DEFAULT 1` (line 7)\nStep 2: GORM model marks `Version int` with `not null;default:1` tag (models.go:483)\nStep 3: SetConfig() uses upsert: `version = config_storage.version + 1` (local.go:5143,5156)\nStep 4: No version check in WHERE clause or BEFORE UPDATE trigger to validate expected version\nStep 5: ConfigStorageHandlers.SetConfig() accepts no version parameter (config_storage.go:67-100)",
+      "file_path": "control-plane/migrations/028_create_config_storage.sql",
+      "id": "f_017",
+      "line_end": 21,
+      "line_start": 1,
+      "score": 1.14,
+      "severity": "critical",
+      "suggestion": "Add optimistic locking by either:\n1. **Preferred**: Add `expected_version` parameter to PUT endpoint and fail with 409 Conflict if current version != expected\n2. Alternative: Add timestamp-based conflict detection using `updated_at`\n3. Add application-level check in SetConfig: `UPDATE config_storage SET ... WHERE key = ? AND version = ?` then check RowsAffected",
+      "tags": [
+        "concurrency",
+        "data-loss",
+        "api-design",
+        "migration"
+      ],
+      "title": "Version field lacks optimistic locking - concurrent updates cause silent data loss"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `SetConfig` method implements versioning without optimistic locking, causing **silent data loss** when concurrent updates occur.\n\n**The Problem:**\n- Admin A reads config at version 1\n- Admin B reads config at version 1\n- Both admins modify different parts of the config\n- Both call `SetConfig` with their changes\n- Both execute `ON CONFLICT (key) DO UPDATE SET version = config_storage.version + 1`\n- Both result in version = 2\n- **Admin A's changes are silently lost** with no error or warning\n\n**Why this is critical:**\nIn production environments with multiple admins or automated systems updating config, concurrent modifications will result in last-write-wins behavior that loses intermediate changes. The version field provides an **audit trail illusion** - it looks like versioning is working but actually provides no conflict detection.\n\n**Code analysis:**\n```go\nON CONFLICT (key) DO UPDATE SET\n    value = EXCLUDED.value,\n    version = config_storage.version + 1,  // <-- No WHERE clause checking expected version!\n    updated_by = EXCLUDED.updated_by,\n    updated_at = EXCLUDED.updated_at\n```\n\nThis is different from proper optimistic locking which would use:\n```sql\nUPDATE config_storage SET value = ?, version = version + 1 WHERE key = ? AND version = ?\n```",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_3",
+      "dimension_name": "storage layer - ConfigStorageModel versioning and SetConfig implementation",
+      "evidence": "Step 1: Two admins (A and B) both call `GET /api/v1/configs/agentfield.yaml` and receive version=1\nStep 2: Admin A modifies port setting, calls `PUT /api/v1/configs/agentfield.yaml` - succeeds, version becomes 2\nStep 3: Admin B modifies log level, calls `PUT` with payload based on version=1 they read earlier\nStep 4: In local.go:5137-5161, the SQL executes `ON CONFLICT...version + 1` without checking if the update is based on current version\nStep 5: Admin B's update succeeds (version becomes 2), but **Admin A's port change is silently overwritten**\nStep 6: No error is returned - the data loss is undetected",
+      "file_path": "control-plane/internal/storage/local.go",
+      "id": "f_022",
+      "line_end": 5161,
+      "line_start": 5129,
+      "score": 1.14,
+      "severity": "critical",
+      "suggestion": "Implement proper optimistic locking by:\n1. Adding an optional `expectedVersion` parameter to `SetConfig`\n2. Using a transaction with SELECT FOR UPDATE to read current version\n3. Only updating if current version matches expected version\n4. Returning a specific error (e.g., `ErrConfigVersionConflict`) when versions don't match\n5. Updating the handler to accept `If-Match` header with expected version and return 409 Conflict on mismatch",
+      "tags": [
+        "concurrency",
+        "data-loss",
+        "optimistic-locking",
+        "versioning"
+      ],
+      "title": "VERSIONING WITHOUT OPTIMISTIC LOCKING: Concurrent updates cause silent data loss"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The config storage routes at /api/v1/configs/* are registered directly on agentAPI without any authentication middleware, despite the comment claiming they are 'admin-authenticated'. The vulnerability: (1) Line 1552-1553 registers config handlers on agentAPI without authentication. (2) The global APIKeyAuth middleware (line 881) is a no-op when no API key is configured (default state). (3) The AdminTokenAuth middleware used for other admin routes (line 1533) is NOT applied to config routes. (4) This leaves all config CRUD operations (list, get, set, delete, reload) exposed to unauthenticated requests. Attack scenario: Attacker calls GET /api/v1/configs to dump all configuration including secrets. Attacker calls PUT /api/v1/configs/agentfield.yaml with malicious config to modify server behavior. Attacker calls POST /api/v1/configs/reload to trigger immediate config reload. Server loads attacker-controlled configuration on next restart or reload. Impact: Full configuration compromise including admin tokens, storage credentials, DID settings, and feature toggles. This is a complete system compromise vector.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_0",
+      "dimension_name": "Coverage Gap Review - agentfield.yaml config_management capability",
+      "evidence": "Step 1: server.go:1552-1553 registers config handlers on agentAPI without auth middleware. Step 2: agentfield.yaml has no api.auth.api_key set, so APIKeyAuth is no-op (middleware/auth.go:26-28). Step 3: Other admin routes (lines 1532-1548) use AdminTokenAuth but config routes do not. Step 4: config_storage.go:26-31 exposes PUT/DELETE/POST endpoints for config modification. Step 5: Attacker can modify config without any authentication credentials.",
+      "file_path": "control-plane/internal/server/server.go",
+      "id": "f_026",
+      "line_end": 1555,
+      "line_start": 1550,
+      "score": 1.14,
+      "severity": "critical",
+      "suggestion": "Apply authentication middleware to config storage routes. Move config routes under adminGroup (line 1532) to inherit AdminTokenAuth, or add explicit AdminTokenAuth middleware to the config routes group. Example fix: Create a configGroup with agentAPI.Group('') and apply middleware.AdminTokenAuth(s.config.Features.DID.Authorization.AdminToken) before registering routes.",
+      "tags": [
+        "security",
+        "authentication",
+        "authorization",
+        "configuration",
+        "critical"
+      ],
+      "title": "Config storage admin routes exposed without authentication"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed",
+        "ai_generated_pr"
+      ],
+      "body": "The `NodeHealth` struct has 5 fields (CheckInterval, CheckTimeout, ConsecutiveFailures, RecoveryDebounce, HeartbeatStaleThreshold), but `mergeDBConfig()` only handles `CheckInterval`. All other NodeHealth fields from DB config are silently ignored.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "config-merge-completeness",
+      "dimension_name": "Config Merge Completeness and Maintainability",
+      "evidence": "config.go:54-59 defines NodeHealthConfig with 5 fields. config_db.go:59-61 only checks `dbCfg.AgentField.NodeHealth.CheckInterval != 0`. Other fields have no corresponding merge logic.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_010",
+      "line_end": 61,
+      "line_start": 59,
+      "score": 1.037,
+      "severity": "important",
+      "suggestion": "Add merge logic for all NodeHealth fields: CheckTimeout, ConsecutiveFailures, RecoveryDebounce, and HeartbeatStaleThreshold. Consider replacing the entire NodeHealth struct when any field is set, similar to how Approval and DID are handled.",
+      "tags": [
+        "config",
+        "incomplete-merge"
+      ],
+      "title": "Incomplete NodeHealth Merge - Only CheckInterval Is Handled"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed",
+        "ai_generated_pr"
+      ],
+      "body": "The `mergeDBConfig` function at `config_db.go:54-103` selectively merges only specific known config fields from the database, leaving many fields unhandled. This creates a **maintenance hazard** where any new fields added to the `Config` struct will silently be ignored when loading from DB, causing confusion and incomplete configuration application.\n\n**Missing fields NOT merged from DB (partial list):**\n- `AgentFieldConfig.ExecutionQueue` (lines 39, 71-78 in config.go) - Agent call timeout, webhook settings\n- `NodeHealthConfig.CheckTimeout` (line 55) - Health check timeout\n- `NodeHealthConfig.ConsecutiveFailures` (line 56) - Failure threshold\n- `NodeHealthConfig.RecoveryDebounce` (line 57) - Recovery debounce\n- `NodeHealthConfig.HeartbeatStaleThreshold` (line 58) - Staleness threshold\n- `Features.DID.Authorization` (lines 111-135) - DID auth settings, admin tokens, access policies\n- `Features.DID.VCRequirements` (lines 171-179) - VC generation requirements\n- `Features.DID.Keystore` (lines 182-189) - Keystore configuration\n- `API.Auth` (lines 207-212) - API authentication settings\n- `UI.Enabled` (line 27) - UI enabled/disabled flag\n- `UI.SourcePath`, `UI.DistPath`, `UI.DevPort` (lines 29-31) - UI paths and dev port\n\n**Impact:** Users storing config in DB may set values like `execution_queue.agent_call_timeout` or `features.did.authorization.enabled`, but these will be silently ignored. The server continues running with incomplete config, making this a subtle bug that only manifests in production behavior differences.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "partial-config-merge",
+      "dimension_name": "Partial Config Merge Maintenance Hazard",
+      "evidence": "Step 1: Config struct defines AgentField.ExecutionQueue at config.go:39,72-78 with fields: AgentCallTimeout, WebhookTimeout, WebhookMaxAttempts, WebhookRetryBackoff, WebhookMaxRetryBackoff.\nStep 2: mergeDBConfig (config_db.go:54-103) checks AgentField.Port, NodeHealth, ExecutionCleanup, Approval, Features.DID (partially), API.CORS, UI.\nStep 3: ExecutionQueue is never referenced in mergeDBConfig - all queue settings are silently ignored when loading from DB.\nStep 4: This means webhook timeouts and agent call timeouts set via DB config API will have no effect.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_013",
+      "line_end": 103,
+      "line_start": 54,
+      "score": 1.037,
+      "severity": "important",
+      "suggestion": "1. Add comprehensive handling for all current Config struct fields, OR\n2. Implement a reflection-based merge that uses struct tags to determine which fields should be merged (with explicit 'security' or 'nosync' tags to exclude sensitive fields), OR\n3. At minimum, add documentation comments listing all unhandled fields and a TODO/FIXME comment explaining that new fields must be manually added here\n\nRecommended approach: Add a struct tag like `merge:\"true\"` to fields that should be synced from DB, then use reflection to automatically merge those fields while preserving security-sensitive ones.",
+      "tags": [
+        "config",
+        "database",
+        "maintenance-hazard",
+        "silent-failure",
+        "incomplete-implementation"
+      ],
+      "title": "Missing Config Fields in mergeDBConfig Creates Silent Failures"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed",
+        "ai_generated_pr"
+      ],
+      "body": "The DIDConfig struct has 8 fields (Enabled, Method, KeyAlgorithm, DerivationMethod, KeyRotationDays, VCRequirements, Keystore, Authorization), but `mergeDBConfig()` only checks if `Method != \"\"` and then replaces the entire struct. This means:\n1. If DB only sets `Enabled: false` without Method, the entire DID config is ignored\n2. Individual DID field updates from DB are not supported - it's all-or-nothing based on Method\n3. VCRequirements, Keystore, and Authorization sub-configs from DB are never applied",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "config-merge-completeness",
+      "dimension_name": "Config Merge Completeness and Maintainability",
+      "evidence": "config.go:100-109 defines DIDConfig with 8 fields. config_db.go:87-89 only checks `dbCfg.Features.DID.Method != \"\"` before replacing entire struct. No handling for VCRequirements (lines 171-179), Keystore (lines 182-189), or Authorization (lines 112-135).",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_011",
+      "line_end": 89,
+      "line_start": 87,
+      "score": 0.983,
+      "severity": "important",
+      "suggestion": "Either handle DIDConfig fields individually (like ExecutionCleanup) or check for any non-zero DID field before replacing the struct. Ensure sub-structs (VCRequirements, Keystore, Authorization) are also considered.",
+      "tags": [
+        "config",
+        "incomplete-merge"
+      ],
+      "title": "DIDConfig Merge Only Checks Method Field - Other DID Settings Ignored"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed",
+        "ai_generated_pr"
+      ],
+      "body": "The CORSConfig struct has 5 fields, but `mergeDBConfig()` only checks `AllowedOrigins`. If the DB config specifies `AllowedMethods`, `AllowedHeaders`, `ExposedHeaders`, or `AllowCredentials` without `AllowedOrigins`, those settings are silently ignored.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "config-merge-completeness",
+      "dimension_name": "Config Merge Completeness and Maintainability",
+      "evidence": "config.go:198-204 defines CORSConfig with 5 fields (AllowedOrigins, AllowedMethods, AllowedHeaders, ExposedHeaders, AllowCredentials). config_db.go:95-97 only checks `len(dbCfg.API.CORS.AllowedOrigins) > 0`.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_012",
+      "line_end": 97,
+      "line_start": 95,
+      "score": 0.983,
+      "severity": "important",
+      "suggestion": "Expand the condition to check for any non-zero CORS field: `len(dbCfg.API.CORS.AllowedOrigins) > 0 || len(dbCfg.API.CORS.AllowedMethods) > 0 || ...` or check each field individually.",
+      "tags": [
+        "config",
+        "incomplete-merge"
+      ],
+      "title": "CORSConfig Partial Merge - Only AllowedOrigins Is Checked"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `mergeDBConfig()` function only handles a subset of configuration fields, causing **silent data loss** when config is loaded from the database. Users storing complete config in the DB will find that most fields are ignored without warning.\n\n**Fields that ARE merged (minimal subset):**\n- `AgentField.Port`\n- `AgentField.NodeHealth.CheckInterval` (only this one field - other NodeHealth fields ignored)\n- `AgentField.ExecutionCleanup` (all 6 fields merged individually)\n- `AgentField.Approval` (both fields)\n- `Features.DID.Method` (entire struct replaced if Method is set)\n- `API.CORS` (only if AllowedOrigins has items)\n- `UI` (entire struct replaced if Mode is set)\n\n**Fields NOT merged from DB (will be silently ignored):**\n\n**ExecutionQueueConfig (lines 72-78 in config.go):**\n- `AgentField.ExecutionQueue.AgentCallTimeout`\n- `AgentField.ExecutionQueue.WebhookTimeout`\n- `AgentField.ExecutionQueue.WebhookMaxAttempts`\n- `AgentField.ExecutionQueue.WebhookRetryBackoff`\n- `AgentField.ExecutionQueue.WebhookMaxRetryBackoff`\n\n**NodeHealthConfig (lines 54-59 in config.go):**\n- `AgentField.NodeHealth.CheckTimeout`\n- `AgentField.NodeHealth.ConsecutiveFailures`\n- `AgentField.NodeHealth.RecoveryDebounce`\n- `AgentField.NodeHealth.HeartbeatStaleThreshold`\n\n**DIDConfig (lines 100-109 in config.go):**\n- `Features.DID.Enabled`\n- `Features.DID.KeyAlgorithm`\n- `Features.DID.DerivationMethod`\n- `Features.DID.KeyRotationDays`\n\n**VCRequirements (lines 171-179 in config.go):**\n- `Features.DID.VCRequirements.RequireVCForRegistration`\n- `Features.DID.VCRequirements.RequireVCForExecution`\n- `Features.DID.VCRequirements.RequireVCForCrossAgent`\n- `Features.DID.VCRequirements.StoreInputOutput`\n- `Features.DID.VCRequirements.HashSensitiveData`\n- `Features.DID.VCRequirements.PersistExecutionVC`\n- `Features.DID.VCRequirements.StorageMode`\n\n**KeystoreConfig (lines 182-189 in config.go):**\n- `Features.DID.Keystore.Type`\n- `Features.DID.Keystore.Path`\n- `Features.DID.Keystore.Encryption`\n- `Features.DID.Keystore.EncryptionPassphrase`\n- `Features.DID.Keystore.BackupEnabled`\n- `Features.DID.Keystore.BackupInterval`\n\n**AuthorizationConfig (lines 112-135 in config.go):**\n- `Features.DID.Authorization.Enabled`\n- `Features.DID.Authorization.DIDAuthEnabled`\n- `Features.DID.Authorization.Domain`\n- `Features.DID.Authorization.TimestampWindowSeconds`\n- `Features.DID.Authorization.DefaultApprovalDurationHours`\n- `Features.DID.Authorization.AdminToken`\n- `Features.DID.Authorization.InternalToken`\n- `Features.DID.Authorization.TagApprovalRules` (all subfields)\n- `Features.DID.Authorization.AccessPolicies` (all subfields)\n\n**CORSConfig partial (lines 198-204 in config.go):**\n- `API.CORS.AllowedMethods` (not merged even if DB has values)\n- `API.CORS.AllowedHeaders` (not merged even if DB has values)\n- `API.CORS.ExposedHeaders` (not merged even if DB has values)\n- `API.CORS.AllowCredentials` (not merged even if DB has values)\n\nThis is a **semantic drift hazard** - future developers adding new config fields will almost certainly forget to update `mergeDBConfig()`, causing silent failures where DB config values are ignored.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "config-merge-completeness",
+      "dimension_name": "Config Merge Completeness and Maintainability",
+      "evidence": "mergeDBConfig() at config_db.go:54-102 only has merge logic for:\n- AgentField.Port (line 56-58)\n- AgentField.NodeHealth.CheckInterval (line 59-61)\n- AgentField.ExecutionCleanup.* (lines 63-81)\n- AgentField.Approval (lines 82-84)\n- Features.DID.Method (lines 87-89)\n- API.CORS.AllowedOrigins (lines 95-97)\n- UI.Mode (lines 100-102)\n\nconfig.go shows many additional fields in AgentFieldConfig (ExecutionQueue), DIDConfig (Enabled, KeyAlgorithm, DerivationMethod, KeyRotationDays, VCRequirements, Keystore, Authorization), and CORSConfig (AllowedMethods, AllowedHeaders, ExposedHeaders, AllowCredentials) that have no corresponding merge logic.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_008",
+      "line_end": 102,
+      "line_start": 54,
+      "score": 0.798,
+      "severity": "important",
+      "suggestion": "Replace the manual field-by-field merge with a generic deep-merge approach using reflection or a library like `mergo`. Alternatively, use a whitelist approach with explicit validation that fails if unknown fields are present in the DB config. At minimum, add a comment at the top of Config struct in config.go warning developers that new fields must be added to mergeDBConfig().",
+      "tags": [
+        "config",
+        "maintainability",
+        "silent-failure",
+        "data-loss"
+      ],
+      "title": "Partial Config Merge - Many Config Fields Silently Ignored from DB"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `SetConfig` handler at `control-plane/internal/handlers/config_storage.go:67-78` accepts raw YAML via `io.ReadAll()` and stores it directly to the database without any validation. Only basic checks are performed (empty body at line 75-77), but **no YAML syntax validation** or **schema validation** occurs.\n\n**The Attack Scenario:**\n1. Attacker with API access calls `PUT /api/v1/configs/agentfield.yaml` with malformed YAML (e.g., invalid indentation, invalid types, or non-existent fields)\n2. Handler accepts and stores it successfully (line 85: `h.storage.SetConfig()`)\n3. Server continues running normally with current config\n4. On next restart with `AGENTFIELD_CONFIG_SOURCE=db`, `overlayDBConfig()` attempts to parse the invalid YAML at `config_db.go:37`\n5. `yaml.Unmarshal()` fails, returning an error\n6. At `server.go:109-110`, this error only prints a warning and the server continues with file/env config\n7. **Result**: Expected DB config is silently ignored, potentially causing production downtime or configuration drift\n\n**Why This Matters:**\n- In production environments using `AGENTFIELD_CONFIG_SOURCE=db`, operators expect the database to be the source of truth\n- Invalid config only surfaces during restart, which may be delayed hours/days after the bad config was stored\n- The silent fallback to file config can mask critical misconfigurations and cause cluster inconsistency",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "config-validation-gap",
+      "dimension_name": "Config Storage Validation Gap",
+      "evidence": "Step 1: Client calls `PUT /api/v1/configs/:key` endpoint at `config_storage.go:67`\nStep 2: Handler reads body at line 70: `body, err := io.ReadAll(c.Request.Body)`\nStep 3: Handler only checks `len(body) == 0` at lines 75-77 - no YAML validation\nStep 4: Handler stores raw body to DB at line 85: `h.storage.SetConfig(c.Request.Context(), key, string(body), updatedBy)`\nStep 5: On server restart with `AGENTFIELD_CONFIG_SOURCE=db`, `NewAgentFieldServer()` calls `overlayDBConfig(cfg, storageProvider)` at `server.go:108-109`\nStep 6: `overlayDBConfig()` calls `yaml.Unmarshal([]byte(entry.Value), &dbCfg)` at `config_db.go:37`\nStep 7: If YAML is malformed, error is returned: `fmt.Errorf(\"failed to parse database config YAML: %w\", err)`\nStep 8: At `server.go:109-110`, error is only logged as warning: `fmt.Printf(\"Warning: failed to load config from database: %v\\n\", err)`\nStep 9: Server continues startup with potentially stale file/env config instead of expected DB config",
+      "file_path": "control-plane/internal/handlers/config_storage.go",
+      "id": "f_016",
+      "line_end": 78,
+      "line_start": 67,
+      "score": 0.798,
+      "severity": "important",
+      "suggestion": "Add YAML validation in `SetConfig` handler before storing to database:\n\n1. **Immediate fix**: After reading body at line 70, validate it's valid YAML:\n```go\n// Validate YAML syntax\nvar yamlTest map[string]interface{}\nif err := yaml.Unmarshal(body, &yamlTest); err != nil {\n    c.JSON(http.StatusBadRequest, gin.H{\"error\": \"invalid YAML syntax\", \"details\": err.Error()})\n    return\n}\n```\n\n2. **Stronger validation**: Parse into actual Config struct to catch type mismatches:\n```go\nvar cfgTest config.Config\nif err := yaml.Unmarshal(body, &cfgTest); err != nil {\n    c.JSON(http.StatusBadRequest, gin.H{\"error\": \"invalid config schema\", \"details\": err.Error()})\n    return\n}\n```\n\n3. **Consider dry-run reload**: If `reloadFn` is available, attempt a config reload with the new YAML before persisting to catch runtime issues.",
+      "tags": [
+        "validation",
+        "yaml",
+        "config",
+        "security",
+        "availability"
+      ],
+      "title": "SetConfig accepts invalid YAML without validation, causing delayed startup failures"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The migration sets `DEFAULT NOW()` for both `created_at` and `updated_at`, but lacks a database-level trigger to automatically update `updated_at` on row modification. While the Go implementation in `local.go` explicitly sets `updated_at` during upserts, this creates a risk for:\n\n1. Direct database updates via SQL console or admin tools won't update the timestamp\n2. Future code that uses GORM's generic Update() instead of the custom SetConfig() will fail to update the timestamp\n3. Data migration scripts or external tools won't maintain audit trail accuracy\n\n**Related risk**: The GORM model uses `autoUpdateTime` tag (models.go:487) which GORM handles automatically, but the storage layer bypasses GORM with raw SQL, creating inconsistency in behavior.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_4",
+      "dimension_name": "Coverage Gap - Database Migration",
+      "evidence": "Step 1: Migration line 11: `updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()` - only sets on INSERT\nStep 2: No `ON UPDATE` trigger or `GENERATED ALWAYS AS` clause present\nStep 3: GORM model line 487 uses `autoUpdateTime` but storage implementation bypasses GORM\nStep 4: local.go:5138-5160 uses raw SQL upsert which manually sets updated_at\nStep 5: If someone uses GORM db.Save(&model) directly, updated_at won't update due to schema limitation",
+      "file_path": "control-plane/migrations/028_create_config_storage.sql",
+      "id": "f_018",
+      "line_end": 11,
+      "line_start": 10,
+      "score": 0.714,
+      "severity": "important",
+      "suggestion": "Add database-level trigger to auto-update `updated_at` on any row modification:\n```sql\nCREATE OR REPLACE FUNCTION update_updated_at_column()\nRETURNS TRIGGER AS $$\nBEGIN\n    NEW.updated_at = NOW();\n    RETURN NEW;\nEND;\n$$ language 'plpgsql';\n\nCREATE TRIGGER update_config_storage_updated_at\n    BEFORE UPDATE ON config_storage\n    FOR EACH ROW\n    EXECUTE FUNCTION update_updated_at_column();\n```",
+      "tags": [
+        "data-integrity",
+        "audit-trail",
+        "schema-design"
+      ],
+      "title": "Missing ON UPDATE trigger for updated_at timestamp"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The config_management capability is added with enabled: true and read_only: false by default. This creates a privilege escalation risk if the connector token is compromised. The risk: (1) Connector routes (server.go:1558-1578) allow config management via connector token. (2) The connector token is a single shared secret stored in config (line 132: token: test-connector-token-123). (3) If an attacker obtains the connector token (via log leak, config exposure, etc.), they can modify configuration via /api/v1/connector/configs/* routes, change security settings, disable auth, redirect storage, and escalate from connector access to full control plane compromise. Current protections: config_db.go intentionally skips merging connector config from DB (good), but attacker can still modify OTHER critical sections (DID auth, storage, features). The connector is designed for SaaS integration with limited scope, but config_management gives it effectively full control over the control plane configuration. This violates the principle of least privilege.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_0",
+      "dimension_name": "Coverage Gap Review - agentfield.yaml config_management capability",
+      "evidence": "Step 1: agentfield.yaml:149-151 sets config_management enabled=true, read_only=false. Step 2: server.go:1560 applies ConnectorTokenAuth to connector routes. Step 3: server.go:1574 applies ConnectorCapabilityCheck middleware. Step 4: config_storage.go:26-31 exposes full CRUD via RegisterRoutes. Step 5: Compromised connector token leads to ability to modify any config except connector section.",
+      "file_path": "control-plane/config/agentfield.yaml",
+      "id": "f_027",
+      "line_end": 151,
+      "line_start": 149,
+      "score": 0.714,
+      "severity": "important",
+      "suggestion": "Change the default to enabled: false or at minimum read_only: true. Example: config_management: enabled: false (users must explicitly enable after understanding risks), read_only: true (or enable but restrict to read-only by default). Alternatively, require explicit opt-in via environment variable for write access.",
+      "tags": [
+        "security",
+        "connector",
+        "capabilities",
+        "privilege-escalation"
+      ],
+      "title": "config_management capability enabled by default with write access"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `key` column is defined as `TEXT NOT NULL UNIQUE` without any length constraint or validation pattern. While this provides flexibility, it allows insertion of extremely large keys (up to 1GB in PostgreSQL) which could cause:\n\n1. **Performance issues**: Index `idx_config_storage_key` on large TEXT values increases storage and lookup overhead\n2. **API abuse**: Malicious actors could create configs with multi-MB keys causing DoS\n3. **UI/display issues**: The web UI and logs may truncate or fail to display extremely long keys\n4. **Storage waste**: Index entries for large text consume significant disk space\n\n**Context**: The primary use case is `agentfield.yaml` as the config key (as seen in config_db.go:13), which is short and predictable. There's no business requirement for arbitrary-length keys.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_4",
+      "dimension_name": "Coverage Gap - Database Migration",
+      "evidence": "Step 1: Migration line 5 defines `key TEXT NOT NULL UNIQUE`\nStep 2: No CHECK constraint or length validation present\nStep 3: Index at line 14 `idx_config_storage_key` will index full TEXT values\nStep 4: config_db.go:13 shows expected key is `agentfield.yaml` (14 chars)\nStep 5: config_storage.go handlers accept arbitrary key strings from URL path",
+      "file_path": "control-plane/migrations/028_create_config_storage.sql",
+      "id": "f_019",
+      "line_end": 5,
+      "line_start": 5,
+      "score": 0.672,
+      "severity": "important",
+      "suggestion": "Add length constraint to key column:\n```sql\n-- Add to migration\nkey VARCHAR(255) NOT NULL UNIQUE CHECK (LENGTH(key) > 0 AND LENGTH(key) <= 255)\n```\nOr add validation at application layer in SetConfig handler before storage call.",
+      "tags": [
+        "data-validation",
+        "performance",
+        "security",
+        "dos"
+      ],
+      "title": "key column uses TEXT type without length limit or validation"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `GetConfig` method at line 5186-5187 returns `nil, nil` when config is not found, using string comparison `err.Error() == \"sql: no rows in result set\"` instead of the standard `errors.Is(err, sql.ErrNoRows)`.\n\n**Issues:**\n1. **Fragile error detection**: String comparison instead of `errors.Is()` may fail with different drivers or wrapped errors\n2. **Silent failures**: The handler in `config_storage.go` calls `GetConfig` after `SetConfig` to return saved state. If this call returns `nil, nil` (due to race condition where config was deleted between insert and select), the handler returns 500 with misleading error even though SetConfig succeeded.\n\nThis creates the scenario mentioned in the PR context: \"Error handling inconsistency: SetConfig calls storage.SetConfig(), then immediately calls storage.GetConfig() to return saved entry. If GetConfig fails, handler returns 500 error even though config WAS saved successfully\"",
+      "confidence": 0.75,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_3",
+      "dimension_name": "storage layer - ConfigStorageModel versioning and SetConfig implementation",
+      "evidence": "Step 1: Handler calls `storage.SetConfig()` successfully\nStep 2: Handler immediately calls `storage.GetConfig()` at config_storage.go:91-94\nStep 3: If GetConfig returns `nil, nil` (not found), handler checks `if err != nil` only\nStep 4: Handler proceeds with `nil` entry causing nil pointer dereference or returns incorrect response\nStep 5: Client receives 500 error despite config being successfully saved",
+      "file_path": "control-plane/internal/storage/local.go",
+      "id": "f_023",
+      "line_end": 5191,
+      "line_start": 5164,
+      "score": 0.63,
+      "severity": "important",
+      "suggestion": "1. Use `errors.Is(err, sql.ErrNoRows)` instead of string comparison at line 5186\n2. Consider returning a typed error like `ErrConfigNotFound` for missing configs\n3. Document in the `StorageProvider` interface what callers should expect for 'not found' cases",
+      "tags": [
+        "error-handling",
+        "api-contract",
+        "nil-safety"
+      ],
+      "title": "INCONSISTENT ERROR HANDLING: GetConfig returns nil on 'not found' but storage.go contract is unclear"
+    },
+    {
+      "active_multipliers": [
+        "cross_ref_compound",
+        "ai_generated_pr"
+      ],
+      "body": "Multiple background goroutines access `s.config` fields during server startup without any mutex protection. These goroutines run concurrently and can race with config reload operations.\n\n**Affected goroutines:**\n1. **healthMonitor** (line 164): Reads `cfg.AgentField.NodeHealth.*` fields at startup\n2. **statusManager** (line 144): Reads config during initialization\n3. **presenceManager** (line 155): Uses status config\n4. **webhookDispatcher** (lines 366-371): Reads `cfg.AgentField.ExecutionQueue.*`\n5. **observabilityForwarder** (lines 377-389): Reads config fields\n6. **cleanupService** (line 392): Uses `cfg.AgentField.ExecutionCleanup`\n\nIf config is reloaded via `POST /api/v1/configs/reload` while these services are running, data races occur when they read config fields that are being modified.",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "thread-safety-mutex-usage",
+      "dimension_name": "Thread Safety - Config Reload Mutex",
+      "evidence": "Step 1: healthMonitor reads cfg.AgentField.NodeHealth at line 161-165\nStep 2: webhookDispatcher reads cfg.AgentField.ExecutionQueue.WebhookTimeout at line 367\nStep 3: cleanupService reads cfg.AgentField.ExecutionCleanup at line 392\nStep 4: All these goroutines start at lines 450-485 and run concurrently\nStep 5: Config reload via overlayDBConfig() modifies these same fields without synchronization",
+      "file_path": "control-plane/internal/server/server.go",
+      "id": "f_002",
+      "line_end": 167,
+      "line_start": 133,
+      "score": 0.378,
+      "severity": "suggestion",
+      "suggestion": "For each goroutine that reads config, wrap the config access with `s.configMu.RLock()` and `defer s.configMu.RUnlock()`. Alternatively, consider making config reload an atomic pointer swap rather than in-place modification.",
+      "tags": [
+        "data-race",
+        "goroutines",
+        "config-read",
+        "concurrency"
+      ],
+      "title": "Important: Background goroutines read s.config without mutex protection"
+    },
+    {
+      "active_multipliers": [
+        "adversary_challenged",
+        "ai_generated_pr"
+      ],
+      "body": "While the code correctly excludes `Connector` config (token, capabilities) from DB merge with a clear security comment (lines 90-92), it also silently omits `Features.DID.Authorization` which contains equally security-sensitive fields like `AdminToken`, `InternalToken`, `AccessPolicies`, and `DIDAuthEnabled` (config.go:111-135).\n\nThe DID Authorization struct contains:\n- `AdminToken` - Separate token for admin operations\n- `InternalToken` - Used for Authorization: Bearer header to agents\n- `Domain` - Domain for did:web identifiers\n- `AccessPolicies` - Tag-based authorization policies\n\nThese fields are **not merged from DB** despite being security-relevant, but unlike the Connector exclusion, there's no explanatory comment. This inconsistency makes it unclear whether the omission is intentional (security) or accidental (incomplete implementation).",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "partial-config-merge",
+      "dimension_name": "Partial Config Merge Maintenance Hazard",
+      "evidence": "Step 1: DIDConfig.Authorization struct at config.go:111-135 defines security-sensitive fields: AdminToken, InternalToken, AccessPolicies, DIDAuthEnabled.\nStep 2: mergeDBConfig only checks dbCfg.Features.DID.Method at line 87, then assigns entire DID struct.\nStep 3: DID.Authorization is part of DID struct but never specifically handled - it would be zeroed if only Method is set, or copied wholesale if any Method is set.\nStep 4: No security comment explains why these sensitive fields are treated differently from Connector config.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_014",
+      "line_end": 92,
+      "line_start": 86,
+      "score": 0.357,
+      "severity": "important",
+      "suggestion": "Add an explicit comment explaining why DID.Authorization fields are excluded from DB merge, similar to the Connector comment:\n\n```go\n// NOTE: DID.Authorization config (admin_token, internal_token, access_policies) is\n// intentionally NOT merged from DB for security, similar to connector config.\n// Only DID.Method is merged as it affects VC generation behavior.\n```",
+      "tags": [
+        "config",
+        "security",
+        "inconsistency",
+        "documentation"
+      ],
+      "title": "Inconsistent Security Field Handling - DID.Authorization Omitted Without Comment"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "There is no automated mechanism (build-time check, code generation, or test) to ensure that `mergeDBConfig()` stays synchronized with the `Config` struct definition. When new fields are added to `config.Config`, developers must manually remember to update `mergeDBConfig()` in a different file. This is a classic source of drift bugs.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "config-merge-completeness",
+      "dimension_name": "Config Merge Completeness and Maintainability",
+      "evidence": "mergeDBConfig() comment at line 52-53 states 'selectively merges' but provides no mechanism to ensure completeness. The function and Config struct are in separate files (config_db.go vs config.go) increasing the likelihood of drift.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_009",
+      "line_end": 54,
+      "line_start": 52,
+      "score": 0.306,
+      "severity": "suggestion",
+      "suggestion": "Consider adding a build tag or go:generate directive that uses reflection to verify all exported fields in Config have corresponding merge logic. Alternatively, add a unit test that uses reflection to compare the Config struct fields against known merged fields and fails if new fields are detected without test coverage in mergeDBConfig.",
+      "tags": [
+        "maintainability",
+        "automation",
+        "testing-gap"
+      ],
+      "title": "No Automated Sync Check Between Config Struct and Merge Function"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The function comment at lines 52-53 describes what the function does but does not warn maintainers that this function must be updated whenever new config fields are added. The field-by-field merge approach creates a **compile-time blind spot** - the code compiles successfully even when Config struct has fields not handled here.\n\nA maintainer adding a new field to `Config` struct will have no indication that they also need to add handling here unless they happen to read this file. This is exactly the type of issue that caused the ExecutionCleanup bug requiring the a8bfc8c fix commit.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "partial-config-merge",
+      "dimension_name": "Partial Config Merge Maintenance Hazard",
+      "evidence": "Step 1: Function comment at lines 52-53 says 'selectively merges' and 'Only non-zero/non-empty values' but gives no warning about the maintenance requirement.\nStep 2: Config struct has 15+ fields/sub-structs (config.go:17-23, 34-41, etc.).\nStep 3: mergeDBConfig handles only 7 specific field paths (Port, NodeHealth.CheckInterval, ExecutionCleanup.*, Approval, DID.Method, API.CORS, UI).\nStep 4: No compile-time or comment-based guard exists to warn when Config grows but mergeDBConfig doesn't.",
+      "file_path": "control-plane/internal/server/config_db.go",
+      "id": "f_015",
+      "line_end": 53,
+      "line_start": 52,
+      "score": 0.288,
+      "severity": "suggestion",
+      "suggestion": "Add a prominent TODO/FIXME comment at the top of mergeDBConfig:\n\n```go\n// TODO: This function must be updated when adding new config fields.\n// Currently missing: ExecutionQueue, NodeHealth (partial), DID.Authorization,\n// DID.VCRequirements, DID.Keystore, API.Auth, UI.Enabled, etc.\n// Consider using reflection-based merging with struct tags to avoid\n// this maintenance burden (see also: viper's automatic config merging).\n```",
+      "tags": [
+        "config",
+        "documentation",
+        "maintenance-hazard"
+      ],
+      "title": "Missing TODO/FIXME Comment Warning About Maintenance Burden"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "In `GetConfig` (lines 5180-5184), the SQL uses `COALESCE(created_by, '')` and `COALESCE(updated_by, '')` to handle NULL values.\n\n**Issues:**\n1. **Loss of semantic meaning**: Empty string `\"\"` and NULL have different meanings - NULL means \"unknown/system\" while empty string could mean \"intentionally blank\"\n2. **Inconsistent with model**: `ConfigStorageModel` uses `*string` pointers for these fields indicating they can be NULL\n3. **ConfigEntry uses non-pointer**: The `ConfigEntry` struct in storage.go:30-38 uses plain `string` not `*string`, forcing the COALESCE\n\nThis makes it impossible to distinguish between \"created by system (NULL)\" and \"created by user with empty name (empty string)\".",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_3",
+      "dimension_name": "storage layer - ConfigStorageModel versioning and SetConfig implementation",
+      "evidence": "storage.go:30-38 defines ConfigEntry with `CreatedBy string` and `UpdatedBy string` (no pointers)\n\nlocal.go:5180-5181 uses `COALESCE(created_by, '')` and `COALESCE(updated_by, '')` to handle NULLs because ConfigEntry can't hold NULL\n\nmodels.go:484-485 defines `CreatedBy *string` and `UpdatedBy *string` as pointers in the model",
+      "file_path": "control-plane/internal/storage/local.go",
+      "id": "f_025",
+      "line_end": 5184,
+      "line_start": 5179,
+      "score": 0.252,
+      "severity": "suggestion",
+      "suggestion": "Change `ConfigEntry` to use `*string` for `CreatedBy` and `UpdatedBy`:\n```go\ntype ConfigEntry struct {\n    Key       string     `json:\"key\"`\n    Value     string     `json:\"value\"`\n    Version   int        `json:\"version\"`\n    CreatedBy *string    `json:\"created_by,omitempty\"`  // Use pointer\n    UpdatedBy *string    `json:\"updated_by,omitempty\"`  // Use pointer\n    CreatedAt time.Time  `json:\"created_at\"`\n    UpdatedAt time.Time  `json:\"updated_at\"`\n}\n```\n\nRemove COALESCE from SQL and scan directly into pointer fields.",
+      "tags": [
+        "api-design",
+        "null-handling",
+        "audit-trail"
+      ],
+      "title": "AMBIGUOUS NULL HANDLING: COALESCE converts NULL to empty string losing audit information"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `created_by` and `updated_by` columns are defined as nullable TEXT without foreign key constraints or validation. This design allows arbitrary strings that may not correspond to actual users in the system, making the audit trail unreliable.\n\n**Trade-offs**: Adding FK constraints to a users table would require that table to exist and be populated, which may not be true in all deployment scenarios (e.g., API-only authentication). However, even without FK constraints, the application should validate these values against authenticated principals.",
+      "confidence": 0.65,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_4",
+      "dimension_name": "Coverage Gap - Database Migration",
+      "evidence": "Step 1: Migration lines 8-9: `created_by TEXT` and `updated_by TEXT` - no constraints\nStep 2: GORM model lines 484-485 uses `*string` pointers allowing NULL\nStep 3: config_storage.go:76-78 extracts `updatedBy` from context but has no validation\nStep 4: No users/agents table reference exists to validate against",
+      "file_path": "control-plane/migrations/028_create_config_storage.sql",
+      "id": "f_020",
+      "line_end": 9,
+      "line_start": 8,
+      "score": 0.234,
+      "severity": "suggestion",
+      "suggestion": "Consider either:\n1. Add CHECK constraint to validate format (e.g., must be valid UUID or email)\n2. Document that application layer must validate principals before storage\n3. Add comment explaining audit trail limitations for external tools",
+      "tags": [
+        "audit-trail",
+        "data-integrity",
+        "documentation"
+      ],
+      "title": "created_by/updated_by lack referential integrity constraints"
+    },
+    {
+      "active_multipliers": [
+        "ai_generated_pr"
+      ],
+      "body": "The `ConfigStorageModel` struct defines a `key` field with `uniqueIndex` but no constraints on key format, length, or allowed characters.\n\n**Potential issues:**\n1. Empty string keys allowed (no `NOT NULL` constraint validation at struct level)\n2. No maximum length enforcement\n3. No validation that keys follow expected naming conventions (e.g., no path traversal characters like `../` or `..\\`)\n\nWhile the API layer may validate, defense-in-depth suggests the storage layer should also enforce constraints.",
+      "confidence": 0.6,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "cluster_3",
+      "dimension_name": "storage layer - ConfigStorageModel versioning and SetConfig implementation",
+      "evidence": "models.go:479-488 shows ConfigStorageModel with `gorm:\"column:key;not null;uniqueIndex\"` - the `not null` is present but there's no size limit or format validation\n\nlocal.go:5129-5161 SetConfig accepts any key string and passes directly to SQL without validation",
+      "file_path": "control-plane/internal/storage/models.go",
+      "id": "f_024",
+      "line_end": 490,
+      "line_start": 476,
+      "score": 0.216,
+      "severity": "suggestion",
+      "suggestion": "Add GORM validation tags and constraints:\n```go\ntype ConfigStorageModel struct {\n    ID        int64     `gorm:\"column:id;primaryKey;autoIncrement\"`\n    Key       string    `gorm:\"column:key;not null;uniqueIndex;size:255\"`  // Add NOT NULL and size limit\n    Value     string    `gorm:\"column:value;type:text;not null\"`\n    // ...\n}\n```\n\nConsider adding application-level validation in `SetConfig` to reject keys containing path separators or control characters.",
+      "tags": [
+        "validation",
+        "data-integrity",
+        "security"
+      ],
+      "title": "MISSING DATABASE CONSTRAINTS: ConfigStorageModel lacks validation for key format"
+    },
+    {
+      "active_multipliers": [
+        "cross_ref_compound",
+        "ai_generated_pr"
+      ],
+      "body": "The `configMu sync.RWMutex` field is declared in the AgentFieldServer struct at line 82, but there are **zero** usages of this mutex in the entire file.\n\nSearch results for 'configMu':\n- Line 82: Declaration only\n- NO calls to configMu.Lock()\n- NO calls to configMu.Unlock()\n- NO calls to configMu.RLock()\n- NO calls to configMu.RUnlock()\n\nThe mutex was added to the struct but never actually locked or unlocked. This makes it completely ineffective for preventing data races.",
+      "confidence": 0.99,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "thread-safety-mutex-usage",
+      "dimension_name": "Thread Safety - Config Reload Mutex",
+      "evidence": "Step 1: grep for 'configMu' in server.go shows only line 82 (declaration)\nStep 2: No Lock(), Unlock(), RLock(), or RUnlock() calls found\nStep 3: The mutex exists but provides zero protection\nStep 4: This indicates incomplete implementation of the thread-safety feature",
+      "file_path": "control-plane/internal/server/server.go",
+      "id": "f_001",
+      "line_end": 82,
+      "line_start": 82,
+      "score": 0.178,
+      "severity": "nitpick",
+      "suggestion": "Either:\n1. Add proper mutex protection around all config reads and writes (configMu.Lock() in configReloadFn, configMu.RLock() in goroutines that read config)\n2. OR remove the unused field if config reloading isn't meant to be thread-safe\n\nRecommended approach: Add RLock() around config reads in background goroutines like healthMonitor, presenceManager, etc.",
+      "tags": [
+        "unused-code",
+        "mutex",
+        "incomplete-implementation"
+      ],
+      "title": "Important: configMu mutex is declared but NEVER used anywhere"
+    }
+  ],
+  "metadata": {
+    "agent_invocations": 21,
+    "anatomy": {
+      "blast_radius": [],
+      "clusters": [
+        {
+          "description": "",
+          "files": [
+            "control-plane/config/agentfield.yaml"
+          ],
+          "id": "cluster_0",
+          "name": "control-plane/config",
+          "primary_language": "yaml"
+        },
+        {
+          "description": "",
+          "files": [
+            "control-plane/internal/handlers/config_storage.go"
+          ],
+          "id": "cluster_1",
+          "name": "control-plane/internal/handlers",
+          "primary_language": "go"
+        },
+        {
+          "description": "",
+          "files": [
+            "control-plane/internal/server/config_db.go",
+            "control-plane/internal/server/server.go",
+            "control-plane/internal/server/server_routes_test.go"
+          ],
+          "id": "cluster_2",
+          "name": "control-plane/internal/server",
+          "primary_language": "go"
+        },
+        {
+          "description": "",
+          "files": [
+            "control-plane/internal/storage/local.go",
+            "control-plane/internal/storage/migrations.go",
+            "control-plane/internal/storage/models.go",
+            "control-plane/internal/storage/storage.go"
+          ],
+          "id": "cluster_3",
+          "name": "control-plane/internal/storage",
+          "primary_language": "go"
+        },
+        {
+          "description": "",
+          "files": [
+            "control-plane/migrations/028_create_config_storage.sql"
+          ],
+          "id": "cluster_4",
+          "name": "control-plane/migrations",
+          "primary_language": "sql"
+        }
+      ],
+      "context_notes": "This is a feature PR adding database-backed config storage with 455 lines added across 10 files. The implementation follows the existing patterns in the codebase (GORM models, Gin handlers, StorageProvider interface). Key files are config_db.go (103 lines) for config loading logic, config_storage.go (140 lines) for HTTP handlers, and local.go additions for storage implementation.",
+      "dependency_graph": {},
+      "files": [
+        {
+          "hunks": [
+            {
+              "content": "         enabled: true\n       observability_config:\n         enabled: false\n+      config_management:\n+        enabled: true\n+        read_only: false",
+              "header": "@@ -146,3 +146,6 @@ features:",
+              "new_count": 6,
+              "new_start": 146,
+              "old_count": 3,
+              "old_start": 146
+            }
+          ],
+          "language": "yaml",
+          "lines_added": 3,
+          "lines_removed": 0,
+          "path": "control-plane/config/agentfield.yaml",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": "+package handlers\n+\n+import (\n+\t\"io\"\n+\t\"net/http\"\n+\n+\t\"github.com/Agent-Field/agentfield/control-plane/internal/storage\"\n+\t\"github.com/gin-gonic/gin\"\n+)\n+\n+// maxConfigBodySize is the maximum allowed size for a config body (1 MB).\n+// Prevents DoS via unbounded request body reads.\n+const maxConfigBodySize = 1 << 20 // 1 MB\n+\n+// ConfigReloadFunc is called to reload configuration from the database.\n+type ConfigReloadFunc func() error\n+\n+// ConfigStorageHandlers provides HTTP handlers for database-backed configuration.\n+type ConfigStorageHandlers struct {\n+\tstorage  storage.StorageProvider\n+\treloadFn ConfigReloadFunc\n+}\n+\n+// NewConfigStorageHandlers creates a new ConfigStorageHandlers instance.\n+func NewConfigStorageHandlers(store storage.StorageProvider, reloadFn ConfigReloadFunc) *ConfigStorageHandlers {\n+\treturn &ConfigStorageHandlers{storage: store, reloadFn: reloadFn}\n+}\n+\n+// RegisterRoutes registers config storage routes on the given router group.\n+func (h *ConfigStorageHandlers) RegisterRoutes(group *gin.RouterGroup) {\n+\tgroup.GET(\"/configs\", h.ListConfigs)\n+\tgroup.GET(\"/configs/:key\", h.GetConfig)\n+\tgroup.PUT(\"/configs/:key\", h.SetConfig)\n+\tgroup.DELETE(\"/configs/:key\", h.DeleteConfig)\n+\tgroup.POST(\"/configs/reload\", h.ReloadConfig)\n+}\n+\n+// ListConfigs returns all stored configuration entries.\n+func (h *ConfigStorageHandlers) ListConfigs(c *gin.Context) {\n+\tentries, err := h.storage.ListConfigs(c.Request.Context())\n+\tif err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\tif entries == nil {\n+\t\tentries = []*storage.ConfigEntry{}\n+\t}\n+\tc.JSON(http.StatusOK, gin.H{\n+\t\t\"configs\": entries,\n+\t\t\"total\":   len(entries),\n+\t})\n+}\n+\n+// GetConfig returns a specific configuration entry by key.\n+func (h *ConfigStorageHandlers) GetConfig(c *gin.Context) {\n+\tkey := c.Param(\"key\")\n+\tentry, err := h.storage.GetConfig(c.Request.Context(), key)\n+\tif err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\tif entry == nil {\n+\t\tc.JSON(http.StatusNotFound, gin.H{\"error\": \"config not found\", \"key\": key})\n+\t\treturn\n+\t}\n+\tc.JSON(http.StatusOK, entry)\n+}\n+\n+// SetConfig creates or updates a configuration entry.\n+// Accepts raw YAML/text body as the config value.\n+func (h *ConfigStorageHandlers) SetConfig(c *gin.Context) {\n+\tkey := c.Param(\"key\")\n+\n+\tbody, err := io.ReadAll(io.LimitReader(c.Request.Body, maxConfigBodySize+1))\n+\tif err != nil {\n+\t\tc.JSON(http.StatusBadRequest, gin.H{\"error\": \"failed to read request body\"})\n+\t\treturn\n+\t}\n+\tif len(body) == 0 {\n+\t\tc.JSON(http.StatusBadRequest, gin.H{\"error\": \"request body is empty\"})\n+\t\treturn\n+\t}\n+\tif len(body) > maxConfigBodySize {\n+\t\tc.JSON(http.StatusRequestEntityTooLarge, gin.H{\n+\t\t\t\"error\": \"config body exceeds maximum size\",\n+\t\t\t\"max\":   maxConfigBodySize,\n+\t\t})\n+\t\treturn\n+\t}\n+\n+\tupdatedBy := c.GetHeader(\"X-Updated-By\")\n+\tif updatedBy == \"\" {\n+\t\tupdatedBy = \"api\"\n+\t}\n+\n+\tif err := h.storage.SetConfig(c.Request.Context(), key, string(body), updatedBy); err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\n+\t// Return the saved entry\n+\tentry, err := h.storage.GetConfig(c.Request.Context(), key)\n+\tif err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\n+\tc.JSON(http.StatusOK, gin.H{\n+\t\t\"message\": \"config saved\",\n+\t\t\"config\":  entry,\n+\t})\n+}\n+\n+// DeleteConfig removes a configuration entry by key.\n+func (h *ConfigStorageHandlers) DeleteConfig(c *gin.Context) {\n+\tkey := c.Param(\"key\")\n+\tif err := h.storage.DeleteConfig(c.Request.Context(), key); err != nil {\n+\t\tc.JSON(http.StatusNotFound, gin.H{\"error\": err.Error()})\n+\t\treturn\n+\t}\n+\tc.JSON(http.StatusOK, gin.H{\"message\": \"config deleted\", \"key\": key})\n+}\n+\n+// ReloadConfig triggers a hot-reload of configuration from the database.\n+func (h *ConfigStorageHandlers) ReloadConfig(c *gin.Context) {\n+\tif h.reloadFn == nil {\n+\t\tc.JSON(http.StatusServiceUnavailable, gin.H{\n+\t\t\t\"error\": \"config reload not available (AGENTFIELD_CONFIG_SOURCE != db)\",\n+\t\t})\n+\t\treturn\n+\t}\n+\tif err := h.reloadFn(); err != nil {\n+\t\tc.JSON(http.StatusInternalServerError, gin.H{\n+\t\t\t\"error\":   \"config reload failed\",\n+\t\t\t\"details\": err.Error(),\n+\t\t})\n+\t\treturn\n+\t}\n+\tc.JSON(http.StatusOK, gin.H{\"message\": \"config reloaded from database\"})\n+}",
+              "header": "@@ -0,0 +1,140 @@",
+              "new_count": 140,
+              "new_start": 1,
+              "old_count": 0,
+              "old_start": 0
+            }
+          ],
+          "language": "go",
+          "lines_added": 140,
+          "lines_removed": 0,
+          "path": "control-plane/internal/handlers/config_storage.go",
+          "status": "added"
+        },
+        {
+          "hunks": [
+            {
+              "content": "+package server\n+\n+import (\n+\t\"context\"\n+\t\"fmt\"\n+\t\"time\"\n+\n+\t\"github.com/Agent-Field/agentfield/control-plane/internal/config\"\n+\t\"github.com/Agent-Field/agentfield/control-plane/internal/storage\"\n+\t\"gopkg.in/yaml.v3\"\n+)\n+\n+const dbConfigKey = \"agentfield.yaml\"\n+\n+// overlayDBConfig loads config from the database and merges it into the\n+// existing config. The storage section is preserved from the original config\n+// to avoid the bootstrap problem (DB connection settings can't come from DB).\n+// Precedence: env vars > DB config > file config > defaults.\n+func overlayDBConfig(cfg *config.Config, store storage.StorageProvider) error {\n+\tctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)\n+\tdefer cancel()\n+\n+\tentry, err := store.GetConfig(ctx, dbConfigKey)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to read config from database: %w\", err)\n+\t}\n+\tif entry == nil {\n+\t\tfmt.Println(\"[config] No database config found (key: agentfield.yaml), using file/env config only.\")\n+\t\treturn nil\n+\t}\n+\n+\t// Preserve the storage config \u2014 it must always come from file/env (bootstrap)\n+\tsavedStorage := cfg.Storage\n+\n+\t// Parse the DB-stored YAML into a config struct\n+\tvar dbCfg config.Config\n+\tif err := yaml.Unmarshal([]byte(entry.Value), &dbCfg); err != nil {\n+\t\treturn fmt.Errorf(\"failed to parse database config YAML: %w\", err)\n+\t}\n+\n+\t// Overlay non-zero DB values onto the existing config\n+\tmergeDBConfig(cfg, &dbCfg)\n+\n+\t// Restore storage config (never overridden from DB)\n+\tcfg.Storage = savedStorage\n+\n+\tfmt.Printf(\"[config] Loaded config from database (key: %s, version: %d, updated: %s)\\n\",\n+\t\tentry.Key, entry.Version, entry.UpdatedAt.Format(time.RFC3339))\n+\treturn nil\n+}\n+\n+// mergeDBConfig selectively merges DB config values into the target config.\n+// Only non-zero/non-empty values from the DB config are applied.\n+func mergeDBConfig(target, dbCfg *config.Config) {\n+\t// AgentField settings\n+\tif dbCfg.AgentField.Port != 0 {\n+\t\ttarget.AgentField.Port = dbCfg.AgentField.Port\n+\t}\n+\tif dbCfg.AgentField.NodeHealth.CheckInterval != 0 {\n+\t\ttarget.AgentField.NodeHealth = dbCfg.AgentField.NodeHealth\n+\t}\n+\t// Merge execution cleanup field-by-field to avoid zeroing out unset fields\n+\tif dbCfg.AgentField.ExecutionCleanup.RetentionPeriod != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.RetentionPeriod = dbCfg.AgentField.ExecutionCleanup.RetentionPeriod\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.CleanupInterval != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.CleanupInterval = dbCfg.AgentField.ExecutionCleanup.CleanupInterval\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.BatchSize != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.BatchSize = dbCfg.AgentField.ExecutionCleanup.BatchSize\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.PreserveRecentDuration != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.PreserveRecentDuration = dbCfg.AgentField.ExecutionCleanup.PreserveRecentDuration\n+\t}\n+\tif dbCfg.AgentField.ExecutionCleanup.StaleExecutionTimeout != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.StaleExecutionTimeout = dbCfg.AgentField.ExecutionCleanup.StaleExecutionTimeout\n+\t}\n+\t// Enabled is a bool \u2014 only override if cleanup config is present in DB at all\n+\tif dbCfg.AgentField.ExecutionCleanup.RetentionPeriod != 0 || dbCfg.AgentField.ExecutionCleanup.CleanupInterval != 0 {\n+\t\ttarget.AgentField.ExecutionCleanup.Enabled = dbCfg.AgentField.ExecutionCleanup.Enabled\n+\t}\n+\tif dbCfg.AgentField.Approval.WebhookSecret != \"\" || dbCfg.AgentField.Approval.DefaultExpiryHours != 0 {\n+\t\ttarget.AgentField.Approval = dbCfg.AgentField.Approval\n+\t}\n+\n+\t// Features\n+\tif dbCfg.Features.DID.Method != \"\" {\n+\t\ttarget.Features.DID = dbCfg.Features.DID\n+\t}\n+\t// NOTE: Connector config (token, capabilities) is intentionally NOT merged\n+\t// from DB. These are security-sensitive and must come from file/env config,\n+\t// similar to how storage config is protected from the bootstrap problem.\n+\n+\t// API settings (but never override API key from DB for security)\n+\tif len(dbCfg.API.CORS.AllowedOrigins) > 0 {\n+\t\ttarget.API.CORS = dbCfg.API.CORS\n+\t}\n+\n+\t// UI settings\n+\tif dbCfg.UI.Mode != \"\" {\n+\t\ttarget.UI = dbCfg.UI\n+\t}\n+}",
+              "header": "@@ -0,0 +1,103 @@",
+              "new_count": 103,
+              "new_start": 1,
+              "old_count": 0,
+              "old_start": 0
+            }
+          ],
+          "language": "go",
+          "lines_added": 103,
+          "lines_removed": 0,
+          "path": "control-plane/internal/server/config_db.go",
+          "status": "added"
+        },
+        {
+          "hunks": [
+            {
+              "content": " \t\"path/filepath\"\n \t\"strconv\"\n \t\"strings\"\n+\t\"sync\"\n \t\"time\"\n \n \t\"github.com/Agent-Field/agentfield/control-plane/internal/config\"",
+              "header": "@@ -13,6 +13,7 @@ import (",
+              "new_count": 7,
+              "new_start": 13,
+              "old_count": 6,
+              "old_start": 13
+            },
+            {
+              "content": " \tadminGRPCPort          int\n \twebhookDispatcher      services.WebhookDispatcher\n \tobservabilityForwarder services.ObservabilityForwarder\n+\tconfigMu               sync.RWMutex\n }\n \n // NewAgentFieldServer creates a new instance of the AgentFieldServer.",
+              "header": "@@ -79,6 +80,7 @@ type AgentFieldServer struct {",
+              "new_count": 7,
+              "new_start": 80,
+              "old_count": 6,
+              "old_start": 79
+            },
+            {
+              "content": " \t\treturn nil, err\n \t}\n \n+\t// Overlay database-stored config if AGENTFIELD_CONFIG_SOURCE=db\n+\tif src := os.Getenv(\"AGENTFIELD_CONFIG_SOURCE\"); src == \"db\" {\n+\t\tif err := overlayDBConfig(cfg, storageProvider); err != nil {\n+\t\t\tfmt.Printf(\"Warning: failed to load config from database: %v\\n\", err)\n+\t\t}\n+\t}\n+\n \tRouter := gin.Default()\n \n \t// Sync installed.yaml to database for package visibility",
+              "header": "@@ -104,6 +106,13 @@ func NewAgentFieldServer(cfg *config.Config) (*AgentFieldServer, error) {",
+              "new_count": 13,
+              "new_start": 106,
+              "old_count": 6,
+              "old_start": 104
+            },
+            {
+              "content": " \t}, nil\n }\n \n+// configReloadFn returns a function that reloads config from the database,\n+// or nil if AGENTFIELD_CONFIG_SOURCE is not set to \"db\".\n+// The returned function acquires configMu to prevent data races with\n+// concurrent readers of s.config.\n+func (s *AgentFieldServer) configReloadFn() handlers.ConfigReloadFunc {\n+\tif src := os.Getenv(\"AGENTFIELD_CONFIG_SOURCE\"); src != \"db\" {\n+\t\treturn nil\n+\t}\n+\treturn func() error {\n+\t\ts.configMu.Lock()\n+\t\tdefer s.configMu.Unlock()\n+\t\treturn overlayDBConfig(s.config, s.storage)\n+\t}\n+}\n+\n // Start initializes and starts the AgentFieldServer.\n func (s *AgentFieldServer) Start() error {\n \t// Setup routes",
+              "header": "@@ -423,6 +432,21 @@ func NewAgentFieldServer(cfg *config.Config) (*AgentFieldServer, error) {",
+              "new_count": 21,
+              "new_start": 432,
+              "old_count": 6,
+              "old_start": 423
+            },
+            {
+              "content": " \t\t\tlogger.Logger.Info().Msg(\"\ud83d\udccb Authorization admin routes registered\")\n \t\t}\n \n+\t\t// Config storage routes (admin-authenticated)\n+\t\t{\n+\t\t\tconfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n+\t\t\tconfigHandlers.RegisterRoutes(agentAPI)\n+\t\t\tlogger.Logger.Info().Msg(\"Config storage routes registered\")\n+\t\t}\n+\n \t\t// Connector routes (authenticated with separate connector token)\n \t\tif s.config.Features.Connector.Enabled && s.config.Features.Connector.Token != \"\" {\n \t\t\tconnectorGroup := agentAPI.Group(\"/connector\")",
+              "header": "@@ -1529,6 +1553,13 @@ func (s *AgentFieldServer) setupRoutes() {",
+              "new_count": 13,
+              "new_start": 1553,
+              "old_count": 6,
+              "old_start": 1529
+            },
+            {
+              "content": " \t\t\t)\n \t\t\tconnectorHandlers.RegisterRoutes(connectorGroup)\n \n+\t\t\t// Config management routes for connector\n+\t\t\tconfigGroup := connectorGroup.Group(\"\")\n+\t\t\tconfigGroup.Use(middleware.ConnectorCapabilityCheck(\"config_management\", s.config.Features.Connector.Capabilities))\n+\t\t\t{\n+\t\t\t\tconfigHandlers := handlers.NewConfigStorageHandlers(s.storage, s.configReloadFn())\n+\t\t\t\tconfigHandlers.RegisterRoutes(configGroup)\n+\t\t\t}\n+\n \t\t\tlogger.Logger.Info().Msg(\"\ud83d\udd0c Connector routes registered\")\n \t\t}\n \t}",
+              "header": "@@ -1544,6 +1575,14 @@ func (s *AgentFieldServer) setupRoutes() {",
+              "new_count": 14,
+              "new_start": 1575,
+              "old_count": 6,
+              "old_start": 1544
+            }
+          ],
+          "language": "go",
+          "lines_added": 39,
+          "lines_removed": 0,
+          "path": "control-plane/internal/server/server.go",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": " }\n \n // Configuration\n-func (s *stubStorage) SetConfig(ctx context.Context, key string, value interface{}) error { return nil }\n-func (s *stubStorage) GetConfig(ctx context.Context, key string) (interface{}, error) {\n+func (s *stubStorage) SetConfig(ctx context.Context, key string, value string, updatedBy string) error {\n+\treturn nil\n+}\n+func (s *stubStorage) GetConfig(ctx context.Context, key string) (*storage.ConfigEntry, error) {\n+\treturn nil, nil\n+}\n+func (s *stubStorage) ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error) {\n \treturn nil, nil\n }\n+func (s *stubStorage) DeleteConfig(ctx context.Context, key string) error { return nil }\n \n // Reasoner Performance and History\n func (s *stubStorage) GetReasonerPerformanceMetrics(ctx context.Context, reasonerID string) (*types.ReasonerPerformanceMetrics, error) {",
+              "header": "@@ -230,10 +230,16 @@ func (s *stubStorage) ListAgentGroups(ctx context.Context, teamID string) ([]typ",
+              "new_count": 16,
+              "new_start": 230,
+              "old_count": 10,
+              "old_start": 230
+            }
+          ],
+          "language": "go",
+          "lines_added": 8,
+          "lines_removed": 2,
+          "path": "control-plane/internal/server/server_routes_test.go",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": " \treturn nil\n }\n \n-// SetConfig stores a configuration key-value pair in SQLite.\n-func (ls *LocalStorage) SetConfig(ctx context.Context, key string, value interface{}) error {\n-\t// Fast-fail if context is already cancelled\n+// SetConfig upserts a configuration entry in the database.\n+// On conflict (duplicate key), it increments the version and updates the value.\n+func (ls *LocalStorage) SetConfig(ctx context.Context, key string, value string, updatedBy string) error {\n \tif err := ctx.Err(); err != nil {\n \t\treturn err\n \t}\n \n-\t// TODO: Implement configuration storage in SQLite\n-\treturn fmt.Errorf(\"SetConfig not yet implemented for LocalStorage\")\n+\tdb := ls.requireSQLDB()\n+\tnow := time.Now().UTC()\n+\n+\tif ls.mode == \"postgres\" {\n+\t\t_, err := db.ExecContext(ctx, `\n+\t\t\tINSERT INTO config_storage (key, value, version, created_by, updated_by, created_at, updated_at)\n+\t\t\tVALUES ($1, $2, 1, $3, $3, $4, $4)\n+\t\t\tON CONFLICT (key) DO UPDATE SET\n+\t\t\t\tvalue = EXCLUDED.value,\n+\t\t\t\tversion = config_storage.version + 1,\n+\t\t\t\tupdated_by = EXCLUDED.updated_by,\n+\t\t\t\tupdated_at = EXCLUDED.updated_at`,\n+\t\t\tkey, value, updatedBy, now)\n+\t\treturn err\n+\t}\n+\n+\t// SQLite\n+\t_, err := db.ExecContext(ctx, `\n+\t\tINSERT INTO config_storage (key, value, version, created_by, updated_by, created_at, updated_at)\n+\t\tVALUES (?, ?, 1, ?, ?, ?, ?)\n+\t\tON CONFLICT (key) DO UPDATE SET\n+\t\t\tvalue = excluded.value,\n+\t\t\tversion = config_storage.version + 1,\n+\t\t\tupdated_by = excluded.updated_by,\n+\t\t\tupdated_at = excluded.updated_at`,\n+\t\tkey, value, updatedBy, updatedBy, now, now)\n+\treturn err\n }\n \n-// GetConfig retrieves a configuration value from SQLite by key.\n-func (ls *LocalStorage) GetConfig(ctx context.Context, key string) (interface{}, error) {\n-\t// Fast-fail if context is already cancelled\n+// GetConfig retrieves a configuration entry by key.\n+func (ls *LocalStorage) GetConfig(ctx context.Context, key string) (*ConfigEntry, error) {\n+\tif err := ctx.Err(); err != nil {\n+\t\treturn nil, err\n+\t}\n+\n+\tdb := ls.requireSQLDB()\n+\tvar entry ConfigEntry\n+\n+\tvar placeholder string\n+\tif ls.mode == \"postgres\" {\n+\t\tplaceholder = \"$1\"\n+\t} else {\n+\t\tplaceholder = \"?\"\n+\t}\n+\n+\trow := db.QueryRowContext(ctx,\n+\t\tfmt.Sprintf(`SELECT key, value, version, COALESCE(created_by, ''), COALESCE(updated_by, ''), created_at, updated_at\n+\t\tFROM config_storage WHERE key = %s`, placeholder), key)\n+\n+\terr := row.Scan(&entry.Key, &entry.Value, &entry.Version,\n+\t\t&entry.CreatedBy, &entry.UpdatedBy, &entry.CreatedAt, &entry.UpdatedAt)\n+\tif err != nil {\n+\t\tif errors.Is(err, sql.ErrNoRows) {\n+\t\t\treturn nil, nil\n+\t\t}\n+\t\treturn nil, fmt.Errorf(\"failed to get config %q: %w\", key, err)\n+\t}\n+\treturn &entry, nil\n+}\n+\n+// ListConfigs returns all stored configuration entries.\n+func (ls *LocalStorage) ListConfigs(ctx context.Context) ([]*ConfigEntry, error) {\n \tif err := ctx.Err(); err != nil {\n \t\treturn nil, err\n \t}\n \n-\t// TODO: Implement configuration retrieval from SQLite\n-\treturn nil, fmt.Errorf(\"GetConfig not yet implemented for LocalStorage\")\n+\tdb := ls.requireSQLDB()\n+\trows, err := db.QueryContext(ctx,\n+\t\t`SELECT key, value, version, COALESCE(created_by, ''), COALESCE(updated_by, ''), created_at, updated_at\n+\t\tFROM config_storage ORDER BY key`)\n+\tif err != nil {\n+\t\treturn nil, fmt.Errorf(\"failed to list configs: %w\", err)\n+\t}\n+\tdefer rows.Close()\n+\n+\tvar entries []*ConfigEntry\n+\tfor rows.Next() {\n+\t\tvar entry ConfigEntry\n+\t\tif err := rows.Scan(&entry.Key, &entry.Value, &entry.Version,\n+\t\t\t&entry.CreatedBy, &entry.UpdatedBy, &entry.CreatedAt, &entry.UpdatedAt); err != nil {\n+\t\t\treturn nil, fmt.Errorf(\"failed to scan config row: %w\", err)\n+\t\t}\n+\t\tentries = append(entries, &entry)\n+\t}\n+\treturn entries, rows.Err()\n+}\n+\n+// DeleteConfig removes a configuration entry by key.\n+func (ls *LocalStorage) DeleteConfig(ctx context.Context, key string) error {\n+\tif err := ctx.Err(); err != nil {\n+\t\treturn err\n+\t}\n+\n+\tdb := ls.requireSQLDB()\n+\tvar placeholder string\n+\tif ls.mode == \"postgres\" {\n+\t\tplaceholder = \"$1\"\n+\t} else {\n+\t\tplaceholder = \"?\"\n+\t}\n+\n+\tresult, err := db.ExecContext(ctx,\n+\t\tfmt.Sprintf(`DELETE FROM config_storage WHERE key = %s`, placeholder), key)\n+\tif err != nil {\n+\t\treturn fmt.Errorf(\"failed to delete config %q: %w\", key, err)\n+\t}\n+\trows, _ := result.RowsAffected()\n+\tif rows == 0 {\n+\t\treturn fmt.Errorf(\"config %q not found\", key)\n+\t}\n+\treturn nil\n }\n \n // SubscribeToMemoryChanges implements the StorageProvider SubscribeToMemoryChanges method using local pub/sub.",
+              "header": "@@ -5124,26 +5124,124 @@ func (ls *LocalStorage) UpdateAgentTrafficWeight(ctx context.Context, id string,",
+              "new_count": 124,
+              "new_start": 5124,
+              "old_count": 26,
+              "old_start": 5124
+            }
+          ],
+          "language": "go",
+          "lines_added": 108,
+          "lines_removed": 10,
+          "path": "control-plane/internal/storage/local.go",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": " \t\t&DIDDocumentModel{},\n \t\t&AccessPolicyModel{},\n \t\t&AgentTagVCModel{},\n+\t\t&ConfigStorageModel{},\n \t}\n \n \tif err := gormDB.WithContext(ctx).AutoMigrate(models...); err != nil {",
+              "header": "@@ -233,6 +233,7 @@ func (ls *LocalStorage) autoMigrateSchema(ctx context.Context) error {",
+              "new_count": 7,
+              "new_start": 233,
+              "old_count": 6,
+              "old_start": 233
+            }
+          ],
+          "language": "go",
+          "lines_added": 1,
+          "lines_removed": 0,
+          "path": "control-plane/internal/storage/migrations.go",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": " }\n \n func (AgentTagVCModel) TableName() string { return \"agent_tag_vcs\" }\n+\n+// ConfigStorageModel stores configuration files in the database.\n+// Each record represents a named configuration (e.g. \"agentfield.yaml\")\n+// with versioning for audit trail.\n+type ConfigStorageModel struct {\n+\tID        int64     `gorm:\"column:id;primaryKey;autoIncrement\"`\n+\tKey       string    `gorm:\"column:key;not null;uniqueIndex\"`\n+\tValue     string    `gorm:\"column:value;type:text;not null\"`\n+\tVersion   int       `gorm:\"column:version;not null;default:1\"`\n+\tCreatedBy *string   `gorm:\"column:created_by\"`\n+\tUpdatedBy *string   `gorm:\"column:updated_by\"`\n+\tCreatedAt time.Time `gorm:\"column:created_at;autoCreateTime\"`\n+\tUpdatedAt time.Time `gorm:\"column:updated_at;autoUpdateTime\"`\n+}\n+\n+func (ConfigStorageModel) TableName() string { return \"config_storage\" }",
+              "header": "@@ -472,3 +472,19 @@ type AgentTagVCModel struct {",
+              "new_count": 19,
+              "new_start": 472,
+              "old_count": 3,
+              "old_start": 472
+            }
+          ],
+          "language": "go",
+          "lines_added": 16,
+          "lines_removed": 0,
+          "path": "control-plane/internal/storage/models.go",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": " \tActiveExecutions int\n }\n \n+// ConfigEntry represents a database-stored configuration file.\n+type ConfigEntry struct {\n+\tKey       string    `json:\"key\"`\n+\tValue     string    `json:\"value\"`\n+\tVersion   int       `json:\"version\"`\n+\tCreatedBy string    `json:\"created_by,omitempty\"`\n+\tUpdatedBy string    `json:\"updated_by,omitempty\"`\n+\tCreatedAt time.Time `json:\"created_at\"`\n+\tUpdatedAt time.Time `json:\"updated_at\"`\n+}\n+\n // StorageProvider is the interface for the primary data storage backend.\n type StorageProvider interface {\n \t// Lifecycle",
+              "header": "@@ -26,6 +26,17 @@ type RunSummaryAggregation struct {",
+              "new_count": 17,
+              "new_start": 26,
+              "old_count": 6,
+              "old_start": 26
+            },
+            {
+              "content": " \tUpdateAgentVersion(ctx context.Context, id string, version string) error\n \tUpdateAgentTrafficWeight(ctx context.Context, id string, version string, weight int) error\n \n-\t// Configuration\n-\tSetConfig(ctx context.Context, key string, value interface{}) error\n-\tGetConfig(ctx context.Context, key string) (interface{}, error)\n+\t// Configuration Storage (database-backed config files)\n+\tSetConfig(ctx context.Context, key string, value string, updatedBy string) error\n+\tGetConfig(ctx context.Context, key string) (*ConfigEntry, error)\n+\tListConfigs(ctx context.Context) ([]*ConfigEntry, error)\n+\tDeleteConfig(ctx context.Context, key string) error\n \n \t// Reasoner Performance and History\n \tGetReasonerPerformanceMetrics(ctx context.Context, reasonerID string) (*types.ReasonerPerformanceMetrics, error)",
+              "header": "@@ -118,9 +129,11 @@ type StorageProvider interface {",
+              "new_count": 11,
+              "new_start": 129,
+              "old_count": 9,
+              "old_start": 118
+            }
+          ],
+          "language": "go",
+          "lines_added": 16,
+          "lines_removed": 3,
+          "path": "control-plane/internal/storage/storage.go",
+          "status": "modified"
+        },
+        {
+          "hunks": [
+            {
+              "content": "+-- +goose Up\n+-- +goose StatementBegin\n+CREATE TABLE IF NOT EXISTS config_storage (\n+    id          BIGSERIAL PRIMARY KEY,\n+    key         TEXT NOT NULL UNIQUE,\n+    value       TEXT NOT NULL,\n+    version     INTEGER NOT NULL DEFAULT 1,\n+    created_by  TEXT,\n+    updated_by  TEXT,\n+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),\n+    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()\n+);\n+\n+CREATE INDEX IF NOT EXISTS idx_config_storage_key ON config_storage(key);\n+-- +goose StatementEnd\n+\n+-- +goose Down\n+-- +goose StatementBegin\n+DROP INDEX IF EXISTS idx_config_storage_key;\n+DROP TABLE IF EXISTS config_storage;\n+-- +goose StatementEnd",
+              "header": "@@ -0,0 +1,21 @@",
+              "new_count": 21,
+              "new_start": 1,
+              "old_count": 0,
+              "old_start": 0
+            }
+          ],
+          "language": "sql",
+          "lines_added": 21,
+          "lines_removed": 0,
+          "path": "control-plane/migrations/028_create_config_storage.sql",
+          "status": "added"
+        }
+      ],
+      "intent_gaps": [
+        "MISSING CONNECTOR ROUTES: PR description promises 'Add connector-scoped config routes gated by config_management capability' but no connector handler code visible in this PR. The 'Related PRs' section mentions 'Connector: Agent-Field/connector' - these routes may be implemented there instead.",
+        "NO AUTOMATED TESTS: Test plan only lists manual tests. No unit/integration tests added for SetConfig/GetConfig/ListConfigs/DeleteConfig, overlayDBConfig, or config_storage handlers.",
+        "NO CONFIG VALIDATION: PR description mentions 'Store config in DB' via PUT endpoint but doesn't describe any validation of config content. Invalid YAML can be stored and will only fail on server restart.",
+        "HOT RELOAD LIMITATIONS: The POST /configs/reload endpoint reloads config into memory, but services initialized at startup (health monitor intervals, webhook timeouts) won't pick up changes without full server restart.",
+        "NO ROLLBACK MECHANISM: Once DB config is loaded, there's no API to revert to file-only config without restarting server with AGENTFIELD_CONFIG_SOURCE unset.",
+        "CONFIG MERGE INCOMPLETENESS: The mergeDBConfig() function in config_db.go:54-102 handles specific fields but comments suggest it should handle all config. Missing: logging config, feature flags (other than DID), mcp config, and any future config sections.",
+        "VERSIONING SEMANTICS: PR mentions 'versioning for audit trail' but no endpoint to retrieve historical config versions or rollback to previous version."
+      ],
+      "pr_narrative": "This PR introduces a database-backed configuration storage system with the following architecture:\n\n1. **Database Schema**: New `config_storage` table (migration 028) with GORM model `ConfigStorageModel` storing key-value config pairs with versioning, audit trail (created_by, updated_by, timestamps).\n\n2. **Storage Layer**: Four new methods on `StorageProvider` interface (`SetConfig`, `GetConfig`, `ListConfigs`, `DeleteConfig`) implemented in `local.go` using GORM for both SQLite and PostgreSQL.\n\n3. **Config Loading at Startup**: New `config_db.go` containing `overlayDBConfig()` function that loads config from DB when `AGENTFIELD_CONFIG_SOURCE=db` env var is set. The function:\n   - Reads config entry with key 'agentfield.yaml' from DB\n   - Parses YAML into config struct\n   - Selectively merges non-zero values into existing config (preserving storage section for bootstrap safety)\n   - Precedence: env vars > DB config > file config > defaults\n\n4. **API Surface**: New `config_storage.go` handlers providing:\n   - `GET /api/v1/configs` - List all configs\n   - `GET /api/v1/configs/:key` - Get specific config\n   - `PUT /api/v1/configs/:key` - Create/update config (accepts raw YAML body)\n   - `DELETE /api/v1/configs/:key` - Delete config\n   - `POST /api/v1/configs/reload` - Hot-reload config from DB\n\n5. **Server Integration**: Modified `server.go` to:\n   - Call `overlayDBConfig()` during `NewAgentFieldServer()` initialization (lines 107-112)\n   - Add `configReloadFn()` method that returns reload function when `AGENTFIELD_CONFIG_SOURCE=db`\n   - Config storage handlers receive reload function via constructor\n\n6. **Default Config**: Added `config_management` capability to connector capabilities in `agentfield.yaml` (lines 149-151).",
+      "risk_surfaces": [
+        "BOOTSTRAP TIMING RACE: overlayDBConfig() in server.go:107-112 runs AFTER storage initialization but BEFORE config is fully used. If DB config fails to load (line 109-110), server continues with only a warning print. In production with `AGENTFIELD_CONFIG_SOURCE=db` expected, silent fallback to file config could cause config drift across instances.",
+        "PARTIAL CONFIG MERGE: config_db.go:54-102 mergeDBConfig() only handles specific known fields (AgentField.Port, NodeHealth, ExecutionCleanup, Approval, Features.DID, API.CORS, UI). Any NEW config fields added to the Config struct in the future will NOT be merged from DB unless explicitly added here - this is a maintenance hazard.",
+        "SECURITY FIELD PROTECTION: config_db.go:91-92 comment states connector config (token, capabilities) is intentionally NOT merged from DB for security. However, the PR adds `config_management` capability to default agentfield.yaml:149-151. If connector compromise occurs, attacker could potentially modify config via connector API (routes not visible in this PR but implied).",
+        "ERROR HANDLING INCONSISTENCY: config_storage.go:85-100 SetConfig calls storage.SetConfig(), then immediately calls storage.GetConfig() to return saved entry. If GetConfig fails (lines 91-94), handler returns 500 error even though config WAS saved successfully, leaving client uncertain of actual state.",
+        "NO CONFIG VALIDATION: config_storage.go:67-78 accepts raw YAML body via io.ReadAll() without any validation that the YAML is valid, matches expected schema, or won't break server on next restart. Invalid YAML will only surface when server restarts with `AGENTFIELD_CONFIG_SOURCE=db`.",
+        "VERSIONING WITHOUT OPTIMISTIC LOCKING: models.go:479-488 ConfigStorageModel has version field auto-incremented by GORM, but storage.go SetConfig() implementation (not visible in this PR) likely uses simple upsert. Concurrent updates from multiple admins could cause last-write-wins data loss.",
+        "RELOAD RACE CONDITION: config_storage.go:114-128 ReloadConfig handler calls reloadFn which modifies in-memory config struct. No mutex protection visible - concurrent reloads or reload during config access could cause race conditions.",
+        "MISSING CONNECTOR ROUTES: PR description mentions 'connector-scoped config routes gated by config_management capability' but no connector handler code or routes are visible in the provided files. Either these routes are in a separate PR (mentioned as 'Related PRs') or this is incomplete implementation.",
+        "YAML PARSING FAILURE MODE: config_db.go:36-39 calls yaml.Unmarshal() on DB config value. If YAML is malformed, overlayDBConfig() returns error which is only logged as warning (server.go:110). Server continues startup with potentially incomplete config - could mask critical misconfiguration.",
+        "STORAGE SECTION PROTECTION BYPASS: config_db.go:33-45 preserves storage config and restores it after merge. However, if DB config contains storage section with empty/zero values, the merge logic (lines 54-102) might still apply changes before restoration at line 45, potentially causing temporary connection issues."
+      ],
+      "stats": {
+        "files_added": 3,
+        "files_modified": 7,
+        "files_removed": 0,
+        "files_renamed": 0,
+        "test_files_changed": 1,
+        "test_to_code_ratio": 0.1111111111111111,
+        "total_additions": 455,
+        "total_deletions": 15,
+        "total_files": 10
+      },
+      "unrelated_changes": [
+        "server_routes_test.go:233-242 adds stub implementations for new Config methods to stubStorage, but these are required for interface compliance, not unrelated.",
+        "migrations/028_create_config_storage.sql:14 creates index on key column, but GORM model at models.go:481 already defines `uniqueIndex` on Key - potentially redundant index creation.",
+        "models.go:479-488 ConfigStorageModel includes both `CreatedAt` with `autoCreateTime` and explicit time.Time fields - standard GORM pattern, not truly unrelated."
+      ]
+    },
+    "budget": {
+      "budget_exhausted": true,
+      "cost_breakdown": {
+        "adversary": 0,
+        "anatomy": 0,
+        "coverage": 0,
+        "cross_ref": 0,
+        "intake": 0,
+        "meta_selectors": 0,
+        "output": 0,
+        "review": 0,
+        "synthesis": 0
+      },
+      "max_cost_usd": 2,
+      "max_duration_seconds": 2400,
+      "total_cost_usd": 0
+    },
+    "intake": {
+      "ai_generated": 0.6666666666666666,
+      "areas_touched": [
+        "database",
+        "api",
+        "tests",
+        "config"
+      ],
+      "complexity": "complex",
+      "languages": [
+        "go",
+        "sql",
+        "yaml"
+      ],
+      "pr_summary": "## Summary\n- Add `config_storage` table (GORM model + Goose migration 028) for storing configuration files in the database\n- Implement `SetConfig`/`GetConfig`/`ListConfigs`/`DeleteConfig` on the `StorageProvider` interface (works on both SQLite and PostgreSQL)\n- Add `AGENTFIELD_CONFIG_SOURCE=db` environment variable to load config from the database at startup (overlays on top of file config, preserving storage section for bootstrap)\n- Add CRUD API endpoints at `GET/PUT/DELETE /api/v1/configs/:key`\n- Add connector-scoped config routes gated by `config_management` capability\n- Add `config_management` capability to default `agentfield.yaml`\n\n## How It Works\n1. **Store config in DB**: `PUT /api/v1/configs/agentfield.yaml` with YAML body\n2. **Load from DB at startup**: Set `AGENTFIELD_CONFIG_SOURCE=db` \u2192 server reads config from DB after storage init\n3. **Remote management**: SaaS \u2192 connector \u2192 `config_management` capability \u2192 CP config API\n4. **Precedence**: env vars > DB config > file config > defaults\n5. **Bootstrap safety**: The `storage` section is never overridden from DB (DB connection can't come from DB)\n\n## Related PRs\n- Connector: Agent-Field/connector (config_management capability)\n- hax-sdk: Agent-Field/hax-sdk (config editor UI)\n\n## Test plan\n- [x] `go build ./...` passes\n- [x] Server tests pass\n- [x] Storage test failure is pre-existing (FTS5 not available)\n- [ ] Manual test: create config via API, verify it loads on restart with `AGENTFIELD_CONFIG_SOURCE=db`\n- [ ] Manual test: verify connector flow end-to-end\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)",
+      "pr_type": "feature",
+      "review_depth": "standard",
+      "risk_signals": [
+        "modifies data model or schema-affecting code",
+        "changes API surface or request/response behavior",
+        "includes configuration changes",
+        "test behavior updated"
+      ]
+    },
+    "phases_completed": [
+      "intake",
+      "anatomy",
+      "meta_selectors",
+      "review",
+      "adversary",
+      "cross_ref",
+      "coverage",
+      "synthesis",
+      "output"
+    ],
+    "plan": {
+      "ai_adjusted": false,
+      "cross_ref_hints": [],
+      "dimensions": [
+        {
+          "budget": {
+            "max_child_spawns": 2,
+            "max_cost_usd": 0.5,
+            "max_duration_seconds": 60,
+            "max_reference_follows": 3
+          },
+          "context_files": [
+            "control-plane/internal/config/config.go"
+          ],
+          "id": "semantic_sem-001",
+          "name": "Config Reload Race Condition",
+          "priority": 10,
+          "review_prompt": "Investigate the thread safety of the config reload mechanism introduced in this PR.\n\n**Problem**: The PR adds a `configMu sync.RWMutex` field to `AgentFieldServer` struct (server.go:81) and uses it in `configReloadFn()` to protect writes during reload. However, the config (`s.config`) is accessed from 35+ locations throughout the codebase (grep for 's\\.config\\.' in server.go) WITHOUT any mutex protection.\n\n**Key Files to Examine**:\n- `control-plane/internal/server/server.go:433-442` - configReloadFn() implementation\n- `control-plane/internal/server/server.go:48-82` - AgentFieldServer struct definition showing config field\n- `control-plane/internal/server/config_db.go:19-50` - overlayDBConfig() that modifies config\n\n**Verification Steps**:\n1. Check if ANY readers of s.config acquire configMu.RLock() before access\n2. Look at server.go:502 (s.config.AgentField.Port), 834-838 (CORS config access), 882-883 (API key access), 913 (DID config), etc.\n3. Confirm that overlayDBConfig() modifies the config struct in-place (line 42: mergeDBConfig(cfg, &dbCfg))\n4. Verify that concurrent config access during reload could cause data races\n\n**Expected Issue**: The mutex only protects the reload operation itself, not the readers. During a reload, readers may see partially updated config, torn reads, or stale data. This is a classic readers-writers problem where readers run unsynchronized.",
+          "target_files": [
+            "control-plane/internal/server/server.go",
+            "control-plane/internal/server/config_db.go"
+          ]
+        },
+        {
+          "budget": {
+            "max_child_spawns": 2,
+            "max_cost_usd": 0.5,
+            "max_duration_seconds": 60,
+            "max_reference_follows": 3
+          },
+          "context_files": [
+            "control-plane/internal/storage/local.go"
+          ],
+          "id": "mechanical_mech-001",
+          "name": "StorageProvider Interface Signature Compatibility",
+          "priority": 10,
+          "review_prompt": "The PR changes the StorageProvider interface methods from (SetConfig/GetConfig with interface{} return types) to new signatures with string parameters and *ConfigEntry return types, plus adds ListConfigs and DeleteConfig methods.\n\nVerify that ALL implementations of StorageProvider have been updated:\n\n1. **Check these test mocks have OLD signatures (WILL BREAK):**\n   - `control-plane/internal/handlers/ui/config_test.go:289-297` - MockStorageProvider.SetConfig/GetConfig still use `interface{}`\n   - `control-plane/internal/handlers/execute_test.go:173-178` - MockStorageProvider has old signatures\n\n2. **Verify these mocks are missing NEW methods:**\n   - Both mocks above lack `ListConfigs(ctx context.Context) ([]*storage.ConfigEntry, error)`\n   - Both mocks above lack `DeleteConfig(ctx context.Context, key string) error`\n   - Both mocks have wrong signature for `SetConfig(ctx, key, value string, updatedBy string)`\n\n3. **Check if interface is fully implemented:**\n   - Run: `cd control-plane && go build ./...`\n   - Any compile errors about interface satisfaction?\n   - Check: `go test ./internal/handlers/ui/...` and `./internal/handlers/...`\n\nThis is a CRITICAL mechanical issue - the PR will not compile due to interface mismatch.",
+          "target_files": [
+            "control-plane/internal/handlers/ui/config_test.go",
+            "control-plane/internal/handlers/execute_test.go",
+            "control-plane/internal/storage/storage.go"
+          ]
+        },
+        {
+          "budget": {
+            "max_child_spawns": 2,
+            "max_cost_usd": 0.5,
+            "max_duration_seconds": 60,
+            "max_reference_follows": 3
+          },
+          "context_files": [],
+          "id": "semantic_sem-002",
+          "name": "Partial Config Merge Maintenance Hazard",
+          "priority": 8,
+          "review_prompt": "Analyze the completeness and maintainability of the config merge logic in mergeDBConfig().\n\n**Problem**: The mergeDBConfig() function in config_db.go:54-102 selectively merges only specific known config fields. Any NEW config fields added to the Config struct in the future will NOT be merged from DB unless explicitly added to this function.\n\n**Key Files to Examine**:\n- `control-plane/internal/server/config_db.go:54-102` - mergeDBConfig() implementation\n- `control-plane/internal/config/config.go` - Full Config struct definition\n\n**Verification Steps**:\n1. List all config fields that ARE merged: AgentField.Port, NodeHealth, ExecutionCleanup fields, Approval, Features.DID, API.CORS, UI\n2. List config fields that are NOT merged (check config.go):\n   - ExecutionQueue (AgentCallTimeout, WebhookTimeout, etc.)\n   - Features.DID.Authorization (all security settings)\n   - Features.DID.VCRequirements\n   - Features.DID.Keystore\n   - API.Auth (API key from DB is explicitly ignored per comment)\n   - Logging config (if any)\n   - MCP config (if any)\n3. Check if there's any automated way to ensure mergeDBConfig stays in sync with Config struct\n4. Verify this creates a maintenance burden where adding new config fields requires updating mergeDBConfig\n\n**Expected Issue**: This is a semantic drift hazard. Future developers adding config fields will likely forget to update mergeDBConfig(), causing silent failures where DB config values are ignored.",
+          "target_files": [
+            "control-plane/internal/server/config_db.go",
+            "control-plane/internal/config/config.go"
+          ]
+        },
+        {
+          "budget": {
+            "max_child_spawns": 2,
+            "max_cost_usd": 0.5,
+            "max_duration_seconds": 60,
+            "max_reference_follows": 3
+          },
+          "context_files": [
+            "control-plane/internal/config/config.go"
+          ],
+          "id": "semantic_sem-005",
+          "name": "Unvalidated Config Storage and Late Failure",
+          "priority": 8,
+          "review_prompt": "Investigate the validation gap in config storage and its impact on server startup.\n\n**Problem**: The SetConfig handler (config_storage.go:67-78) accepts raw YAML without validating it's valid YAML or matches the expected config schema. Invalid YAML is stored successfully but only fails when the server restarts with AGENTFIELD_CONFIG_SOURCE=db.\n\n**Key Files to Examine**:\n- `control-plane/internal/handlers/config_storage.go:67-78` - SetConfig body reading\n- `control-plane/internal/server/config_db.go:36-39` - YAML parsing at startup\n- `control-plane/internal/config/config.go:222-249` - LoadConfig validation\n\n**Verification Steps**:\n1. Check what validation occurs in SetConfig:\n   - Line 70-77: Only checks for empty body and size limit\n   - No YAML syntax validation\n   - No schema validation against Config struct\n2. Verify when invalid YAML is detected:\n   - config_db.go:37-38: yaml.Unmarshal() at server startup\n   - Line 110: Only prints warning, server continues\n3. Consider attack vector: attacker with API access stores malformed YAML, server cannot restart with DB config\n4. Check if there's any way to validate config without full server restart\n\n**Expected Issue**: Malformed config can be stored via API and will only surface as a startup failure, potentially causing downtime or forcing fallback to file config when DB config was intended.",
+          "target_files": [
+            "control-plane/internal/handlers/config_storage.go",
+            "control-plane/internal/server/config_db.go"
+          ]
+        },
+        {
+          "budget": {
+            "max_child_spawns": 2,
+            "max_cost_usd": 0.5,
+            "max_duration_seconds": 60,
+            "max_reference_follows": 3
+          },
+          "context_files": [
+            "control-plane/internal/server/config_db.go"
+          ],
+          "id": "mechanical_mech-002",
+          "name": "Config Reload Mutex Protection",
+          "priority": 8,
+          "review_prompt": "The PR adds a `configMu sync.RWMutex` to AgentFieldServer struct (server.go:82) but the configReloadFn method (server.go:433-442) does NOT acquire this mutex when reloading config.\n\nInvestigate the thread-safety:\n\n1. **Check server.go:433-442** - configReloadFn() returns a function that calls overlayDBConfig()\n   - Does it acquire s.configMu.Lock()? (It should but verify)\n   - The overlayDBConfig function modifies s.config directly\n\n2. **Check for concurrent access patterns:**\n   - Search for other readers of s.config throughout server.go\n   - Are there goroutines that read config without holding the mutex?\n   - Specifically check: health monitor, cleanup service, webhook dispatcher - these all read config fields\n\n3. **Verify the mutex is actually used:**\n   - Search for `configMu` usage in server.go\n   - Is it only declared but never locked/unlocked?\n   - The PR adds the mutex field but may not use it consistently\n\nThis could cause data races if config is reloaded while other goroutines read config values.",
+          "target_files": [
+            "control-plane/internal/server/server.go"
+          ]
+        },
+        {
+          "budget": {
+            "max_child_spawns": 2,
+            "max_cost_usd": 0.5,
+            "max_duration_seconds": 60,
+            "max_reference_follows": 3
+          },
+          "context_files": [
+            "control-plane/internal/config/config.go"
+          ],
+          "id": "systemic_systemic-001",
+          "name": "Config Merge Completeness and Maintainability",
+          "priority": 8,
+          "review_prompt": "Review the mergeDBConfig function in control-plane/internal/server/config_db.go:54-102. This function implements field-by-field merging of DB config into the target config, but only handles specific known fields (AgentField.Port, NodeHealth, ExecutionCleanup, Approval, Features.DID, API.CORS, UI).\n\nKey concerns:\n1. The function has a maintenance hazard - any NEW config fields added to the Config struct in the future will NOT be merged from DB unless explicitly added here. Check if this is documented or if there's a more robust pattern.\n2. Compare with existing config loading patterns in the codebase (e.g., how viper handles config merging).\n3. Look at the Config struct in control-plane/internal/config/config.go to identify fields that are NOT handled by mergeDBConfig (e.g., Storage, Logging, MCP, Feature flags other than DID).\n4. Determine if the selective merge is intentional (for security/bootstrap safety) or if it creates an incomplete feature.\n5. Check if there's a TODO or comment explaining this limitation and when it should be expanded.",
+          "target_files": [
+            "control-plane/internal/server/config_db.go"
+          ]
+        }
+      ],
+      "total_budget": {
+        "max_child_spawns": 2,
+        "max_cost_usd": 0.5,
+        "max_duration_seconds": 60,
+        "max_reference_follows": 3
+      }
+    }
+  },
+  "pr_url": "https://github.com/Agent-Field/agentfield/pull/254",
+  "review": {
+    "body": "## \ud83d\udd34 PR-AF Review \u2014 **Needs Major Rework**\n\n*Automated multi-agent code review \u00b7 [PR-AF](https://github.com/Agent-Field/agentfield) built with [AgentField](https://github.com/Agent-Field/agentfield)*\n\n> **25 findings** \u00b7 \ud83d\udd34 7 critical \u00b7 \ud83d\udfe0 11 important \u00b7 \ud83d\udd35 6 suggestions \u00b7 \u26aa 1 nitpicks\n\n<details>\n<summary><b>PR Overview</b></summary>\n\n## Summary\n- Add `config_storage` table (GORM model + Goose migration 028) for storing configuration files in the database\n- Implement `SetConfig`/`GetConfig`/`ListConfigs`/`DeleteConfig` on the `StorageProvider` interface (works on both SQLite and PostgreSQL)\n- Add `AGENTFIELD_CONFIG_SOURCE=db` environment variable to load config from the database at startup (overlays on top of file config, preserving storage section for bootstrap)\n- Add CRUD API endpoints at `GET/PUT/DELETE /api/v1/configs/:key`\n- Add connector-scoped config routes gated by `config_management` capability\n- Add `config_management` capability to default `agentfield.yaml`\n\n## How It Works\n1. **Store config in DB**: `PUT /api/v1/configs/agentfield.yaml` with YAML body\n2. **Load from DB at startup**: Set `AGENTFIELD_CONFIG_SOURCE=db` \u2192 server reads config from DB after storage init\n3. **Remote management**: SaaS \u2192 connector \u2192 `config_management` capability \u2192 CP config API\n4. **Precedence**: env vars > DB config > file config > defaults\n5. **Bootstrap safety**: The `storage` section is never overridden from DB (DB connection can't come from DB)\n\n## Related PRs\n- Connector: Agent-Field/connector (config_management capability)\n- hax-sdk: Agent-Field/hax-sdk (config editor UI)\n\n## Test plan\n- [x] `go build ./...` passes\n- [x] Server tests pass\n- [x] Storage test failure is pre-existing (FTS5 not available)\n- [ ] Manual test: create config via API, verify it loads on restart with `AGENTFIELD_CONFIG_SOURCE=db`\n- [ ] Manual test: verify connector flow end-to-end\n\n\ud83e\udd16 Generated with [Claude Code](https://claude.com/claude-code)\n\n</details>\n\n### Key Findings\n\n**18 issue(s) should be addressed before merge:**\n\n- \ud83d\udd34 **MockStorageProvider.SetConfig/GetConfig have obsolete signatures - interface mismatch** (`control-plane/internal/handlers/ui/config_test.go:289`) \u2014 The `MockStorageProvider` in `config_test.go` has obsolete method signatures for `SetConfig` and `GetConfig` that do not match the updated `StorageProvider` interface.\n- \ud83d\udd34 **MockStorageProvider.SetConfig/GetConfig have obsolete signatures - interface mismatch** (`control-plane/internal/handlers/execute_test.go:173`) \u2014 The `MockStorageProvider` in `execute_test.go` has obsolete method signatures for `SetConfig` and `GetConfig` that do not match the updated `StorageProvider` interface.\n- \ud83d\udd34 **MockStorageProvider missing ListConfigs and DeleteConfig methods** (`control-plane/internal/handlers/ui/config_test.go:25`) \u2014 The `MockStorageProvider` in `config_test.go` is missing the two new configuration methods added to the `StorageProvider` interface: `ListConfigs` and `DeleteConfig`.\n- \ud83d\udd34 **MockStorageProvider missing ListConfigs and DeleteConfig methods** (`control-plane/internal/handlers/execute_test.go:22`) \u2014 The `MockStorageProvider` in `execute_test.go` is missing the two new configuration methods added to the `StorageProvider` interface: `ListConfigs` and `DeleteConfig`.\n- \ud83d\udd34 **Version field lacks optimistic locking - concurrent updates cause silent data loss** (`control-plane/migrations/028_create_config_storage.sql:1`) \u2014 The `version` column is auto-incremented during upsert operations but there's no database-level constraint or application-level check to prevent lost updates.\n- \ud83d\udd34 **VERSIONING WITHOUT OPTIMISTIC LOCKING: Concurrent updates cause silent data loss** (`control-plane/internal/storage/local.go:5129`) \u2014 The `SetConfig` method implements versioning without optimistic locking, causing **silent data loss** when concurrent updates occur.\n- \ud83d\udd34 **Config storage admin routes exposed without authentication** (`control-plane/internal/server/server.go:1550`) \u2014 The config storage routes at /api/v1/configs/* are registered directly on agentAPI without any authentication middleware, despite the comment claiming they are 'admin-authenticated'.\n- \ud83d\udfe0 **Incomplete NodeHealth Merge - Only CheckInterval Is Handled** (`control-plane/internal/server/config_db.go:59`) \u2014 The `NodeHealth` struct has 5 fields (CheckInterval, CheckTimeout, ConsecutiveFailures, RecoveryDebounce, HeartbeatStaleThreshold), but `mergeDBConfig()` only handles `CheckInterval`.\n- \u2026 and 10 more (see All Findings by Severity)\n\n**7 suggestion(s) and style note(s):**\n\n- \ud83d\udd35 Important: Background goroutines read s.config without mutex protection (`control-plane/internal/server/server.go:133`)\n- \ud83d\udd35 No Automated Sync Check Between Config Struct and Merge Function (`control-plane/internal/server/config_db.go:52`)\n- \ud83d\udd35 Missing TODO/FIXME Comment Warning About Maintenance Burden (`control-plane/internal/server/config_db.go:52`)\n- \ud83d\udd35 AMBIGUOUS NULL HANDLING: COALESCE converts NULL to empty string losing audit information (`control-plane/internal/storage/local.go:5179`)\n- \ud83d\udd35 created_by/updated_by lack referential integrity constraints (`control-plane/migrations/028_create_config_storage.sql:8`)\n- \u2026 and 2 more (see All Findings by Severity)\n\n**Files with findings:** `control-plane/config/agentfield.yaml`, `control-plane/internal/handlers/config_storage.go`, `control-plane/internal/handlers/execute_test.go`, `control-plane/internal/handlers/ui/config_test.go`, `control-plane/internal/server/config_db.go`, `control-plane/internal/server/server.go`, `control-plane/internal/storage/local.go`, `control-plane/internal/storage/models.go`, `control-plane/migrations/028_create_config_storage.sql`\n\n<details>\n<summary><b>All Findings by Severity</b></summary>\n\n#### \ud83d\udd34 Critical (7)\n\n- **MockStorageProvider.SetConfig/GetConfig have obsolete signatures - interface mismatch** `control-plane/internal/handlers/ui/config_test.go:289`\n- **MockStorageProvider.SetConfig/GetConfig have obsolete signatures - interface mismatch** `control-plane/internal/handlers/execute_test.go:173`\n- **MockStorageProvider missing ListConfigs and DeleteConfig methods** `control-plane/internal/handlers/ui/config_test.go:25`\n- **MockStorageProvider missing ListConfigs and DeleteConfig methods** `control-plane/internal/handlers/execute_test.go:22`\n- **Version field lacks optimistic locking - concurrent updates cause silent data loss** `control-plane/migrations/028_create_config_storage.sql:1`\n- **VERSIONING WITHOUT OPTIMISTIC LOCKING: Concurrent updates cause silent data loss** `control-plane/internal/storage/local.go:5129`\n- **Config storage admin routes exposed without authentication** `control-plane/internal/server/server.go:1550`\n\n#### \ud83d\udfe0 Important (11)\n\n- **Incomplete NodeHealth Merge - Only CheckInterval Is Handled** `control-plane/internal/server/config_db.go:59`\n- **Missing Config Fields in mergeDBConfig Creates Silent Failures** `control-plane/internal/server/config_db.go:54`\n- **DIDConfig Merge Only Checks Method Field - Other DID Settings Ignored** `control-plane/internal/server/config_db.go:87`\n- **CORSConfig Partial Merge - Only AllowedOrigins Is Checked** `control-plane/internal/server/config_db.go:95`\n- **Partial Config Merge - Many Config Fields Silently Ignored from DB** `control-plane/internal/server/config_db.go:54`\n- **SetConfig accepts invalid YAML without validation, causing delayed startup failures** `control-plane/internal/handlers/config_storage.go:67`\n- **Missing ON UPDATE trigger for updated_at timestamp** `control-plane/migrations/028_create_config_storage.sql:10`\n- **config_management capability enabled by default with write access** `control-plane/config/agentfield.yaml:149`\n- **key column uses TEXT type without length limit or validation** `control-plane/migrations/028_create_config_storage.sql:5`\n- **INCONSISTENT ERROR HANDLING: GetConfig returns nil on 'not found' but storage.go contract is unclear** `control-plane/internal/storage/local.go:5164`\n- **Inconsistent Security Field Handling - DID.Authorization Omitted Without Comment** `control-plane/internal/server/config_db.go:86`\n\n#### \ud83d\udd35 Suggestion (6)\n\n- **Important: Background goroutines read s.config without mutex protection** `control-plane/internal/server/server.go:133`\n- **No Automated Sync Check Between Config Struct and Merge Function** `control-plane/internal/server/config_db.go:52`\n- **Missing TODO/FIXME Comment Warning About Maintenance Burden** `control-plane/internal/server/config_db.go:52`\n- **AMBIGUOUS NULL HANDLING: COALESCE converts NULL to empty string losing audit information** `control-plane/internal/storage/local.go:5179`\n- **created_by/updated_by lack referential integrity constraints** `control-plane/migrations/028_create_config_storage.sql:8`\n- **MISSING DATABASE CONSTRAINTS: ConfigStorageModel lacks validation for key format** `control-plane/internal/storage/models.go:476`\n\n#### \u26aa Nitpick (1)\n\n- **Important: configMu mutex is declared but NEVER used anywhere** `control-plane/internal/server/server.go:82`\n\n</details>\n\n<details>\n<summary><b>Review Process Details</b></summary>\n\n**Dimensions Analyzed (6):**\n\n- **Config Reload Race Condition** \u2014 2 file(s)\n- **StorageProvider Interface Signature Compatibility** \u2014 3 file(s)\n- **Partial Config Merge Maintenance Hazard** \u2014 2 file(s)\n- **Unvalidated Config Storage and Late Failure** \u2014 2 file(s)\n- **Config Reload Mutex Protection** \u2014 1 file(s)\n- **Config Merge Completeness and Maintainability** \u2014 1 file(s)\n\n**Meta-Dimension Lenses (3):**\n\n- **Semantic** \u2014 5 dimension(s), 85% coverage confidence\n- **Mechanical** \u2014 3 dimension(s), 85% coverage confidence\n- **Systemic** \u2014 3 dimension(s), 75% coverage confidence\n\n**Cross-Reference & Adversary Analysis:**\n\n- **8** cross-change interaction(s) detected\n- **16** finding(s) adversarially tested: 13 confirmed, 3 challenged\n\n</details>\n\n<details>\n<summary><b>Pipeline Stats</b></summary>\n\n| Metric | Value |\n|--------|-------|\n| Duration | 2608.6s |\n| Agent invocations | 21 |\n| Coverage iterations | 1 |\n| Estimated cost | N/A (provider does not report cost) |\n| Budget exhausted | Yes (timeout: 2608s > 2400s limit) |\n| PR type | feature |\n| Complexity | complex |\n\n</details>\n\nReview ID: `rev_5795c21d6bdd`",
+    "comments": [
+      {
+        "body": "\ud83d\udd34 **[CRITICAL] Version field lacks optimistic locking - concurrent updates cause silent data loss**\n\nThe `version` column is auto-incremented during upsert operations but there's no database-level constraint or application-level check to prevent lost updates. When two admins simultaneously update the same config key via `PUT /api/v1/configs/:key`, the second write will overwrite the first without any warning or conflict detection.\n\nThe storage implementation at `local.go:5129-5160` uses `ON CONFLICT DO UPDATE` with `version = config_storage.version + 1`, which is atomic but doesn't validate that the admin read the latest version before updating. This means:\n\n1. Admin A reads config version 5\n2. Admin B reads config version 5\n3. Admin A saves \u2192 version becomes 6\n4. Admin B saves \u2192 version becomes 7 (silently overwriting Admin A's changes)\n\n**Impact**: Configuration changes can be silently lost in multi-admin environments, potentially causing production misconfiguration.\n\n---\n\n> Step 1: Migration defines `version INTEGER NOT NULL DEFAULT 1` (line 7)\n> Step 2: GORM model marks `Version int` with `not null;default:1` tag (models.go:483)\n> Step 3: SetConfig() uses upsert: `version = config_storage.version + 1` (local.go:5143,5156)\n> Step 4: No version check in WHERE clause or BEFORE UPDATE trigger to validate expected version\n> Step 5: ConfigStorageHandlers.SetConfig() accepts no version parameter (config_storage.go:67-100)\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd optimistic locking by either:\n1. **Preferred**: Add `expected_version` parameter to PUT endpoint and fail with 409 Conflict if current version != expected\n2. Alternative: Add timestamp-based conflict detection using `updated_at`\n3. Add application-level check in SetConfig: `UPDATE config_storage SET ... WHERE key = ? AND version = ?` then check RowsAffected\n\n---\n*`Coverage Gap - Database Migration` \u00b7 confidence 95%*",
+        "line": 1,
+        "path": "control-plane/migrations/028_create_config_storage.sql",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udd34 **[CRITICAL] VERSIONING WITHOUT OPTIMISTIC LOCKING: Concurrent updates cause silent data loss**\n\nThe `SetConfig` method implements versioning without optimistic locking, causing **silent data loss** when concurrent updates occur.\n\n**The Problem:**\n- Admin A reads config at version 1\n- Admin B reads config at version 1\n- Both admins modify different parts of the config\n- Both call `SetConfig` with their changes\n- Both execute `ON CONFLICT (key) DO UPDATE SET version = config_storage.version + 1`\n- Both result in version = 2\n- **Admin A's changes are silently lost** with no error or warning\n\n**Why this is critical:**\nIn production environments with multiple admins or automated systems updating config, concurrent modifications will result in last-write-wins behavior that loses intermediate changes. The version field provides an **audit trail illusion** - it looks like versioning is working but actually provides no conflict detection.\n\n**Code analysis:**\n```go\nON CONFLICT (key) DO UPDATE SET\n    value = EXCLUDED.value,\n    version = config_storage.version + 1,  // <-- No WHERE clause checking expected version!\n    updated_by = EXCLUDED.updated_by,\n    updated_at = EXCLUDED.updated_at\n```\n\nThis is different from proper optimistic locking which would use:\n```sql\nUPDATE config_storage SET value = ?, version = version + 1 WHERE key = ? AND version = ?\n```\n\n---\n\n> Step 1: Two admins (A and B) both call `GET /api/v1/configs/agentfield.yaml` and receive version=1\n> Step 2: Admin A modifies port setting, calls `PUT /api/v1/configs/agentfield.yaml` - succeeds, version becomes 2\n> Step 3: Admin B modifies log level, calls `PUT` with payload based on version=1 they read earlier\n> Step 4: In local.go:5137-5161, the SQL executes `ON CONFLICT...version + 1` without checking if the update is based on current version\n> Step 5: Admin B's update succeeds (version becomes 2), but **Admin A's port change is silently overwritten**\n> Step 6: No error is returned - the data loss is undetected\n\n**\ud83d\udca1 Suggested Fix**\n\nImplement proper optimistic locking by:\n1. Adding an optional `expectedVersion` parameter to `SetConfig`\n2. Using a transaction with SELECT FOR UPDATE to read current version\n3. Only updating if current version matches expected version\n4. Returning a specific error (e.g., `ErrConfigVersionConflict`) when versions don't match\n5. Updating the handler to accept `If-Match` header with expected version and return 409 Conflict on mismatch\n\n---\n*`storage layer - ConfigStorageModel versioning and SetConfig implementation` \u00b7 confidence 95%*",
+        "line": 5129,
+        "path": "control-plane/internal/storage/local.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] Incomplete NodeHealth Merge - Only CheckInterval Is Handled**\n\nThe `NodeHealth` struct has 5 fields (CheckInterval, CheckTimeout, ConsecutiveFailures, RecoveryDebounce, HeartbeatStaleThreshold), but `mergeDBConfig()` only handles `CheckInterval`. All other NodeHealth fields from DB config are silently ignored.\n\n---\n\n> config.go:54-59 defines NodeHealthConfig with 5 fields. config_db.go:59-61 only checks `dbCfg.AgentField.NodeHealth.CheckInterval != 0`. Other fields have no corresponding merge logic.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd merge logic for all NodeHealth fields: CheckTimeout, ConsecutiveFailures, RecoveryDebounce, and HeartbeatStaleThreshold. Consider replacing the entire NodeHealth struct when any field is set, similar to how Approval and DID are handled.\n\n---\n*`Config Merge Completeness and Maintainability` \u00b7 confidence 95%*",
+        "line": 59,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] Missing Config Fields in mergeDBConfig Creates Silent Failures**\n\nThe `mergeDBConfig` function at `config_db.go:54-103` selectively merges only specific known config fields from the database, leaving many fields unhandled. This creates a **maintenance hazard** where any new fields added to the `Config` struct will silently be ignored when loading from DB, causing confusion and incomplete configuration application.\n\n**Missing fields NOT merged from DB (partial list):**\n- `AgentFieldConfig.ExecutionQueue` (lines 39, 71-78 in config.go) - Agent call timeout, webhook settings\n- `NodeHealthConfig.CheckTimeout` (line 55) - Health check timeout\n- `NodeHealthConfig.ConsecutiveFailures` (line 56) - Failure threshold\n- `NodeHealthConfig.RecoveryDebounce` (line 57) - Recovery debounce\n- `NodeHealthConfig.HeartbeatStaleThreshold` (line 58) - Staleness threshold\n- `Features.DID.Authorization` (lines 111-135) - DID auth settings, admin tokens, access policies\n- `Features.DID.VCRequirements` (lines 171-179) - VC generation requirements\n- `Features.DID.Keystore` (lines 182-189) - Keystore configuration\n- `API.Auth` (lines 207-212) - API authentication settings\n- `UI.Enabled` (line 27) - UI enabled/disabled flag\n- `UI.SourcePath`, `UI.DistPath`, `UI.DevPort` (lines 29-31) - UI paths and dev port\n\n**Impact:** Users storing config in DB may set values like `execution_queue.agent_call_timeout` or `features.did.authorization.enabled`, but these will be silently ignored. The server continues running with incomplete config, making this a subtle bug that only manifests in production behavior differences.\n\n---\n\n> Step 1: Config struct defines AgentField.ExecutionQueue at config.go:39,72-78 with fields: AgentCallTimeout, WebhookTimeout, WebhookMaxAttempts, WebhookRetryBackoff, WebhookMaxRetryBackoff.\n> Step 2: mergeDBConfig (config_db.go:54-103) checks AgentField.Port, NodeHealth, ExecutionCleanup, Approval, Features.DID (partially), API.CORS, UI.\n> Step 3: ExecutionQueue is never referenced in mergeDBConfig - all queue settings are silently ignored when loading from DB.\n> Step 4: This means webhook timeouts and agent call timeouts set via DB config API will have no effect.\n\n**\ud83d\udca1 Suggested Fix**\n\n1. Add comprehensive handling for all current Config struct fields, OR\n2. Implement a reflection-based merge that uses struct tags to determine which fields should be merged (with explicit 'security' or 'nosync' tags to exclude sensitive fields), OR\n3. At minimum, add documentation comments listing all unhandled fields and a TODO/FIXME comment explaining that new fields must be manually added here\n\nRecommended approach: Add a struct tag like `merge:\"true\"` to fields that should be synced from DB, then use reflection to automatically merge those fields while preserving security-sensitive ones.\n\n---\n*`Partial Config Merge Maintenance Hazard` \u00b7 confidence 95%*",
+        "line": 54,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] DIDConfig Merge Only Checks Method Field - Other DID Settings Ignored**\n\nThe DIDConfig struct has 8 fields (Enabled, Method, KeyAlgorithm, DerivationMethod, KeyRotationDays, VCRequirements, Keystore, Authorization), but `mergeDBConfig()` only checks if `Method != \"\"` and then replaces the entire struct. This means:\n1. If DB only sets `Enabled: false` without Method, the entire DID config is ignored\n2. Individual DID field updates from DB are not supported - it's all-or-nothing based on Method\n3. VCRequirements, Keystore, and Authorization sub-configs from DB are never applied\n\n---\n\n> config.go:100-109 defines DIDConfig with 8 fields. config_db.go:87-89 only checks `dbCfg.Features.DID.Method != \"\"` before replacing entire struct. No handling for VCRequirements (lines 171-179), Keystore (lines 182-189), or Authorization (lines 112-135).\n\n**\ud83d\udca1 Suggested Fix**\n\nEither handle DIDConfig fields individually (like ExecutionCleanup) or check for any non-zero DID field before replacing the struct. Ensure sub-structs (VCRequirements, Keystore, Authorization) are also considered.\n\n---\n*`Config Merge Completeness and Maintainability` \u00b7 confidence 90%*",
+        "line": 87,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] CORSConfig Partial Merge - Only AllowedOrigins Is Checked**\n\nThe CORSConfig struct has 5 fields, but `mergeDBConfig()` only checks `AllowedOrigins`. If the DB config specifies `AllowedMethods`, `AllowedHeaders`, `ExposedHeaders`, or `AllowCredentials` without `AllowedOrigins`, those settings are silently ignored.\n\n---\n\n> config.go:198-204 defines CORSConfig with 5 fields (AllowedOrigins, AllowedMethods, AllowedHeaders, ExposedHeaders, AllowCredentials). config_db.go:95-97 only checks `len(dbCfg.API.CORS.AllowedOrigins) > 0`.\n\n**\ud83d\udca1 Suggested Fix**\n\nExpand the condition to check for any non-zero CORS field: `len(dbCfg.API.CORS.AllowedOrigins) > 0 || len(dbCfg.API.CORS.AllowedMethods) > 0 || ...` or check each field individually.\n\n---\n*`Config Merge Completeness and Maintainability` \u00b7 confidence 90%*",
+        "line": 95,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] Partial Config Merge - Many Config Fields Silently Ignored from DB**\n\nThe `mergeDBConfig()` function only handles a subset of configuration fields, causing **silent data loss** when config is loaded from the database. Users storing complete config in the DB will find that most fields are ignored without warning.\n\n**Fields that ARE merged (minimal subset):**\n- `AgentField.Port`\n- `AgentField.NodeHealth.CheckInterval` (only this one field - other NodeHealth fields ignored)\n- `AgentField.ExecutionCleanup` (all 6 fields merged individually)\n- `AgentField.Approval` (both fields)\n- `Features.DID.Method` (entire struct replaced if Method is set)\n- `API.CORS` (only if AllowedOrigins has items)\n- `UI` (entire struct replaced if Mode is set)\n\n**Fields NOT merged from DB (will be silently ignored):**\n\n**ExecutionQueueConfig (lines 72-78 in config.go):**\n- `AgentField.ExecutionQueue.AgentCallTimeout`\n- `AgentField.ExecutionQueue.WebhookTimeout`\n- `AgentField.ExecutionQueue.WebhookMaxAttempts`\n- `AgentField.ExecutionQueue.WebhookRetryBackoff`\n- `AgentField.ExecutionQueue.WebhookMaxRetryBackoff`\n\n**NodeHealthConfig (lines 54-59 in config.go):**\n- `AgentField.NodeHealth.CheckTimeout`\n- `AgentField.NodeHealth.ConsecutiveFailures`\n- `AgentField.NodeHealth.RecoveryDebounce`\n- `AgentField.NodeHealth.HeartbeatStaleThreshold`\n\n**DIDConfig (lines 100-109 in config.go):**\n- `Features.DID.Enabled`\n- `Features.DID.KeyAlgorithm`\n- `Features.DID.DerivationMethod`\n- `Features.DID.KeyRotationDays`\n\n**VCRequirements (lines 171-179 in config.go):**\n- `Features.DID.VCRequirements.RequireVCForRegistration`\n- `Features.DID.VCRequirements.RequireVCForExecution`\n- `Features.DID.VCRequirements.RequireVCForCrossAgent`\n- `Features.DID.VCRequirements.StoreInputOutput`\n- `Features.DID.VCRequirements.HashSensitiveData`\n- `Features.DID.VCRequirements.PersistExecutionVC`\n- `Features.DID.VCRequirements.StorageMode`\n\n**KeystoreConfig (lines 182-189 in config.go):**\n- `Features.DID.Keystore.Type`\n- `Features.DID.Keystore.Path`\n- `Features.DID.Keystore.Encryption`\n- `Features.DID.Keystore.EncryptionPassphrase`\n- `Features.DID.Keystore.BackupEnabled`\n- `Features.DID.Keystore.BackupInterval`\n\n**AuthorizationConfig (lines 112-135 in config.go):**\n- `Features.DID.Authorization.Enabled`\n- `Features.DID.Authorization.DIDAuthEnabled`\n- `Features.DID.Authorization.Domain`\n- `Features.DID.Authorization.TimestampWindowSeconds`\n- `Features.DID.Authorization.DefaultApprovalDurationHours`\n- `Features.DID.Authorization.AdminToken`\n- `Features.DID.Authorization.InternalToken`\n- `Features.DID.Authorization.TagApprovalRules` (all subfields)\n- `Features.DID.Authorization.AccessPolicies` (all subfields)\n\n**CORSConfig partial (lines 198-204 in config.go):**\n- `API.CORS.AllowedMethods` (not merged even if DB has values)\n- `API.CORS.AllowedHeaders` (not merged even if DB has values)\n- `API.CORS.ExposedHeaders` (not merged even if DB has values)\n- `API.CORS.AllowCredentials` (not merged even if DB has values)\n\nThis is a **semantic drift hazard** - future developers adding new config fields will almost certainly forget to update `mergeDBConfig()`, causing silent failures where DB config values are ignored.\n\n---\n\n> mergeDBConfig() at config_db.go:54-102 only has merge logic for:\n> - AgentField.Port (line 56-58)\n> - AgentField.NodeHealth.CheckInterval (line 59-61)\n> - AgentField.ExecutionCleanup.* (lines 63-81)\n> - AgentField.Approval (lines 82-84)\n> - Features.DID.Method (lines 87-89)\n> - API.CORS.AllowedOrigins (lines 95-97)\n> - UI.Mode (lines 100-102)\n> \n> config.go shows many additional fields in AgentFieldConfig (ExecutionQueue), DIDConfig (Enabled, KeyAlgorithm, DerivationMethod, KeyRotationDays, VCRequirements, Keystore, Authorization), and CORSConfig (AllowedMethods, AllowedHeaders, ExposedHeaders, AllowCredentials) that have no corresponding merge logic.\n\n**\ud83d\udca1 Suggested Fix**\n\nReplace the manual field-by-field merge with a generic deep-merge approach using reflection or a library like `mergo`. Alternatively, use a whitelist approach with explicit validation that fails if unknown fields are present in the DB config. At minimum, add a comment at the top of Config struct in config.go warning developers that new fields must be added to mergeDBConfig().\n\n---\n*`Config Merge Completeness and Maintainability` \u00b7 confidence 95%*",
+        "line": 54,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] SetConfig accepts invalid YAML without validation, causing delayed startup failures**\n\nThe `SetConfig` handler at `control-plane/internal/handlers/config_storage.go:67-78` accepts raw YAML via `io.ReadAll()` and stores it directly to the database without any validation. Only basic checks are performed (empty body at line 75-77), but **no YAML syntax validation** or **schema validation** occurs.\n\n**The Attack Scenario:**\n1. Attacker with API access calls `PUT /api/v1/configs/agentfield.yaml` with malformed YAML (e.g., invalid indentation, invalid types, or non-existent fields)\n2. Handler accepts and stores it successfully (line 85: `h.storage.SetConfig()`)\n3. Server continues running normally with current config\n4. On next restart with `AGENTFIELD_CONFIG_SOURCE=db`, `overlayDBConfig()` attempts to parse the invalid YAML at `config_db.go:37`\n5. `yaml.Unmarshal()` fails, returning an error\n6. At `server.go:109-110`, this error only prints a warning and the server continues with file/env config\n7. **Result**: Expected DB config is silently ignored, potentially causing production downtime or configuration drift\n\n**Why This Matters:**\n- In production environments using `AGENTFIELD_CONFIG_SOURCE=db`, operators expect the database to be the source of truth\n- Invalid config only surfaces during restart, which may be delayed hours/days after the bad config was stored\n- The silent fallback to file config can mask critical misconfigurations and cause cluster inconsistency\n\n---\n\n> Step 1: Client calls `PUT /api/v1/configs/:key` endpoint at `config_storage.go:67`\n> Step 2: Handler reads body at line 70: `body, err := io.ReadAll(c.Request.Body)`\n> Step 3: Handler only checks `len(body) == 0` at lines 75-77 - no YAML validation\n> Step 4: Handler stores raw body to DB at line 85: `h.storage.SetConfig(c.Request.Context(), key, string(body), updatedBy)`\n> Step 5: On server restart with `AGENTFIELD_CONFIG_SOURCE=db`, `NewAgentFieldServer()` calls `overlayDBConfig(cfg, storageProvider)` at `server.go:108-109`\n> Step 6: `overlayDBConfig()` calls `yaml.Unmarshal([]byte(entry.Value), &dbCfg)` at `config_db.go:37`\n> Step 7: If YAML is malformed, error is returned: `fmt.Errorf(\"failed to parse database config YAML: %w\", err)`\n> Step 8: At `server.go:109-110`, error is only logged as warning: `fmt.Printf(\"Warning: failed to load config from database: %v\\n\", err)`\n> Step 9: Server continues startup with potentially stale file/env config instead of expected DB config\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd YAML validation in `SetConfig` handler before storing to database:\n\n1. **Immediate fix**: After reading body at line 70, validate it's valid YAML:\n```go\n// Validate YAML syntax\nvar yamlTest map[string]interface{}\nif err := yaml.Unmarshal(body, &yamlTest); err != nil {\n    c.JSON(http.StatusBadRequest, gin.H{\"error\": \"invalid YAML syntax\", \"details\": err.Error()})\n    return\n}\n```\n\n2. **Stronger validation**: Parse into actual Config struct to catch type mismatches:\n```go\nvar cfgTest config.Config\nif err := yaml.Unmarshal(body, &cfgTest); err != nil {\n    c.JSON(http.StatusBadRequest, gin.H{\"error\": \"invalid config schema\", \"details\": err.Error()})\n    return\n}\n```\n\n3. **Consider dry-run reload**: If `reloadFn` is available, attempt a config reload with the new YAML before persisting to catch runtime issues.\n\n---\n*`Config Storage Validation Gap` \u00b7 confidence 95%*",
+        "line": 67,
+        "path": "control-plane/internal/handlers/config_storage.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] Missing ON UPDATE trigger for updated_at timestamp**\n\nThe migration sets `DEFAULT NOW()` for both `created_at` and `updated_at`, but lacks a database-level trigger to automatically update `updated_at` on row modification. While the Go implementation in `local.go` explicitly sets `updated_at` during upserts, this creates a risk for:\n\n1. Direct database updates via SQL console or admin tools won't update the timestamp\n2. Future code that uses GORM's generic Update() instead of the custom SetConfig() will fail to update the timestamp\n3. Data migration scripts or external tools won't maintain audit trail accuracy\n\n**Related risk**: The GORM model uses `autoUpdateTime` tag (models.go:487) which GORM handles automatically, but the storage layer bypasses GORM with raw SQL, creating inconsistency in behavior.\n\n---\n\n> Step 1: Migration line 11: `updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()` - only sets on INSERT\n> Step 2: No `ON UPDATE` trigger or `GENERATED ALWAYS AS` clause present\n> Step 3: GORM model line 487 uses `autoUpdateTime` but storage implementation bypasses GORM\n> Step 4: local.go:5138-5160 uses raw SQL upsert which manually sets updated_at\n> Step 5: If someone uses GORM db.Save(&model) directly, updated_at won't update due to schema limitation\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd database-level trigger to auto-update `updated_at` on any row modification:\n```sql\nCREATE OR REPLACE FUNCTION update_updated_at_column()\nRETURNS TRIGGER AS $$\nBEGIN\n    NEW.updated_at = NOW();\n    RETURN NEW;\nEND;\n$$ language 'plpgsql';\n\nCREATE TRIGGER update_config_storage_updated_at\n    BEFORE UPDATE ON config_storage\n    FOR EACH ROW\n    EXECUTE FUNCTION update_updated_at_column();\n```\n\n---\n*`Coverage Gap - Database Migration` \u00b7 confidence 85%*",
+        "line": 10,
+        "path": "control-plane/migrations/028_create_config_storage.sql",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] config_management capability enabled by default with write access**\n\nThe config_management capability is added with enabled: true and read_only: false by default. This creates a privilege escalation risk if the connector token is compromised. The risk: (1) Connector routes (server.go:1558-1578) allow config management via connector token. (2) The connector token is a single shared secret stored in config (line 132: token: test-connector-token-123). (3) If an attacker obtains the connector token (via log leak, config exposure, etc.), they can modify configuration via /api/v1/connector/configs/* routes, change security settings, disable auth, redirect storage, and escalate from connector access to full control plane compromise. Current protections: config_db.go intentionally skips merging connector config from DB (good), but attacker can still modify OTHER critical sections (DID auth, storage, features). The connector is designed for SaaS integration with limited scope, but config_management gives it effectively full control over the control plane configuration. This violates the principle of least privilege.\n\n---\n\n> Step 1: agentfield.yaml:149-151 sets config_management enabled=true, read_only=false. Step 2: server.go:1560 applies ConnectorTokenAuth to connector routes. Step 3: server.go:1574 applies ConnectorCapabilityCheck middleware. Step 4: config_storage.go:26-31 exposes full CRUD via RegisterRoutes. Step 5: Compromised connector token leads to ability to modify any config except connector section.\n\n**\ud83d\udca1 Suggested Fix**\n\nChange the default to enabled: false or at minimum read_only: true. Example: config_management: enabled: false (users must explicitly enable after understanding risks), read_only: true (or enable but restrict to read-only by default). Alternatively, require explicit opt-in via environment variable for write access.\n\n---\n*`Coverage Gap Review - agentfield.yaml config_management capability` \u00b7 confidence 85%*",
+        "line": 149,
+        "path": "control-plane/config/agentfield.yaml",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] key column uses TEXT type without length limit or validation**\n\nThe `key` column is defined as `TEXT NOT NULL UNIQUE` without any length constraint or validation pattern. While this provides flexibility, it allows insertion of extremely large keys (up to 1GB in PostgreSQL) which could cause:\n\n1. **Performance issues**: Index `idx_config_storage_key` on large TEXT values increases storage and lookup overhead\n2. **API abuse**: Malicious actors could create configs with multi-MB keys causing DoS\n3. **UI/display issues**: The web UI and logs may truncate or fail to display extremely long keys\n4. **Storage waste**: Index entries for large text consume significant disk space\n\n**Context**: The primary use case is `agentfield.yaml` as the config key (as seen in config_db.go:13), which is short and predictable. There's no business requirement for arbitrary-length keys.\n\n---\n\n> Step 1: Migration line 5 defines `key TEXT NOT NULL UNIQUE`\n> Step 2: No CHECK constraint or length validation present\n> Step 3: Index at line 14 `idx_config_storage_key` will index full TEXT values\n> Step 4: config_db.go:13 shows expected key is `agentfield.yaml` (14 chars)\n> Step 5: config_storage.go handlers accept arbitrary key strings from URL path\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd length constraint to key column:\n```sql\n-- Add to migration\nkey VARCHAR(255) NOT NULL UNIQUE CHECK (LENGTH(key) > 0 AND LENGTH(key) <= 255)\n```\nOr add validation at application layer in SetConfig handler before storage call.\n\n---\n*`Coverage Gap - Database Migration` \u00b7 confidence 80%*",
+        "line": 5,
+        "path": "control-plane/migrations/028_create_config_storage.sql",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] INCONSISTENT ERROR HANDLING: GetConfig returns nil on 'not found' but storage.go contract is unclear**\n\nThe `GetConfig` method at line 5186-5187 returns `nil, nil` when config is not found, using string comparison `err.Error() == \"sql: no rows in result set\"` instead of the standard `errors.Is(err, sql.ErrNoRows)`.\n\n**Issues:**\n1. **Fragile error detection**: String comparison instead of `errors.Is()` may fail with different drivers or wrapped errors\n2. **Silent failures**: The handler in `config_storage.go` calls `GetConfig` after `SetConfig` to return saved state. If this call returns `nil, nil` (due to race condition where config was deleted between insert and select), the handler returns 500 with misleading error even though SetConfig succeeded.\n\nThis creates the scenario mentioned in the PR context: \"Error handling inconsistency: SetConfig calls storage.SetConfig(), then immediately calls storage.GetConfig() to return saved entry. If GetConfig fails, handler returns 500 error even though config WAS saved successfully\"\n\n---\n\n> Step 1: Handler calls `storage.SetConfig()` successfully\n> Step 2: Handler immediately calls `storage.GetConfig()` at config_storage.go:91-94\n> Step 3: If GetConfig returns `nil, nil` (not found), handler checks `if err != nil` only\n> Step 4: Handler proceeds with `nil` entry causing nil pointer dereference or returns incorrect response\n> Step 5: Client receives 500 error despite config being successfully saved\n\n**\ud83d\udca1 Suggested Fix**\n\n1. Use `errors.Is(err, sql.ErrNoRows)` instead of string comparison at line 5186\n2. Consider returning a typed error like `ErrConfigNotFound` for missing configs\n3. Document in the `StorageProvider` interface what callers should expect for 'not found' cases\n\n---\n*`storage layer - ConfigStorageModel versioning and SetConfig implementation` \u00b7 confidence 75%*",
+        "line": 5164,
+        "path": "control-plane/internal/storage/local.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udfe0 **[IMPORTANT] Inconsistent Security Field Handling - DID.Authorization Omitted Without Comment**\n\nWhile the code correctly excludes `Connector` config (token, capabilities) from DB merge with a clear security comment (lines 90-92), it also silently omits `Features.DID.Authorization` which contains equally security-sensitive fields like `AdminToken`, `InternalToken`, `AccessPolicies`, and `DIDAuthEnabled` (config.go:111-135).\n\nThe DID Authorization struct contains:\n- `AdminToken` - Separate token for admin operations\n- `InternalToken` - Used for Authorization: Bearer header to agents\n- `Domain` - Domain for did:web identifiers\n- `AccessPolicies` - Tag-based authorization policies\n\nThese fields are **not merged from DB** despite being security-relevant, but unlike the Connector exclusion, there's no explanatory comment. This inconsistency makes it unclear whether the omission is intentional (security) or accidental (incomplete implementation).\n\n---\n\n> Step 1: DIDConfig.Authorization struct at config.go:111-135 defines security-sensitive fields: AdminToken, InternalToken, AccessPolicies, DIDAuthEnabled.\n> Step 2: mergeDBConfig only checks dbCfg.Features.DID.Method at line 87, then assigns entire DID struct.\n> Step 3: DID.Authorization is part of DID struct but never specifically handled - it would be zeroed if only Method is set, or copied wholesale if any Method is set.\n> Step 4: No security comment explains why these sensitive fields are treated differently from Connector config.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd an explicit comment explaining why DID.Authorization fields are excluded from DB merge, similar to the Connector comment:\n\n```go\n// NOTE: DID.Authorization config (admin_token, internal_token, access_policies) is\n// intentionally NOT merged from DB for security, similar to connector config.\n// Only DID.Method is merged as it affects VC generation behavior.\n```\n\n---\n*`Partial Config Merge Maintenance Hazard` \u00b7 confidence 85%*",
+        "line": 86,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udd35 **[SUGGESTION] No Automated Sync Check Between Config Struct and Merge Function**\n\nThere is no automated mechanism (build-time check, code generation, or test) to ensure that `mergeDBConfig()` stays synchronized with the `Config` struct definition. When new fields are added to `config.Config`, developers must manually remember to update `mergeDBConfig()` in a different file. This is a classic source of drift bugs.\n\n---\n\n> mergeDBConfig() comment at line 52-53 states 'selectively merges' but provides no mechanism to ensure completeness. The function and Config struct are in separate files (config_db.go vs config.go) increasing the likelihood of drift.\n\n**\ud83d\udca1 Suggested Fix**\n\nConsider adding a build tag or go:generate directive that uses reflection to verify all exported fields in Config have corresponding merge logic. Alternatively, add a unit test that uses reflection to compare the Config struct fields against known merged fields and fails if new fields are detected without test coverage in mergeDBConfig.\n\n---\n*`Config Merge Completeness and Maintainability` \u00b7 confidence 85%*",
+        "line": 52,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udd35 **[SUGGESTION] Missing TODO/FIXME Comment Warning About Maintenance Burden**\n\nThe function comment at lines 52-53 describes what the function does but does not warn maintainers that this function must be updated whenever new config fields are added. The field-by-field merge approach creates a **compile-time blind spot** - the code compiles successfully even when Config struct has fields not handled here.\n\nA maintainer adding a new field to `Config` struct will have no indication that they also need to add handling here unless they happen to read this file. This is exactly the type of issue that caused the ExecutionCleanup bug requiring the a8bfc8c fix commit.\n\n---\n\n> Step 1: Function comment at lines 52-53 says 'selectively merges' and 'Only non-zero/non-empty values' but gives no warning about the maintenance requirement.\n> Step 2: Config struct has 15+ fields/sub-structs (config.go:17-23, 34-41, etc.).\n> Step 3: mergeDBConfig handles only 7 specific field paths (Port, NodeHealth.CheckInterval, ExecutionCleanup.*, Approval, DID.Method, API.CORS, UI).\n> Step 4: No compile-time or comment-based guard exists to warn when Config grows but mergeDBConfig doesn't.\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd a prominent TODO/FIXME comment at the top of mergeDBConfig:\n\n```go\n// TODO: This function must be updated when adding new config fields.\n// Currently missing: ExecutionQueue, NodeHealth (partial), DID.Authorization,\n// DID.VCRequirements, DID.Keystore, API.Auth, UI.Enabled, etc.\n// Consider using reflection-based merging with struct tags to avoid\n// this maintenance burden (see also: viper's automatic config merging).\n```\n\n---\n*`Partial Config Merge Maintenance Hazard` \u00b7 confidence 80%*",
+        "line": 52,
+        "path": "control-plane/internal/server/config_db.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udd35 **[SUGGESTION] AMBIGUOUS NULL HANDLING: COALESCE converts NULL to empty string losing audit information**\n\nIn `GetConfig` (lines 5180-5184), the SQL uses `COALESCE(created_by, '')` and `COALESCE(updated_by, '')` to handle NULL values.\n\n**Issues:**\n1. **Loss of semantic meaning**: Empty string `\"\"` and NULL have different meanings - NULL means \"unknown/system\" while empty string could mean \"intentionally blank\"\n2. **Inconsistent with model**: `ConfigStorageModel` uses `*string` pointers for these fields indicating they can be NULL\n3. **ConfigEntry uses non-pointer**: The `ConfigEntry` struct in storage.go:30-38 uses plain `string` not `*string`, forcing the COALESCE\n\nThis makes it impossible to distinguish between \"created by system (NULL)\" and \"created by user with empty name (empty string)\".\n\n---\n\n> storage.go:30-38 defines ConfigEntry with `CreatedBy string` and `UpdatedBy string` (no pointers)\n> \n> local.go:5180-5181 uses `COALESCE(created_by, '')` and `COALESCE(updated_by, '')` to handle NULLs because ConfigEntry can't hold NULL\n> \n> models.go:484-485 defines `CreatedBy *string` and `UpdatedBy *string` as pointers in the model\n\n**\ud83d\udca1 Suggested Fix**\n\nChange `ConfigEntry` to use `*string` for `CreatedBy` and `UpdatedBy`:\n```go\ntype ConfigEntry struct {\n    Key       string     `json:\"key\"`\n    Value     string     `json:\"value\"`\n    Version   int        `json:\"version\"`\n    CreatedBy *string    `json:\"created_by,omitempty\"`  // Use pointer\n    UpdatedBy *string    `json:\"updated_by,omitempty\"`  // Use pointer\n    CreatedAt time.Time  `json:\"created_at\"`\n    UpdatedAt time.Time  `json:\"updated_at\"`\n}\n```\n\nRemove COALESCE from SQL and scan directly into pointer fields.\n\n---\n*`storage layer - ConfigStorageModel versioning and SetConfig implementation` \u00b7 confidence 70%*",
+        "line": 5179,
+        "path": "control-plane/internal/storage/local.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udd35 **[SUGGESTION] created_by/updated_by lack referential integrity constraints**\n\nThe `created_by` and `updated_by` columns are defined as nullable TEXT without foreign key constraints or validation. This design allows arbitrary strings that may not correspond to actual users in the system, making the audit trail unreliable.\n\n**Trade-offs**: Adding FK constraints to a users table would require that table to exist and be populated, which may not be true in all deployment scenarios (e.g., API-only authentication). However, even without FK constraints, the application should validate these values against authenticated principals.\n\n---\n\n> Step 1: Migration lines 8-9: `created_by TEXT` and `updated_by TEXT` - no constraints\n> Step 2: GORM model lines 484-485 uses `*string` pointers allowing NULL\n> Step 3: config_storage.go:76-78 extracts `updatedBy` from context but has no validation\n> Step 4: No users/agents table reference exists to validate against\n\n**\ud83d\udca1 Suggested Fix**\n\nConsider either:\n1. Add CHECK constraint to validate format (e.g., must be valid UUID or email)\n2. Document that application layer must validate principals before storage\n3. Add comment explaining audit trail limitations for external tools\n\n---\n*`Coverage Gap - Database Migration` \u00b7 confidence 65%*",
+        "line": 8,
+        "path": "control-plane/migrations/028_create_config_storage.sql",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\ud83d\udd35 **[SUGGESTION] MISSING DATABASE CONSTRAINTS: ConfigStorageModel lacks validation for key format**\n\nThe `ConfigStorageModel` struct defines a `key` field with `uniqueIndex` but no constraints on key format, length, or allowed characters.\n\n**Potential issues:**\n1. Empty string keys allowed (no `NOT NULL` constraint validation at struct level)\n2. No maximum length enforcement\n3. No validation that keys follow expected naming conventions (e.g., no path traversal characters like `../` or `..\\`)\n\nWhile the API layer may validate, defense-in-depth suggests the storage layer should also enforce constraints.\n\n---\n\n> models.go:479-488 shows ConfigStorageModel with `gorm:\"column:key;not null;uniqueIndex\"` - the `not null` is present but there's no size limit or format validation\n> \n> local.go:5129-5161 SetConfig accepts any key string and passes directly to SQL without validation\n\n**\ud83d\udca1 Suggested Fix**\n\nAdd GORM validation tags and constraints:\n```go\ntype ConfigStorageModel struct {\n    ID        int64     `gorm:\"column:id;primaryKey;autoIncrement\"`\n    Key       string    `gorm:\"column:key;not null;uniqueIndex;size:255\"`  // Add NOT NULL and size limit\n    Value     string    `gorm:\"column:value;type:text;not null\"`\n    // ...\n}\n```\n\nConsider adding application-level validation in `SetConfig` to reject keys containing path separators or control characters.\n\n---\n*`storage layer - ConfigStorageModel versioning and SetConfig implementation` \u00b7 confidence 60%*",
+        "line": 476,
+        "path": "control-plane/internal/storage/models.go",
+        "side": "RIGHT"
+      },
+      {
+        "body": "\u26aa **[NITPICK] Important: configMu mutex is declared but NEVER used anywhere**\n\nThe `configMu sync.RWMutex` field is declared in the AgentFieldServer struct at line 82, but there are **zero** usages of this mutex in the entire file.\n\nSearch results for 'configMu':\n- Line 82: Declaration only\n- NO calls to configMu.Lock()\n- NO calls to configMu.Unlock()\n- NO calls to configMu.RLock()\n- NO calls to configMu.RUnlock()\n\nThe mutex was added to the struct but never actually locked or unlocked. This makes it completely ineffective for preventing data races.\n\n---\n\n> Step 1: grep for 'configMu' in server.go shows only line 82 (declaration)\n> Step 2: No Lock(), Unlock(), RLock(), or RUnlock() calls found\n> Step 3: The mutex exists but provides zero protection\n> Step 4: This indicates incomplete implementation of the thread-safety feature\n\n**\ud83d\udca1 Suggested Fix**\n\nEither:\n1. Add proper mutex protection around all config reads and writes (configMu.Lock() in configReloadFn, configMu.RLock() in goroutines that read config)\n2. OR remove the unused field if config reloading isn't meant to be thread-safe\n\nRecommended approach: Add RLock() around config reads in background goroutines like healthMonitor, presenceManager, etc.\n\n---\n*`Thread Safety - Config Reload Mutex` \u00b7 confidence 99%*",
+        "line": 82,
+        "path": "control-plane/internal/server/server.go",
+        "side": "RIGHT"
+      }
+    ],
+    "event": "REQUEST_CHANGES"
+  },
+  "review_id": "rev_5795c21d6bdd",
+  "summary": {
+    "adversary_challenged": 3,
+    "adversary_confirmed": 13,
+    "ai_generated_confidence": 0.6666666666666666,
+    "budget_exhausted": true,
+    "by_severity": {
+      "critical": 7,
+      "important": 11,
+      "nitpick": 1,
+      "suggestion": 6
+    },
+    "cost_usd": 0,
+    "coverage_iterations": 1,
+    "cross_ref_interactions": 8,
+    "dimensions_run": 6,
+    "duration_seconds": 2608.64,
+    "total_findings": 25
+  }
+}
