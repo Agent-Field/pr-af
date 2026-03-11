@@ -10,23 +10,75 @@
 
 <p>
   <a href="#how-it-works">How It Works</a> •
+  <a href="#dynamic-pipeline-architecture">Architecture</a> •
   <a href="#comparison">Comparison</a> •
   <a href="#quick-start">Quick Start</a>
 </p>
 
 </div>
 
-Most AI code reviewers are incredibly fast and great at spotting surface-level syntax errors or missing parameters. However, when evaluating large, complex Pull Requests, single-prompt AI tools often hit a ceiling: they generate false positives by guessing how functions interact outside the diff, and they miss systemic vulnerabilities that span across multiple files.
+Most AI code reviewers are incredibly fast and great at spotting surface-level syntax errors or missing parameters. However, when evaluating large, complex Pull Requests, static AI tools hit a ceiling: they generate false positives by guessing how functions interact outside the diff, and they miss systemic vulnerabilities that span across multiple files.
 
-**PR-AF** (Pull Request Agent Field) is a specialized pipeline designed to act as a **deep architectural auditor**. Instead of relying on a single large language model call, PR-AF orchestrates a massively parallel cognitive architecture that extracts hard evidence from your repository, filters out noise, and synthesizes compound attack chains.
+**PR-AF** (Pull Request Agent Field) is a specialized pipeline designed to act as a **deep architectural auditor**. Instead of relying on a single language model prompt, PR-AF orchestrates a massively parallel, dynamically self-adapting cognitive architecture that extracts hard evidence from your repository, filters out noise, and synthesizes compound attack chains.
 
 *Zero false positives. Deep architectural insights. Open-source and BYOK (Bring Your Own Keys).*
 
 ---
 
+## Dynamic Pipeline Architecture
+
+PR-AF does not execute a static script. It structurally morphs its own execution graph based on the topology of the incoming Pull Request. 
+
+When a PR arrives, the system dynamically compiles **Meta-Dimensions**—evaluating the diff through semantic (logic), mechanical (types), and systemic (architecture) lenses. It uses these dimensions to spawn specialized, ephemeral sub-routines tailored exclusively to the exact context of the current PR. 
+
+```mermaid
+graph TD
+    classDef intake fill:#f3f4f6,stroke:#4b5563,stroke-width:2px;
+    classDef dynamic fill:#dbeafe,stroke:#3b82f6,stroke-width:2px;
+    classDef verify fill:#fef3c7,stroke:#2563eb,stroke-width:2px;
+    classDef synthesize fill:#ede9fe,stroke:#d97706,stroke-width:2px;
+    classDef output fill:#ecfdf5,stroke:#8b5cf6,stroke-width:2px;
+
+    PR[Incoming Pull Request] --> I1[Intake Triage]:::intake
+    I1 --> A1[Topological Anatomy Mapping]:::intake
+    
+    A1 --> M1[Semantic Lens Generator]:::dynamic
+    A1 --> M2[Mechanical Lens Generator]:::dynamic
+    A1 --> M3[Systemic Lens Generator]:::dynamic
+    
+    M1 --> D[Dimension Deduplication & Compilation]:::dynamic
+    M2 --> D
+    M3 --> D
+    
+    D -->|Dynamically spawns N dimensions| R1(Thread 1: State Mutation)
+    D --> R2(Thread 2: API Boundaries)
+    D --> R3(Thread N: Dynamic Context...)
+    
+    R1 --> E[Programmatic AST Extraction Engine]:::verify
+    R2 --> E
+    R3 --> E
+    
+    E -->|Ground truth caller snippets| V[Evidence Verification Layer]:::verify
+    V -->|Unsubstantiated claims pruned| F[Falsifiability Gate]:::verify
+    
+    F --> C1(Compound Cluster: File Topology)
+    F --> C2(Compound Cluster: Shared Imports)
+    F --> C3(Compound Cluster: Tag Overlap)
+    
+    C1 --> S[Compound Vulnerability Synthesis]:::synthesize
+    C2 --> S
+    C3 --> S
+    
+    S --> L{Coverage Depth Gate}
+    L -->|Blind spots detected| I1
+    L -->|Full coverage achieved| O[Synthesized GitHub Annotations]:::output
+```
+
+---
+
 ## How It Works
 
-PR-AF uses a multi-phase cognitive pipeline to ensure rigorous, high-fidelity reviews:
+PR-AF uses this multi-phase cognitive pipeline to ensure rigorous, high-fidelity reviews:
 
 ### 1. Evidence Grounding (0% False Positives)
 Language models inherently operate on probability, which leads to assumption-based false positives. If the system flags a missing validation check, PR-AF does not immediately accept it. Instead, it utilizes programmatic AST (Abstract Syntax Tree) extraction to pull the exact caller snippets and import contexts from the broader repository. This raw data is then evaluated through an isolated verification layer. If the initial claim cannot be irrefutably grounded in the extracted code, it is silently pruned.
