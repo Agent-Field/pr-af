@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Phase 1 → Phase 3: Intake Result
 # Format: Hybrid (structured fields for routing + pr_summary string for LLM context)

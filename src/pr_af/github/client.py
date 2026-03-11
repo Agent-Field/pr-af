@@ -3,11 +3,14 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from typing import TYPE_CHECKING
 
 import httpx
 
 from ..schemas.input import ChangedFile, GitHubPRData
-from ..schemas.output import GitHubReview
+
+if TYPE_CHECKING:
+    from ..schemas.output import GitHubReview
 
 
 class GitHubClient:

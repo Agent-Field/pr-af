@@ -221,10 +221,11 @@ class ReviewConfig(BaseModel):
         return config
 
     @classmethod
-    def from_yaml(cls, path: str) -> "ReviewConfig":
+    def from_yaml(cls, path: str) -> ReviewConfig:
         """Load config from .pr-af.yml file."""
-        import yaml  # noqa: C0415
         from pathlib import Path as _Path
+
+        import yaml
 
         config_path = _Path(path)
         if not config_path.exists():
@@ -261,7 +262,7 @@ class AIIntegrationConfig(BaseModel):
     )
 
     @classmethod
-    def from_env(cls) -> "AIIntegrationConfig":
+    def from_env(cls) -> AIIntegrationConfig:
         return cls()
 
     def provider_env(self) -> dict[str, str]:

@@ -54,22 +54,21 @@ from .schemas.pipeline import (
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
-    SubReviewRequest,
 )
 from .scoring import deduplicate_exact, determine_review_event, score_findings
 
 
-class BudgetExhausted(RuntimeError):
+class BudgetExhaustedError(RuntimeError):
     pass
 
 
 def _unwrap(result: object) -> dict:
     if isinstance(result, dict):
         if "output" in result:
-            return cast(dict, result["output"])
+            return cast("dict", result["output"])
         if "result" in result:
-            return cast(dict, result["result"])
-    return cast(dict, result)
+            return cast("dict", result["result"])
+    return cast("dict", result)
 
 
 class ReviewOrchestrator:
@@ -178,7 +177,7 @@ class ReviewOrchestrator:
 
     async def _run_intake(self) -> IntakeResult:
         if self._budget_or_timeout_exhausted("intake"):
-            raise BudgetExhausted("Budget exhausted before intake")
+            raise BudgetExhaustedError("Budget exhausted before intake")
 
         if self.input.pr_url:
             client = GitHubClient()
@@ -224,7 +223,7 @@ class ReviewOrchestrator:
 
     async def _run_anatomy(self, intake: IntakeResult) -> AnatomyResult:
         if self._budget_or_timeout_exhausted("anatomy"):
-            raise BudgetExhausted("Budget exhausted before anatomy")
+            raise BudgetExhaustedError("Budget exhausted before anatomy")
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
@@ -240,7 +239,7 @@ class ReviewOrchestrator:
 
     async def _run_planning(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("planning"):
-            raise BudgetExhausted("Budget exhausted before planning")
+            raise BudgetExhaustedError("Budget exhausted before planning")
 
         result_raw = await planning_phase(
             intake=intake.model_dump(),
@@ -260,7 +259,7 @@ class ReviewOrchestrator:
 
     async def _run_meta_selectors(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("meta_selectors"):
-            raise BudgetExhausted("Budget exhausted before meta-selectors")
+            raise BudgetExhaustedError("Budget exhausted before meta-selectors")
 
         lenses = self.meta_config.enabled_lenses
         lens_map = {
@@ -500,7 +499,8 @@ class ReviewOrchestrator:
                 sub_reviews = self._extract_sub_reviews(result_raw, dim)
                 if sub_reviews and depth < max_depth and not self._budget_or_timeout_exhausted("review"):
                     print(
-                        f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} sub-review(s) at depth {depth + 1}/{max_depth}",
+                        f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} "
+                        f"sub-review(s) at depth {depth + 1}/{max_depth}",
                         flush=True,
                     )
                     sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
@@ -617,7 +617,7 @@ class ReviewOrchestrator:
             gate = gate_raw if isinstance(gate_raw, dict) else {}
             fully_covered = bool(gate.get("fully_covered", False))
             confident = bool(gate.get("confident", True))
-            gap_descriptions = cast(list[str], gate.get("gap_descriptions", []))
+            gap_descriptions = cast("list[str]", gate.get("gap_descriptions", []))
             self.coverage_iterations += 1
 
             if fully_covered or not confident or not gap_descriptions:
@@ -777,12 +777,11 @@ class ReviewOrchestrator:
             return
         ctx_dir = os.path.join(repo_path, ".pr-af-context")
         if os.path.isdir(ctx_dir):
+            import contextlib
             import shutil
 
-            try:
+            with contextlib.suppress(OSError):
                 shutil.rmtree(ctx_dir)
-            except OSError:
-                pass
 
     async def _generate_output(
         self,
@@ -884,7 +883,8 @@ class ReviewOrchestrator:
                             commit_sha=self.pr_data.head_sha,
                         )
                         print(
-                            f"[PR-AF] Posted review (COMMENT) to {self.pr_data.owner}/{self.pr_data.repo}#{self.pr_data.number}",
+                            f"[PR-AF] Posted review (COMMENT) to "
+                            f"{self.pr_data.owner}/{self.pr_data.repo}#{self.pr_data.number}",
                             flush=True,
                         )
                     except Exception as retry_exc:
@@ -946,9 +946,7 @@ class ReviewOrchestrator:
             return True
         phase_spent = self.cost_breakdown.get(phase, 0.0)
         phase_cap = self.config.budget.phase_budgets.get(phase, float("inf"))
-        if phase_spent >= phase_cap:
-            return True
-        return False
+        return phase_spent >= phase_cap
 
     def _register_cost(self, phase: str, cost: float | None) -> None:
         if cost is None:
@@ -992,13 +990,13 @@ class ReviewOrchestrator:
         findings_raw: list[dict[str, Any]]
         if isinstance(payload, dict):
             if isinstance(payload.get("findings"), list):
-                findings_raw = cast(list[dict[str, Any]], payload["findings"])
+                findings_raw = cast("list[dict[str, Any]]", payload["findings"])
             elif isinstance(payload.get("results"), list):
-                findings_raw = cast(list[dict[str, Any]], payload["results"])
+                findings_raw = cast("list[dict[str, Any]]", payload["results"])
             else:
                 findings_raw = []
         elif isinstance(payload, list):
-            findings_raw = cast(list[dict[str, Any]], payload)
+            findings_raw = cast("list[dict[str, Any]]", payload)
         else:
             findings_raw = []
 
@@ -1032,10 +1030,10 @@ class ReviewOrchestrator:
             for key in ("findings", "results"):
                 value = payload.get(key)
                 if isinstance(value, list):
-                    raw_list = cast(list[dict[str, Any]], value)
+                    raw_list = cast("list[dict[str, Any]]", value)
                     break
         elif isinstance(payload, list):
-            raw_list = cast(list[dict[str, Any]], payload)
+            raw_list = cast("list[dict[str, Any]]", payload)
         findings: list[ReviewFinding] = []
         for item in raw_list:
             if not isinstance(item, dict):
@@ -1074,10 +1072,8 @@ class ReviewOrchestrator:
 
         payload = _unwrap(dedup_raw)
         keep_indices: list[int] = []
-        reasoning = ""
         if isinstance(payload, dict):
             keep_indices = payload.get("keep_indices", [])
-            reasoning = payload.get("reasoning", "")
 
         if not keep_indices:
             return compound_findings
@@ -1234,10 +1230,10 @@ class ReviewOrchestrator:
             for key in ("results", "adversary_results", "findings"):
                 value = payload.get(key)
                 if isinstance(value, list):
-                    raw_list = cast(list[dict[str, Any]], value)
+                    raw_list = cast("list[dict[str, Any]]", value)
                     break
         elif isinstance(payload, list):
-            raw_list = cast(list[dict[str, Any]], payload)
+            raw_list = cast("list[dict[str, Any]]", payload)
         return [AdversaryResult.model_validate(item) for item in raw_list]
 
     def _reviewed_clusters(self, anatomy: AnatomyResult, findings: list[ReviewFinding]) -> list[str]:
@@ -1319,7 +1315,7 @@ class ReviewOrchestrator:
             pct = int(finding.confidence * 100)
             meta_parts.append(f"confidence {pct}%")
         if meta_parts:
-            lines.extend(["", f"---", f"*{' · '.join(meta_parts)}*"])
+            lines.extend(["", "---", f"*{' · '.join(meta_parts)}*"])
 
         lines.extend(["", "<sub>🤖 Reviewed by [AgentField PR-AF](https://github.com/Agent-Field/pr-af)</sub>"])
 
@@ -1374,9 +1370,9 @@ class ReviewOrchestrator:
         lines: list[str] = [
             f"## {rating['emoji']} PR-AF Review — **{rating['label']}**",
             "",
-            f"*Automated multi-agent code review · "
-            f"[PR-AF](https://github.com/Agent-Field/pr-af) built with "
-            f"[AgentField](https://github.com/Agent-Field/agentfield)*",
+            "*Automated multi-agent code review · "
+            "[PR-AF](https://github.com/Agent-Field/pr-af) built with "
+            "[AgentField](https://github.com/Agent-Field/agentfield)*",
             "",
             f"> **{len(findings)} findings** · "
             f"{emojis.get('critical', '')} {by_severity.get('critical', 0)} critical · "
@@ -1433,7 +1429,10 @@ class ReviewOrchestrator:
                 "<br>",
                 '<div align="right">',
                 '  <a href="https://github.com/Agent-Field/pr-af">',
-                '    <img src="https://img.shields.io/badge/Powered_by-AgentField-6366f1?style=flat-square&logo=github" alt="AgentField PR-AF"/>',
+                "    <img"
+                ' src="https://img.shields.io/badge/Powered_by-AgentField-6366f1'
+                '?style=flat-square&logo=github"'
+                ' alt="AgentField PR-AF"/>',
                 "  </a>",
                 "</div>",
             ]

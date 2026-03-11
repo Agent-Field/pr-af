@@ -5,10 +5,12 @@ import os
 import re
 import subprocess
 from collections import OrderedDict
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
-from .schemas.pipeline import ReviewFinding
+if TYPE_CHECKING:
+    from .schemas.pipeline import ReviewFinding
 
 _SKIP_DIRS = (".git", "node_modules", "__pycache__", ".venv", "vendor", "venv")
 _TEXT_EXTENSIONS = {
@@ -191,7 +193,7 @@ def _read_code_snippet(repo_path: str, file_path: str, line: int, context_lines:
         return ""
 
     try:
-        with open(abs_path, "r", encoding="utf-8", errors="ignore") as handle:
+        with open(abs_path, encoding="utf-8", errors="ignore") as handle:
             lines = handle.readlines()
     except OSError:
         return ""
@@ -346,7 +348,7 @@ def _build_import_context(repo_path: str, file_path: str) -> str:
     imports: list[str] = []
     if _is_text_file(abs_path):
         try:
-            with open(abs_path, "r", encoding="utf-8", errors="ignore") as handle:
+            with open(abs_path, encoding="utf-8", errors="ignore") as handle:
                 for raw_line in handle:
                     stripped = raw_line.strip()
                     if stripped.startswith("import ") or stripped.startswith("from "):
@@ -415,7 +417,7 @@ def _extract_blast_radius_code(
             continue
 
         try:
-            with open(abs_path, "r", encoding="utf-8", errors="ignore") as handle:
+            with open(abs_path, encoding="utf-8", errors="ignore") as handle:
                 lines = handle.readlines()
         except OSError:
             continue
@@ -481,9 +483,8 @@ def _extract_hunk_for_line(patch_lines: list[str], line: int) -> list[str]:
 
     for raw in patch_lines:
         if raw.startswith("@@"):
-            if current_hunk and current_count > 0:
-                if current_start <= line < current_start + current_count:
-                    return current_hunk
+            if current_hunk and current_count > 0 and current_start <= line < current_start + current_count:
+                return current_hunk
             current_hunk = [raw]
             match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", raw)
             if match:
@@ -495,9 +496,8 @@ def _extract_hunk_for_line(patch_lines: list[str], line: int) -> list[str]:
         elif current_hunk:
             current_hunk.append(raw)
 
-    if current_hunk and current_count > 0:
-        if current_start <= line < current_start + current_count:
-            return current_hunk
+    if current_hunk and current_count > 0 and current_start <= line < current_start + current_count:
+        return current_hunk
     return []
 
 

@@ -4,7 +4,6 @@ import os
 
 from pydantic import BaseModel, Field
 
-from . import router
 from ..blast_radius import compute_blast_radius
 from ..diff_engine import cluster_changes, compute_diff_stats, parse_unified_diff
 from ..schemas.gates import CoverageGate, IntakeGate
@@ -13,15 +12,13 @@ from ..schemas.pipeline import (
     AdversaryResult,
     AnatomyResult,
     ChangeCluster,
-    DiffStats,
     FileChange,
     IntakeResult,
     MetaDimensionResult,
-    ReviewDimension,
     ReviewFinding,
     ReviewPlan,
-    SubReviewRequest,
 )
+from . import router
 
 
 class _AnatomySemanticResult(BaseModel):
@@ -1050,7 +1047,6 @@ async def compound_dedup_phase(
     genuinely unique insights vs near-duplicates covering the same ground.
     Returns the 0-based indices of findings to KEEP.
     """
-    import json as _json
 
     if len(compound_findings) <= 1:
         return {"keep_indices": list(range(len(compound_findings))), "reasoning": "single finding, no dedup needed"}

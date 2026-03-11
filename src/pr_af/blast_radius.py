@@ -59,7 +59,7 @@ def build_import_graph(repo_path: str) -> dict[str, list[str]]:
     for py_file in py_files:
         rel_path = os.path.relpath(py_file, repo_path)
         try:
-            with open(py_file, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(py_file, encoding="utf-8", errors="ignore") as fh:
                 content = fh.read()
         except OSError:
             continue

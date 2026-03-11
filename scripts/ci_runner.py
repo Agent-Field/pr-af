@@ -5,12 +5,12 @@ Fires an async execution to the AgentField Control Plane and polls until complet
 Ensures GitHub Actions runners stay alive while the multi-agent DAG executes.
 """
 
+import json
 import os
 import sys
 import time
-import json
-import urllib.request
 import urllib.error
+import urllib.request
 
 CP_URL = os.environ.get("AGENTFIELD_SERVER", "http://localhost:8080")
 

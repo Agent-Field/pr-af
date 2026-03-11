@@ -1,30 +1,27 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false
-
 import os
 import subprocess
 from pathlib import Path
 from typing import Any, cast
 
 import agentfield as _agentfield
+from agentfield import Agent, AIConfig
 from dotenv import load_dotenv
-
-_project_root = Path(__file__).resolve().parents[2]
-load_dotenv(_project_root / ".env")
-
 from fastapi import HTTPException
-
-from agentfield import AIConfig, Agent
 
 from .config import AIIntegrationConfig, ReviewConfig
 from .orchestrator import ReviewOrchestrator
 from .reasoners import router as reasoner_router
 from .schemas.input import ReviewInput  # noqa: TC001
 
+_project_root = Path(__file__).resolve().parents[2]
+load_dotenv(_project_root / ".env")
+
 _ai_config = AIIntegrationConfig.from_env()
 NODE_ID = os.getenv("PR_AF", "pr-af")
-HarnessConfig = getattr(_agentfield, "HarnessConfig")
+HarnessConfig = _agentfield.HarnessConfig
 
 app = Agent(
     node_id=NODE_ID,
@@ -164,7 +161,9 @@ async def review(
     suggestion_mode: str = "comment",
 ) -> dict[str, object]:
     print(
-        f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, depth={depth!r}, dry_run={dry_run!r}",
+        f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, "
+        f"diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, "
+        f"depth={depth!r}, dry_run={dry_run!r}",
         flush=True,
     )
     review_input = ReviewInput(

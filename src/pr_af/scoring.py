@@ -9,9 +9,13 @@ separated from agents so it can be modified without touching agent code.
 
 from __future__ import annotations
 
-from .config import ScoringConfig
+from typing import TYPE_CHECKING
+
 from .schemas.output import ScoredFinding
-from .schemas.pipeline import AdversaryResult, ReviewFinding
+
+if TYPE_CHECKING:
+    from .config import ScoringConfig
+    from .schemas.pipeline import AdversaryResult, ReviewFinding
 
 
 def score_findings(
