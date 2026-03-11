@@ -20,12 +20,14 @@ import httpx
 
 from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
 from .diff_engine import parse_unified_diff
+from .evidence import EvidencePackage, extract_evidence_for_findings
 from .github.client import GitHubClient
 from .reasoners.harnesses import (
     adversary_phase,
     anatomy_phase,
     coverage_gate,
     cross_ref_phase,
+    evidence_verifier,
     intake_phase,
     meta_mechanical,
     meta_semantic,
@@ -331,13 +333,95 @@ class ReviewOrchestrator:
 
         return deduped
 
-    async def _run_parallel_adversary(self, findings: list[ReviewFinding]) -> list[AdversaryResult]:
+    async def _run_evidence_verification(
+        self,
+        findings: list[ReviewFinding],
+        evidence_map: dict[str, EvidencePackage],
+    ) -> tuple[list[ReviewFinding], dict[str, dict]]:
+        high_priority = [f for f in findings if f.severity in ("critical", "important")]
+        low_priority = [f for f in findings if f.severity not in ("critical", "important")]
+
+        if not high_priority:
+            return findings, {}
+
+        print(
+            f"[PR-AF] Evidence Verification: verifying {len(high_priority)} "
+            f"critical/important findings (skipping {len(low_priority)} lower-severity)",
+            flush=True,
+        )
+
+        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in high_priority if f.title in evidence_map}
+
+        verifier_raw = await evidence_verifier(
+            findings=[f.model_dump() for f in high_priority],
+            evidence_packages=ev_packages if ev_packages else None,
+            pr_context=self._build_pr_context_string(),
+            repo_path=self.input.repo_path or "",
+        )
+        self.agent_invocations += 1
+        self._register_cost("adversary", self._extract_cost(verifier_raw))
+
+        verification_map: dict[str, dict] = {}
+        raw_verified = verifier_raw.get("verified_findings", []) if isinstance(verifier_raw, dict) else []
+
+        for vf in raw_verified:
+            if not isinstance(vf, dict):
+                continue
+            title = vf.get("title", "")
+            if not title:
+                continue
+            verification_map[title] = vf
+
+        updated_findings: list[ReviewFinding] = []
+        falsified_count = 0
+        for f in findings:
+            vf = verification_map.get(f.title)
+            if vf and not vf.get("verified", True):
+                falsified_count += 1
+                updated = f.model_copy(
+                    update={
+                        "confidence": max(0.1, vf.get("revised_confidence", 0.3)),
+                        "severity": vf.get("revised_severity", "suggestion") or "suggestion",
+                    }
+                )
+                updated_findings.append(updated)
+            elif vf:
+                revised_conf = vf.get("revised_confidence")
+                updates: dict = {}
+                if revised_conf is not None and isinstance(revised_conf, (int, float)):
+                    updates["confidence"] = float(revised_conf)
+                revised_sev = vf.get("revised_severity")
+                if revised_sev and revised_sev in ("critical", "important", "suggestion", "nitpick"):
+                    updates["severity"] = revised_sev
+                if updates:
+                    updated_findings.append(f.model_copy(update=updates))
+                else:
+                    updated_findings.append(f)
+            else:
+                updated_findings.append(f)
+
+        print(
+            f"[PR-AF] Evidence Verification: {falsified_count} findings falsified, "
+            f"{len(verification_map) - falsified_count} confirmed/adjusted",
+            flush=True,
+        )
+
+        return updated_findings, verification_map
+
+    async def _run_parallel_adversary(
+        self,
+        findings: list[ReviewFinding],
+        evidence_map: dict[str, EvidencePackage] | None = None,
+        verification_map: dict[str, dict] | None = None,
+    ) -> list[AdversaryResult]:
         if not findings or self._budget_or_timeout_exhausted("adversary"):
             return []
 
         batch_size = self.meta_config.adversary_batch_size
         max_batches = self.meta_config.max_adversary_batches
         ai_confidence = self.intake_result.ai_generated if self.intake_result else 0.0
+        ev_map = evidence_map or {}
+        ver_map = verification_map or {}
 
         batches: list[list[ReviewFinding]] = []
         for i in range(0, len(findings), batch_size):
@@ -348,11 +432,27 @@ class ReviewOrchestrator:
         async def run_batch(batch: list[ReviewFinding]) -> list[AdversaryResult]:
             if self._budget_or_timeout_exhausted("adversary"):
                 return []
+            batch_evidence: dict[str, dict] = {}
+            for f in batch:
+                ev_entry: dict = {}
+                if f.title in ev_map:
+                    ev_entry = ev_map[f.title].model_dump()
+                vf = ver_map.get(f.title)
+                if vf:
+                    ev_entry["verification"] = {
+                        "verified": vf.get("verified", True),
+                        "actual_behavior": vf.get("actual_behavior", ""),
+                        "verification_notes": vf.get("verification_notes", ""),
+                    }
+                if ev_entry:
+                    batch_evidence[f.title] = ev_entry
+
             adversary_raw = await adversary_phase(
                 findings=[f.model_dump() for f in batch],
                 ai_generated_confidence=ai_confidence,
                 pr_context=self._build_pr_context_string(),
                 repo_path=self.input.repo_path or "",
+                evidence_packages=batch_evidence if batch_evidence else None,
             )
             self.agent_invocations += 1
             self._register_cost("adversary", self._extract_cost(adversary_raw))
@@ -456,9 +556,38 @@ class ReviewOrchestrator:
                 break
             all_findings.extend(batch)
 
+        evidence_map: dict[str, EvidencePackage] = {}
+        if all_findings and self.input.repo_path:
+            print(
+                f"[PR-AF] Evidence Extraction: pulling code for {len(all_findings)} findings",
+                flush=True,
+            )
+            evidence_map = await extract_evidence_for_findings(
+                findings=all_findings,
+                repo_path=self.input.repo_path,
+                diff_patches=self._build_file_patches(),
+                blast_radius=self.anatomy_result.blast_radius if self.anatomy_result else None,
+            )
+            print(
+                f"[PR-AF] Evidence Extraction: {len(evidence_map)} packages extracted",
+                flush=True,
+            )
+
+        verification_map: dict[str, dict] = {}
+        high_priority = [f for f in all_findings if f.severity in ("critical", "important")]
+        if high_priority and evidence_map and not self._budget_or_timeout_exhausted("adversary"):
+            all_findings, verification_map = await self._run_evidence_verification(
+                all_findings,
+                evidence_map,
+            )
+
         adversary_results: list[AdversaryResult] = []
         if all_findings and not self._budget_or_timeout_exhausted("adversary"):
-            adversary_results = await self._run_parallel_adversary(all_findings)
+            adversary_results = await self._run_parallel_adversary(
+                all_findings,
+                evidence_map,
+                verification_map,
+            )
 
         challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
         confirmed_findings = [f for f in all_findings if f.title not in challenged_titles]
@@ -470,6 +599,7 @@ class ReviewOrchestrator:
                 cross_ref_hints=plan.cross_ref_hints,
                 cluster_context=self._build_cluster_context_string(),
                 repo_path=self.input.repo_path or "",
+                evidence_map={k: v.model_dump() for k, v in evidence_map.items()} if evidence_map else None,
             )
             self.agent_invocations += 1
             self._register_cost("cross_ref", self._extract_cost(cross_raw))
@@ -526,8 +656,17 @@ class ReviewOrchestrator:
                     break
                 findings.extend(batch)
 
+            gap_evidence: dict[str, EvidencePackage] = {}
+            if findings and self.input.repo_path:
+                gap_evidence = await extract_evidence_for_findings(
+                    findings=findings,
+                    repo_path=self.input.repo_path,
+                    diff_patches=self._build_file_patches(),
+                    blast_radius=self.anatomy_result.blast_radius if self.anatomy_result else None,
+                )
+
             if findings and not self._budget_or_timeout_exhausted("adversary"):
-                adversary_results = await self._run_parallel_adversary(findings)
+                adversary_results = await self._run_parallel_adversary(findings, gap_evidence)
 
             challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
             confirmed_findings = [f for f in findings if f.title not in challenged_titles]
@@ -538,6 +677,7 @@ class ReviewOrchestrator:
                     cross_ref_hints=plan.cross_ref_hints,
                     cluster_context=self._build_cluster_context_string(),
                     repo_path=self.input.repo_path or "",
+                    evidence_map={k: v.model_dump() for k, v in gap_evidence.items()} if gap_evidence else None,
                 )
                 self.agent_invocations += 1
                 self._register_cost("cross_ref", self._extract_cost(cross_raw))

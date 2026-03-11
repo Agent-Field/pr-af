@@ -54,6 +54,19 @@ class _AdversaryPhaseResult(BaseModel):
     results: list[AdversaryResult] = Field(default_factory=list)
 
 
+class _VerifiedFinding(BaseModel):
+    title: str = ""
+    verified: bool = True
+    actual_behavior: str = ""
+    revised_severity: str = ""
+    revised_confidence: float = 0.5
+    verification_notes: str = ""
+
+
+class _VerificationResult(BaseModel):
+    verified_findings: list[_VerifiedFinding] = Field(default_factory=list)
+
+
 def _auto_depth(complexity: str) -> str:
     mapping = {
         "trivial": "quick",
@@ -927,58 +940,78 @@ async def cross_ref_phase(
     cross_ref_hints: list[str] | None = None,
     cluster_context: str = "",
     repo_path: str = "",
+    evidence_map: dict[str, dict] | None = None,
 ) -> dict:
     import json as _json
 
     hints = cross_ref_hints or []
+    ev_map = evidence_map or {}
     validated_findings = [ReviewFinding.model_validate(finding) for finding in findings]
 
-    findings_summary = _json.dumps(
-        [
-            {
-                "title": f.title,
-                "severity": f.severity,
-                "file_path": f.file_path,
-                "dimension_name": f.dimension_name,
-                "body": f.body,
-                "evidence": f.evidence,
-                "suggestion": f.suggestion,
-            }
-            for f in validated_findings[:30]
-        ],
-        default=str,
-    )
+    findings_with_context: list[dict] = []
+    for f in validated_findings[:30]:
+        entry: dict = {
+            "title": f.title,
+            "severity": f.severity,
+            "file_path": f.file_path,
+            "dimension_name": f.dimension_name,
+            "body": f.body,
+            "evidence": f.evidence,
+            "suggestion": f.suggestion,
+        }
+        ev = ev_map.get(f.title, {})
+        if ev:
+            entry["ground_truth_imports"] = ev.get("import_context", "")
+            entry["ground_truth_callers"] = ev.get("caller_snippets", [])[:3]
+            entry["ground_truth_related"] = ev.get("related_code", "")[:1500]
+        findings_with_context.append(entry)
+
+    findings_summary = _json.dumps(findings_with_context, default=str)
 
     if len(findings_summary) > 10000 and repo_path:
         file_path = _write_context_file(findings_summary, "cross_ref_findings.json", repo_path)
-        findings_ref = f"Full findings written to: {file_path}\nRead this file for complete finding details."
+        findings_ref = (
+            "Full findings with evidence written to: " + file_path + "\nRead this file for complete finding details."
+        )
     else:
-        findings_ref = f"Findings:\n{findings_summary}"
+        findings_ref = "Findings:\n" + findings_summary
+
+    evidence_section = ""
+    if ev_map:
+        evidence_section = (
+            "## Ground-Truth Evidence\n\n"
+            "Each finding includes `ground_truth_imports` (what the file imports and what "
+            "imports it), `ground_truth_callers` (actual call sites), and `ground_truth_related` "
+            "(code from non-PR files). Use these to verify cross-file interactions are REAL, "
+            "not speculated. If two findings share callers or import chains, that is strong "
+            "evidence of a real interaction.\n\n"
+        )
 
     result = await router.app.harness(
-        f"You are analyzing the INTERACTIONS between findings from different review dimensions. "
-        f"Individual reviewers examined separate aspects of the PR. Your job is to find where "
-        f"their findings COMBINE to create risks that neither reviewer saw alone.\n\n"
-        f"## What to Look For\n\n"
-        f"1. **Compound Failures**: Finding A says 'function X changed its error type' and "
-        f"Finding B says 'caller Y catches the old error type' → together, errors are silently "
-        f"swallowed.\n\n"
-        f"2. **Contradictory Assumptions**: One reviewer assumes a lock is held, another's "
-        f"finding shows the lock was removed. One assumes a value is non-null, another's "
-        f"finding shows it can be null now.\n\n"
-        f"3. **Cascade Effects**: A 'suggestion'-level finding in module A becomes 'critical' "
-        f"when combined with an 'important' finding in module B, because together they create "
-        f"a data corruption path.\n\n"
-        f"4. **Consistency Gaps**: One part of the codebase was updated to a new pattern, "
-        f"but another part (found by a different reviewer) still uses the old pattern.\n\n"
-        f"5. **Hidden Dependencies**: Findings in separate files that share an implicit "
-        f"contract (same config key, same database table, same API response shape).\n\n"
-        f"You have repository access. When checking interactions between findings, read the "
-        f"actual files to verify that the interaction you describe is real.\n\n"
-        f"Only report interactions you can TRACE through specific findings. "
-        f"Do not speculate about interactions that 'might' exist.\n\n"
-        f"{findings_ref}\n\nReview hints: {hints if hints else 'none'}"
-        + (f"\n\nCluster context:\n{cluster_context}" if cluster_context else ""),
+        "You are analyzing the INTERACTIONS between findings from different review dimensions. "
+        "Individual reviewers examined separate aspects of the PR. Your job is to find where "
+        "their findings COMBINE to create risks that neither reviewer saw alone.\n\n"
+        + evidence_section
+        + "## What to Look For\n\n"
+        "1. **Compound Failures**: Finding A says 'function X changed its error type' and "
+        "Finding B says 'caller Y catches the old error type'. Check the ground_truth_callers "
+        "to verify both findings reference the same call path.\n\n"
+        "2. **Contradictory Assumptions**: One reviewer assumes a lock is held, another's "
+        "finding shows the lock was removed. Check ground_truth_imports to see if both "
+        "files interact through shared modules.\n\n"
+        "3. **Cascade Effects**: A 'suggestion'-level finding in module A becomes 'critical' "
+        "when combined with an 'important' finding in module B. Use ground_truth_related "
+        "to trace the cascade path through actual code.\n\n"
+        "4. **Consistency Gaps**: One part was updated to a new pattern, another still uses "
+        "the old. The ground_truth_imports show if these files are in the same dependency chain.\n\n"
+        "5. **Hidden Dependencies**: Findings in separate files sharing implicit contracts. "
+        "Check ground_truth_callers for overlapping call sites.\n\n"
+        "You have repository access. When checking interactions, read actual files to verify. "
+        "Only report interactions you can TRACE through specific findings and code.\n\n"
+        + findings_ref
+        + "\n\nReview hints: "
+        + str(hints if hints else "none")
+        + ("\n\nCluster context:\n" + cluster_context if cluster_context else ""),
         schema=_CrossRefResult,
         cwd=repo_path or None,
     )
@@ -987,11 +1020,118 @@ async def cross_ref_phase(
 
 
 @router.reasoner()
+async def evidence_verifier(
+    findings: list[dict],
+    evidence_packages: dict[str, dict] | None = None,
+    pr_context: str = "",
+    repo_path: str = "",
+) -> dict:
+    import json as _json
+
+    validated_findings = [ReviewFinding.model_validate(f) for f in findings]
+    ev_map = evidence_packages or {}
+
+    findings_payload: list[dict] = []
+    for f in validated_findings:
+        entry: dict = {
+            "title": f.title,
+            "severity": f.severity,
+            "file_path": f.file_path,
+            "line_start": f.line_start,
+            "dimension_name": f.dimension_name,
+            "body": f.body,
+            "evidence": f.evidence,
+            "confidence": f.confidence,
+        }
+        ev = ev_map.get(f.title, {})
+        if ev:
+            entry["extracted_code"] = {
+                "primary_code": ev.get("primary_code", "")[:4000],
+                "caller_snippets": ev.get("caller_snippets", [])[:5],
+                "diff_hunk": ev.get("diff_hunk", "")[:2000],
+                "import_context": ev.get("import_context", ""),
+                "related_code": ev.get("related_code", "")[:2000],
+                "cross_ref_snippets": ev.get("cross_ref_snippets", [])[:3],
+            }
+        findings_payload.append(entry)
+
+    findings_text = _json.dumps(findings_payload, default=str)
+
+    if len(findings_text) > 12000 and repo_path:
+        file_path = _write_context_file(findings_text, "verification_findings.json", repo_path)
+        findings_ref = (
+            "Findings with extracted code written to: " + file_path + "\n"
+            "Read this file for the full list of findings and their extracted code context."
+        )
+    else:
+        findings_ref = findings_text
+
+    result = await router.app.harness(
+        "You are a senior engineer performing independent verification of code review findings "
+        "before they reach the adversarial challenge phase. Each finding below was produced by "
+        "a reviewer who read the repository, and each includes `extracted_code` — real source "
+        "code pulled programmatically from the repo around the finding location.\n\n"
+        "## Your Role\n\n"
+        "You are not the original reviewer, and you are not the adversary. You are an "
+        "independent investigator. Your job is to determine what the code ACTUALLY does "
+        "at each finding location, and whether the reviewer's claim about the code's "
+        "behavior is factually accurate.\n\n"
+        "## How to Investigate\n\n"
+        "For each finding, you have two sources of truth:\n\n"
+        "1. **`extracted_code`** — actual source code around the finding location, call sites "
+        "of mentioned functions, the diff patch, and import/dependency context. This was "
+        "extracted programmatically, so it is what the code really says.\n\n"
+        "2. **The repository itself** — you have full access. Use it to trace connections "
+        "the extracted code doesn't cover: follow function calls across modules, check how "
+        "values flow through layers, understand the broader architecture around the finding.\n\n"
+        "Start with the extracted code to understand the local picture. Then browse the repo "
+        "to understand the broader context — how does this code connect to the rest of the "
+        "system? What are the upstream callers and downstream consumers? What are the implicit "
+        "contracts this code participates in?\n\n"
+        "## What to Determine\n\n"
+        "For each finding, answer these questions through investigation:\n\n"
+        "- **Does the code actually behave as the reviewer claims?** Read the `extracted_code` "
+        "and compare it against the reviewer's description in `body`. If the reviewer says "
+        "'this function uses string comparison' but the extracted code shows `errors.Is()`, "
+        "the claim is factually wrong.\n\n"
+        "- **Is the described scenario actually reachable?** Check `caller_snippets` and "
+        "browse the repo for call paths. Can the problematic state the reviewer describes "
+        "actually occur in practice? Are there guards, validators, or type constraints "
+        "upstream that prevent it?\n\n"
+        "- **What does the broader context reveal?** The `import_context` and `related_code` "
+        "show how this file connects to the rest of the codebase. Sometimes a finding looks "
+        "valid in isolation but is prevented by code in another module. Sometimes it looks "
+        "minor in isolation but is amplified by how the code is used elsewhere.\n\n"
+        "- **Is the severity proportionate?** Based on what you found, does the severity "
+        "match the actual impact? A 'critical' finding should have a concrete, traceable "
+        "failure path. An 'important' finding should have a realistic scenario.\n\n"
+        "## Output\n\n"
+        "For each finding, return:\n"
+        "- `title`: the finding's title (must match exactly)\n"
+        "- `verified`: true if the code behavior matches the reviewer's claim, false if it doesn't\n"
+        "- `actual_behavior`: what the code ACTUALLY does at this location (brief, factual)\n"
+        "- `revised_severity`: your assessment of the correct severity (critical/important/suggestion/nitpick)\n"
+        "- `revised_confidence`: your confidence in the finding's validity (0.0-1.0)\n"
+        "- `verification_notes`: what you found during investigation that the downstream "
+        "adversary should know — especially any discrepancies between the claim and reality, "
+        "or important context from the broader codebase\n\n"
+        + ("## PR Context\n\n" + pr_context + "\n\n" if pr_context else "")
+        + "## Findings to Verify\n\n"
+        + findings_ref,
+        schema=_VerificationResult,
+        cwd=repo_path or None,
+    )
+    parsed = result.parsed if result.parsed else _VerificationResult()
+    return {"verified_findings": [vf.model_dump() for vf in parsed.verified_findings]}
+
+
+@router.reasoner()
 async def adversary_phase(
     findings: list[dict],
     ai_generated_confidence: float = 0.0,
     pr_context: str = "",
     repo_path: str = "",
+    evidence_packages: dict[str, dict] | None = None,
 ) -> dict:
     import json as _json
 
@@ -1000,64 +1140,111 @@ async def adversary_phase(
     if ai_generated_confidence > 0.5:
         skepticism = "high"
 
-    findings_summary = _json.dumps(
-        [
-            {
-                "title": f.title,
-                "severity": f.severity,
-                "file_path": f.file_path,
-                "dimension_name": f.dimension_name,
-                "body": f.body,
-                "evidence": f.evidence,
-                "suggestion": f.suggestion,
-                "confidence": f.confidence,
+    ev_map = evidence_packages or {}
+
+    findings_with_evidence: list[dict] = []
+    for f in validated_findings[:20]:
+        entry: dict = {
+            "title": f.title,
+            "severity": f.severity,
+            "file_path": f.file_path,
+            "dimension_name": f.dimension_name,
+            "body": f.body,
+            "evidence": f.evidence,
+            "suggestion": f.suggestion,
+            "confidence": f.confidence,
+        }
+        ev = ev_map.get(f.title, {})
+        if ev:
+            entry["ground_truth"] = {
+                "primary_code": ev.get("primary_code", "")[:3000],
+                "caller_snippets": ev.get("caller_snippets", [])[:5],
+                "diff_hunk": ev.get("diff_hunk", "")[:2000],
+                "import_context": ev.get("import_context", ""),
+                "related_code": ev.get("related_code", "")[:2000],
             }
-            for f in validated_findings[:20]
-        ],
-        default=str,
-    )
+        findings_with_evidence.append(entry)
+
+    findings_summary = _json.dumps(findings_with_evidence, default=str)
 
     if len(findings_summary) > 10000 and repo_path:
         file_path = _write_context_file(findings_summary, "adversary_findings.json", repo_path)
-        findings_ref = f"Full findings written to: {file_path}\nRead this file for complete finding details."
+        findings_ref = (
+            "Full findings with ground-truth evidence written to: " + file_path + "\n"
+            "Read this file for complete finding details and code evidence."
+        )
     else:
-        findings_ref = f"Findings:\n{findings_summary}"
+        findings_ref = "Findings with ground-truth evidence:\n" + findings_summary
+
+    has_evidence = bool(ev_map)
+
+    evidence_instruction = ""
+    if has_evidence:
+        evidence_instruction = (
+            "## Ground-Truth Evidence (CRITICAL)\n\n"
+            "Each finding below includes a `ground_truth` section containing ACTUAL CODE "
+            "extracted programmatically from the repository. This is the REAL code — not the "
+            "reviewer's description of it. Use this as your primary verification source:\n\n"
+            "- `primary_code`: The actual source code around the finding location (with line numbers)\n"
+            "- `caller_snippets`: Real call sites of functions mentioned in the finding\n"
+            "- `diff_hunk`: The actual diff patch for this file\n"
+            "- `import_context`: What this file imports and what imports it\n"
+            "- `related_code`: Code from non-PR files that interact with the finding\n\n"
+            "**VERIFICATION PROTOCOL**: For each finding:\n"
+            "1. Read the reviewer's CLAIM about what the code does\n"
+            "2. Read the `ground_truth.primary_code` to see what the code ACTUALLY does\n"
+            "3. If the claim contradicts the ground truth → CHALLENGE as false positive\n"
+            "4. If the claim matches the ground truth → check caller_snippets to verify "
+            "the failure scenario is reachable\n"
+            "5. You may ALSO browse the repo for additional verification, but the ground "
+            "truth should catch most false positives\n\n"
+        )
+    else:
+        evidence_instruction = (
+            "## Verification Protocol\n\n"
+            "No ground-truth evidence was extracted for these findings. You MUST read the "
+            "actual repository files yourself to verify each finding. Open the file mentioned, "
+            "read the function, and confirm the behavior the reviewer claims exists.\n\n"
+        )
 
     result = await router.app.harness(
-        f"You are the adversarial reviewer — your job is to CHALLENGE every finding and "
-        f"determine whether it's real or a false positive. You are skeptical by default.\n\n"
-        f"You MUST verify each finding against the actual code. Do NOT trust the reviewer's "
-        f"claims about what the code does — read the actual files yourself. For each finding, "
-        f"open the file mentioned and verify the code actually does what the reviewer claims. "
-        f"If the reviewer says 'function X uses string comparison' but the actual code uses "
-        f"`errors.Is()`, that finding is a false positive. Your verification must be based on "
-        f"the CURRENT state of the repository, not on what the reviewer described.\n\n"
-        f"## For Each Finding, Determine:\n\n"
-        f"1. **Is the failure scenario actually reachable?** Trace the call path. "
-        f"Can the described inputs actually reach this code? Are there guards upstream "
-        f"that prevent the bad state?\n\n"
-        f"2. **Is the severity correct?** A 'critical' finding must have a concrete crash "
-        f"or corruption scenario. If it's speculative ('could potentially cause issues'), "
-        f"it's not critical. Downgrade or challenge it.\n\n"
-        f"3. **Is the evidence accurate?** Does the code actually do what the reviewer claims? "
-        f"Check: did the reviewer misread a decorator's behavior? Did they assume a function "
-        f"is called directly when it's actually dispatched through a framework?\n\n"
-        f"4. **Is there a hidden trap the reviewer MISSED?** Sometimes the reviewer found "
-        f"a real issue but missed the WORSE version of it, or missed that the fix they "
-        f"suggested would break something else.\n\n"
-        f"## Verdicts\n\n"
-        f"- **confirmed**: The finding is real. The evidence checks out. The severity is "
-        f"appropriate. Briefly explain why you're convinced.\n"
-        f"- **challenged**: The finding is a false positive, the severity is wrong, or the "
-        f"evidence doesn't hold up. Explain specifically what's wrong with the reviewer's "
-        f"reasoning.\n"
-        f"- **escalated**: The reviewer found something real but UNDERESTIMATED the severity "
-        f"or scope. Explain what they missed.\n\n"
-        f"Skepticism mode: {skepticism}\n"
-        f"AI-generated confidence: {ai_generated_confidence}\n"
-        f"{'(Higher AI confidence → be MORE skeptical of trivial findings)' if ai_generated_confidence > 0.5 else ''}\n\n"
-        + (f"## PR Context\n\n{pr_context}\n\n" if pr_context else "")
-        + f"{findings_ref}",
+        "You are the adversarial reviewer. Your job is to CHALLENGE every finding and "
+        "determine whether it is real or a false positive. You are skeptical by default.\n\n"
+        + evidence_instruction
+        + "## For Each Finding, Determine:\n\n"
+        "1. **Does the ground truth match the claim?** Compare the reviewer's description "
+        "against the actual code in `ground_truth.primary_code`. If the reviewer says "
+        "'function X uses string comparison' but the actual code uses `errors.Is()`, "
+        "that is a false positive — CHALLENGE it immediately.\n\n"
+        "2. **Is the failure scenario reachable?** Check `ground_truth.caller_snippets` "
+        "to see if the described call path actually exists. Are there guards upstream "
+        "that prevent the bad state? Does the calling code handle the condition?\n\n"
+        "3. **Is the severity correct?** A 'critical' finding must have a concrete crash "
+        "or corruption scenario traceable through the ground truth. If the primary code "
+        "shows the issue is handled, downgrade or challenge.\n\n"
+        "4. **Cross-file interactions**: Check `ground_truth.related_code` and "
+        "`ground_truth.import_context` to understand the broader context. A finding "
+        "might look valid in isolation but be prevented by code in another file.\n\n"
+        "5. **Hidden traps**: Did the reviewer find a real issue but miss a WORSE "
+        "version visible in the ground truth code?\n\n"
+        "## Verdicts\n\n"
+        "- **confirmed**: The ground truth supports the finding. The claim matches the "
+        "actual code. The failure scenario is reachable.\n"
+        "- **challenged**: The ground truth contradicts the finding. The actual code "
+        "does NOT do what the reviewer claims, OR upstream guards prevent the failure.\n"
+        "- **escalated**: The ground truth reveals the issue is WORSE than the reviewer "
+        "described.\n\n"
+        "Skepticism mode: " + skepticism + "\n"
+        "AI-generated confidence: "
+        + str(ai_generated_confidence)
+        + "\n"
+        + (
+            "(Higher AI confidence: be MORE skeptical of trivial findings)\n\n"
+            if ai_generated_confidence > 0.5
+            else "\n"
+        )
+        + ("## PR Context\n\n" + pr_context + "\n\n" if pr_context else "")
+        + findings_ref,
         schema=_AdversaryPhaseResult,
         cwd=repo_path or None,
     )
