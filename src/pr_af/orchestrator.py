@@ -19,6 +19,7 @@ from uuid import uuid4
 import httpx
 
 from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
+from .cost_tracker import get_tracker
 from .diff_engine import parse_unified_diff
 from .evidence import EvidencePackage, extract_evidence_for_findings
 from .github.client import GitHubClient
@@ -107,6 +108,8 @@ class ReviewOrchestrator:
         self.cost_breakdown: dict[str, float] = {phase: 0.0 for phase in self.PHASE_ORDER}
         self.agent_invocations = 0
         self.budget_exhausted = False
+        self._cost_tracker = get_tracker()
+        self._cost_tracker.reset()  # Reset between reviews
 
         self.meta_config = MetaSelectorConfig()
         self.pr_data: GitHubPRData | None = None
@@ -907,6 +910,12 @@ class ReviewOrchestrator:
         for finding in scored_findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
 
+        # Use the higher of per-phase accumulated cost vs global litellm callback cost.
+        # The global tracker captures .ai() calls that per-phase tracking misses;
+        # per-phase tracking captures .harness() subprocess costs the callback misses.
+        global_tracked_cost = self._cost_tracker.total_cost
+        effective_cost = max(self.total_cost_usd, global_tracked_cost)
+
         summary = ReviewSummary(
             total_findings=len(scored_findings),
             by_severity=by_severity,
@@ -916,7 +925,7 @@ class ReviewOrchestrator:
             adversary_confirmed=self.adversary_confirmed_count,
             coverage_iterations=self.coverage_iterations,
             ai_generated_confidence=intake.ai_generated,
-            cost_usd=round(self.total_cost_usd, 4),
+            cost_usd=round(effective_cost, 4),
             duration_seconds=round(time.monotonic() - self.started_at, 3),
             budget_exhausted=self.budget_exhausted,
         )
@@ -926,8 +935,10 @@ class ReviewOrchestrator:
             anatomy=anatomy.model_dump(),
             plan=plan.model_dump(),
             budget={
-                "total_cost_usd": self.total_cost_usd,
+                "total_cost_usd": effective_cost,
                 "cost_breakdown": self.cost_breakdown,
+                "global_litellm_cost": global_tracked_cost,
+                "cost_by_model": self._cost_tracker.cost_by_model,
                 "budget_exhausted": self.budget_exhausted,
                 "max_cost_usd": self.config.budget.max_cost_usd,
                 "max_duration_seconds": self.config.budget.max_duration_seconds,
@@ -950,7 +961,8 @@ class ReviewOrchestrator:
         if elapsed > self.config.budget.max_duration_seconds:
             self.budget_exhausted = True
             return True
-        if self.total_cost_usd >= self.config.budget.max_cost_usd:
+        effective = max(self.total_cost_usd, self._cost_tracker.total_cost)
+        if effective >= self.config.budget.max_cost_usd:
             self.budget_exhausted = True
             return True
         phase_spent = self.cost_breakdown.get(phase, 0.0)

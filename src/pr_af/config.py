@@ -56,12 +56,38 @@ class BudgetConfig(BaseModel):
     max_review_depth: int = 2
 
 
+def _default_tier_map() -> dict[str, str]:
+    """Build tier→model map from env vars, using sensible OpenRouter defaults."""
+    ai_model = os.getenv(
+        "PR_AF_AI_MODEL",
+        os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "openrouter/google/gemini-2.5-flash")),
+    )
+    return {
+        "budget": os.getenv("PR_AF_MODEL_BUDGET", "openrouter/google/gemini-2.5-flash"),
+        "mid": os.getenv("PR_AF_MODEL_MID", ai_model),
+        "premium": os.getenv("PR_AF_MODEL_PREMIUM", ai_model),
+    }
+
+
+def resolve_model_tier(model_spec: str, tier_map: dict[str, str] | None = None) -> str:
+    """Resolve a model spec that may be a tier name ('budget', 'mid', 'premium')
+    into an actual model ID. Passes through already-qualified model IDs unchanged."""
+    if "/" in model_spec:
+        return model_spec  # Already a qualified model ID
+    tiers = tier_map or _default_tier_map()
+    return tiers.get(model_spec, model_spec)
+
+
 class ModelConfig(BaseModel):
     """Model routing per agent.
 
     Philosophy: budget models for gates/classification,
     premium models for planning/reviewing/challenging.
     Plan quality = review quality, so planner gets premium.
+
+    Values can be tier names ('budget', 'mid', 'premium') which are resolved
+    to actual model IDs via ``resolve_model_tier()`` at access time, or
+    fully-qualified model IDs (e.g. 'openrouter/google/gemini-2.5-flash').
     """
 
     intake_gate: str = "budget"  # .ai() fast classification
@@ -73,6 +99,15 @@ class ModelConfig(BaseModel):
     adversary: str = "premium"  # Challenge quality matters
     coverage_gate: str = "budget"  # Simple completeness check
     dedup_gate: str = "budget"  # Near-duplicate detection
+
+    def resolve(self) -> ModelConfig:
+        """Return a copy with all tier names resolved to actual model IDs."""
+        tier_map = _default_tier_map()
+        data = {}
+        for field_name in self.model_fields:
+            val = getattr(self, field_name)
+            data[field_name] = resolve_model_tier(val, tier_map)
+        return ModelConfig(**data)
 
 
 class ScoringConfig(BaseModel):
@@ -216,6 +251,9 @@ class ReviewConfig(BaseModel):
 
         if hasattr(review_input, "suggestion_mode") and review_input.suggestion_mode:
             config.comments.suggestion_mode = review_input.suggestion_mode
+
+        # Resolve tier names ('budget', 'mid', 'premium') → actual model IDs
+        config.models = config.models.resolve()
 
         return config
 
