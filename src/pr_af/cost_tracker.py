@@ -8,10 +8,17 @@ read it.
 Note: ``.harness()`` calls that spawn a subprocess (OpenCode CLI) do NOT go
 through litellm in this process — they won't be captured here.  Cost for those
 must come from the provider or be estimated separately.
+
+Implementation note: litellm fires ``async_log_success_event`` as a background
+task for ``acompletion()`` calls, so the cost is not available synchronously
+via the CustomLogger interface.  To fix this, we monkey-patch
+``litellm.acompletion`` to extract cost inline from the response object after
+each call completes.
 """
 
 from __future__ import annotations
 
+import functools
 import threading
 from typing import Any
 
@@ -53,30 +60,57 @@ class CostTracker(CustomLogger):
             self._by_model.clear()
             return total
 
-    # -- litellm callback interface ------------------------------------------
+    # -- inline cost extraction (called synchronously after each response) ---
 
-    def log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
-        self._record(response_obj, kwargs)
+    def record_response(self, response_obj: Any, model_hint: str = "unknown") -> None:
+        """Extract and record cost from a litellm response object.
 
-    async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
-        self._record(response_obj, kwargs)
-
-    def _record(self, response_obj: Any, kwargs: dict) -> None:
+        Called synchronously right after acompletion/completion returns,
+        so cost is available immediately without waiting for async callbacks.
+        """
         try:
             cost = litellm.completion_cost(completion_response=response_obj)
         except Exception:
-            # Unknown model pricing or missing usage — silently skip
             return
         if not cost or cost <= 0:
             return
-        model = getattr(response_obj, "model", None) or kwargs.get("model", "unknown")
+        model = getattr(response_obj, "model", None) or model_hint
         with self._lock:
             self._total += cost
             self._by_model[model] = self._by_model.get(model, 0.0) + cost
 
+    # -- litellm callback interface (kept as fallback for sync completion) ---
+
+    def log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
+        self.record_response(response_obj, kwargs.get("model", "unknown"))
+
+    async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
+        # No-op: we capture cost inline via the acompletion wrapper instead,
+        # so this avoids double-counting.
+        pass
+
 
 # Module-level singleton — imported by app.py and orchestrator.py
 _tracker: CostTracker | None = None
+_patched = False
+
+
+def _install_acompletion_wrapper(tracker: CostTracker) -> None:
+    """Wrap ``litellm.acompletion`` to record cost synchronously after each call."""
+    global _patched
+    if _patched:
+        return
+    _patched = True
+
+    _original_acompletion = litellm.acompletion
+
+    @functools.wraps(_original_acompletion)
+    async def _tracked_acompletion(*args: Any, **kwargs: Any) -> Any:
+        response = await _original_acompletion(*args, **kwargs)
+        tracker.record_response(response, kwargs.get("model", "unknown"))
+        return response
+
+    litellm.acompletion = _tracked_acompletion  # type: ignore[assignment]
 
 
 def get_tracker() -> CostTracker:
@@ -84,5 +118,8 @@ def get_tracker() -> CostTracker:
     global _tracker
     if _tracker is None:
         _tracker = CostTracker()
+        # Keep the callback for sync litellm.completion() calls
         litellm.callbacks.append(_tracker)  # type: ignore[arg-type]
+        # Wrap acompletion for immediate cost capture on async calls
+        _install_acompletion_wrapper(_tracker)
     return _tracker
