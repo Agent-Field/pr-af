@@ -11,11 +11,13 @@ PR-AF accepts reviews through three input modes, each with different context ric
 ### Mode 1: GitHub PR URL (Full Context)
 
 ```json
-POST /reasoner/pr-af/review
+POST /api/v1/execute/async/pr-af.review
 {
-  "pr_url": "https://github.com/owner/repo/pull/123",
-  "depth": "auto",
-  "max_cost_usd": 2.00
+  "input": {
+    "pr_url": "https://github.com/owner/repo/pull/123",
+    "depth": "auto",
+    "max_cost_usd": 2.00
+  }
 }
 ```
 
@@ -39,11 +41,13 @@ POST /reasoner/pr-af/review
 ### Mode 2: Diff Only (Lightweight)
 
 ```json
-POST /reasoner/pr-af/review
+POST /api/v1/execute/async/pr-af.review
 {
-  "diff": "--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,4 @@\n...",
-  "depth": "quick",
-  "max_cost_usd": 0.50
+  "input": {
+    "diff": "--- a/file.py\n+++ b/file.py\n@@ -1,3 +1,4 @@\n...",
+    "depth": "quick",
+    "max_cost_usd": 0.50
+  }
 }
 ```
 
@@ -63,13 +67,15 @@ POST /reasoner/pr-af/review
 ### Mode 3: Local Repo + Branch
 
 ```json
-POST /reasoner/pr-af/review
+POST /api/v1/execute/async/pr-af.review
 {
-  "repo_path": "/path/to/repo",
-  "base_ref": "main",
-  "head_ref": "feature-branch",
-  "depth": "standard",
-  "max_cost_usd": 1.50
+  "input": {
+    "repo_path": "/path/to/repo",
+    "base_ref": "main",
+    "head_ref": "feature-branch",
+    "depth": "standard",
+    "max_cost_usd": 1.50
+  }
 }
 ```
 
@@ -158,13 +164,15 @@ For organizations that want a persistent bot reviewer:
 
 ```bash
 # Call the API endpoint with curl or httpx
-curl -X POST https://agentfield.example.com/reasoner/pr-af/review \
+curl -X POST https://agentfield.example.com/api/v1/execute/async/pr-af.review \
   -H "Authorization: Bearer $AGENTFIELD_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "diff": "'"$(git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA)"'",
-    "depth": "standard",
-    "max_cost_usd": 2.00
+    "input": {
+      "diff": "'"$(git diff $CI_MERGE_REQUEST_DIFF_BASE_SHA...$CI_COMMIT_SHA)"'",
+      "depth": "standard",
+      "max_cost_usd": 2.00
+    }
   }' \
   -o review.json
 
