@@ -154,7 +154,29 @@ There are excellent AI code review tools on the market. PR-AF is not designed to
 
 ---
 
-## Quick Start: GitHub Actions (Zero Config)
+## Quick Start
+
+```bash
+git clone https://github.com/Agent-Field/pr-af.git && cd pr-af
+cp .env.example .env          # Add OPENROUTER_API_KEY, GITHUB_TOKEN
+docker compose up --build
+```
+
+Starts AgentField control plane (`http://localhost:8080`) + PR-AF agent.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
+```
+
+Poll for results:
+
+```bash
+curl http://localhost:8080/api/v1/executions/<execution_id>
+```
+
+## GitHub Actions Integration
 
 The easiest way to use PR-AF is to drop it into your GitHub Actions. It requires **zero configuration** and runs securely using GitHub's built-in `GITHUB_TOKEN`.
 
@@ -171,7 +193,7 @@ jobs:
   pr-af-review:
     if: github.event.label.name == 'pr-af'
     runs-on: ubuntu-latest
-    
+
     # Needs permissions to post comments and read code
     permissions:
       contents: read
