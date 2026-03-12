@@ -68,10 +68,20 @@ class CostTracker(CustomLogger):
         Called synchronously right after acompletion/completion returns,
         so cost is available immediately without waiting for async callbacks.
         """
+        # OpenRouter strips the "openrouter/" prefix from response.model,
+        # so litellm can't identify the provider for pricing.  We pass
+        # model_hint (the original kwarg with prefix) to completion_cost().
+        cost = 0.0
         try:
-            cost = litellm.completion_cost(completion_response=response_obj)
+            cost = litellm.completion_cost(
+                completion_response=response_obj, model=model_hint
+            )
         except Exception:
-            return
+            # Fallback: try without model override (works for non-OpenRouter)
+            try:
+                cost = litellm.completion_cost(completion_response=response_obj)
+            except Exception:
+                return
         if not cost or cost <= 0:
             return
         model = getattr(response_obj, "model", None) or model_hint
