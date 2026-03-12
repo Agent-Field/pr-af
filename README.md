@@ -2,34 +2,45 @@
 
 # PR-AF
 
-### Deep Architectural Pull Request Reviewer Built on [AgentField](https://github.com/Agent-Field/agentfield)
+### Open-Source Agentic PR Reviewer Built on [AgentField](https://github.com/Agent-Field/agentfield)
 
 [![Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-16a34a?style=for-the-badge)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Built with AgentField](https://img.shields.io/badge/Built%20with-AgentField-0A66C2?style=for-the-badge)](https://github.com/Agent-Field/agentfield)
+[![More from Agent-Field](https://img.shields.io/badge/More_from-Agent--Field-111827?style=for-the-badge&logo=github)](https://github.com/Agent-Field)
 
 <p>
+  <a href="#what-you-get-back">Output</a> •
   <a href="#how-it-works">How It Works</a> •
-  <a href="#dynamic-pipeline-architecture">Architecture</a> •
   <a href="#comparison">Comparison</a> •
-  <a href="#quick-start">Quick Start</a>
+  <a href="#quick-start">Quick Start</a> •
+  <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
 </div>
 
-Most AI code reviewers are incredibly fast and great at spotting surface-level syntax errors or missing parameters. However, when evaluating large, complex Pull Requests, static AI tools hit a ceiling: they generate false positives by guessing how functions interact outside the diff, and they miss systemic vulnerabilities that span across multiple files.
+Other tools run a single LLM pass over the diff with a fixed checklist. PR-AF **builds a custom review strategy for every PR**: it examines the change, reasons about what could go wrong, spawns parallel reviewer agents with runtime-crafted prompts, challenges its own findings adversarially, and posts specific inline comments. Free, open source, one API call. A deep review of a 500-line PR costs about **$0.80 in LLM calls**.
 
-**PR-AF** (Pull Request Agent Field) is a specialized pipeline designed to act as a **deep architectural auditor**. Instead of relying on a single language model prompt, PR-AF orchestrates a massively parallel, dynamically self-adapting cognitive architecture that extracts hard evidence from your repository, filters out noise, and synthesizes compound attack chains.
-
-*Zero false positives. Deep architectural insights. Open-source and BYOK (Bring Your Own Keys).*
+<p align="center">
+  <img src="assets/hero.png" alt="PR-AF — open-source agentic PR review" width="100%" />
+</p>
 
 ---
 
 ## Dynamic Pipeline Architecture
 
-PR-AF does not execute a static script. It structurally morphs its own execution graph based on the topology of the incoming Pull Request. 
+PR-AF does not execute a static script. It structurally morphs its own execution graph based on the topology of the incoming Pull Request.
 
-When a PR arrives, the system dynamically compiles **Meta-Dimensions**—evaluating the diff through semantic (logic), mechanical (types), and systemic (architecture) lenses. It uses these dimensions to spawn specialized, ephemeral sub-routines tailored exclusively to the exact context of the current PR. 
+When a PR arrives, the system dynamically compiles review dimensions — evaluating the diff through semantic, mechanical, and systemic lenses. It uses these dimensions to spawn specialized, ephemeral reviewer agents tailored exclusively to the exact context of the current PR.
+
+<p align="center">
+  <img src="assets/architecture.png" alt="PR-AF 7-Phase Adaptive Pipeline" width="100%" />
+</p>
+
+> Full architecture deep-dive: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+
+<details>
+<summary><strong>Pipeline flow (Mermaid)</strong></summary>
 
 ```mermaid
 graph TD
@@ -73,6 +84,8 @@ graph TD
     L -->|Blind spots detected| I1
     L -->|Full coverage achieved| O[Synthesized GitHub Annotations]:::output
 ```
+
+</details>
 
 ---
 
