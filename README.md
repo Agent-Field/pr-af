@@ -25,6 +25,39 @@ Other tools run a single LLM pass over the diff with a fixed checklist. PR-AF **
   <img src="assets/hero.png" alt="PR-AF — open-source agentic PR review" width="100%" />
 </p>
 
+## One-Call DX
+
+```bash
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
+```
+
+Posts inline GitHub review comments with evidence-grounded findings:
+
+```jsonc
+{
+  "total_findings": 5,
+  "by_severity": {"critical": 1, "important": 2, "suggestion": 2},
+  "findings": [
+    {
+      "severity": "critical",
+      "title": "SQL injection in user input handling",
+      "file": "src/api/users.py",
+      "line": 42,
+      "body": "Raw query parameter interpolated directly into SQL. Tracer confirms no parameterization between input and cursor.execute().",
+      "suggestion": "cursor.execute('SELECT * FROM users WHERE id = %s', (user_id,))",
+      "evidence": "AST extraction confirms f-string SQL at users.py:42, no sanitization in call chain",
+      "compound_risk": "Combined with missing auth middleware (finding #2), this is exploitable by unauthenticated users"
+    }
+  ],
+  "review_dimensions": 4,
+  "cost_usd": 0.83
+}
+```
+
+Custom review strategy per PR. Evidence-grounded. Zero false positives. ~$0.80 for a 500-line PR.
+
 ---
 
 ## Dynamic Pipeline Architecture
