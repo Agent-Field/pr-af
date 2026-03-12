@@ -88,7 +88,12 @@ class OpenCodeProvider:
                 if isinstance(key, str) and isinstance(value, str)
             }
 
-        temp_data_dir = tempfile.mkdtemp(prefix=".secaf-opencode-data-")
+        # Use a subdirectory under HOME instead of /tmp to avoid Railway's
+        # sandbox rejecting external_directory writes to /tmp/*.
+        home = os.environ.get("HOME", os.path.expanduser("~"))
+        opencode_data_base = os.path.join(home, ".opencode", "data")
+        os.makedirs(opencode_data_base, exist_ok=True)
+        temp_data_dir = tempfile.mkdtemp(prefix=".secaf-opencode-data-", dir=opencode_data_base)
         env["XDG_DATA_HOME"] = temp_data_dir
 
         start_api = time.monotonic()
