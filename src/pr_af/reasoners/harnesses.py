@@ -129,6 +129,14 @@ def _extract_languages(pr: GitHubPRData) -> list[str]:
     return sorted(languages)
 
 
+def _with_cost(data: dict, harness_result: object) -> dict:
+    """Inject cost_usd from HarnessResult into the return dict for orchestrator tracking."""
+    cost = getattr(harness_result, "cost_usd", None)
+    if cost is not None:
+        data["cost_usd"] = cost
+    return data
+
+
 def _write_context_file(content: str, name: str, repo_path: str) -> str:
     """Write large context to a file for .harness() to read. Returns file path."""
     ctx_dir = os.path.join(repo_path, ".pr-af-context")
@@ -240,7 +248,7 @@ def _cluster_descriptions(clusters: list[ChangeCluster]) -> list[dict[str, objec
 
 
 @router.reasoner()
-async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
+async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str = "", fallback_model: str = "") -> dict:
     pr = GitHubPRData.model_validate(pr_data)
     files_changed = len(pr.changed_files)
     languages = _extract_languages(pr)
@@ -263,6 +271,7 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
         f"Classify this pull request from metadata and diff footprint.\n\n{ai_input}",
         system="Return pr_type, complexity, and confident only. Use the provided schema.",
         schema=IntakeGate,
+        model=gate_model or None,
     )
 
     if gate_result.confident:
@@ -299,12 +308,13 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
         f"AI-generation confidence, and write a technical PR summary that captures the "
         f"actual substance of the change (not just the PR title restated).\n\n{fallback_input}",
         schema=IntakeResult,
+        model=fallback_model or None,
     )
-    return fallback_result.parsed.model_dump() if fallback_result.parsed else {}
+    return _with_cost(fallback_result.parsed.model_dump(), fallback_result) if fallback_result.parsed else {}
 
 
 @router.reasoner()
-async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dict:
+async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "", model: str = "") -> dict:
     import json as _json
 
     pr = GitHubPRData.model_validate(pr_data)
@@ -361,6 +371,7 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dic
         f"{context}",
         schema=_AnatomySemanticResult,
         cwd=repo_path or None,
+        model=model or None,
     )
 
     parsed = semantic.parsed if semantic.parsed else _AnatomySemanticResult()
@@ -376,11 +387,14 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dic
         intent_gaps=parsed.intent_gaps,
         context_notes=parsed.context_notes,
     )
-    return anatomy_result.model_dump()
+    return _with_cost(anatomy_result.model_dump(), semantic)
 
 
 @router.reasoner()
-async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", hints: list[str] | None = None) -> dict:
+async def planning_phase(
+    intake: dict, anatomy: dict, depth: str = "standard",
+    hints: list[str] | None = None, model: str = "",
+) -> dict:
     import json as _json
 
     intake_result = IntakeResult.model_validate(intake)
@@ -464,8 +478,11 @@ async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", h
         f"- If the PR has a narrow scope, fewer dimensions is BETTER than padding with fluff\n\n"
         f"{context}",
         schema=ReviewPlan,
+        model=model or None,
     )
-    return plan_result.parsed.model_dump() if plan_result.parsed else {"dimensions": [], "cross_ref_hints": []}
+    if plan_result.parsed:
+        return _with_cost(plan_result.parsed.model_dump(), plan_result)
+    return {"dimensions": [], "cross_ref_hints": []}
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +535,7 @@ async def meta_semantic(
     depth: str = "standard",
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
+    model: str = "",
 ) -> dict:
     """Semantic lens: What does this code DO differently?
 
@@ -584,10 +602,11 @@ async def meta_semantic(
         f"{context_ref}",
         schema=MetaDimensionResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="semantic", dimensions=[])
     parsed.lens = "semantic"
-    return parsed.model_dump()
+    return _with_cost(parsed.model_dump(), result)
 
 
 @router.reasoner()
@@ -597,6 +616,7 @@ async def meta_mechanical(
     depth: str = "standard",
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
+    model: str = "",
 ) -> dict:
     """Mechanical lens: Does this code WORK correctly at the language level?
 
@@ -669,10 +689,11 @@ async def meta_mechanical(
         f"{context_ref}",
         schema=MetaDimensionResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="mechanical", dimensions=[])
     parsed.lens = "mechanical"
-    return parsed.model_dump()
+    return _with_cost(parsed.model_dump(), result)
 
 
 @router.reasoner()
@@ -682,6 +703,7 @@ async def meta_systemic(
     depth: str = "standard",
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
+    model: str = "",
 ) -> dict:
     """Systemic lens: How does this code FIT the codebase?
 
@@ -754,10 +776,11 @@ async def meta_systemic(
         f"{context_ref}",
         schema=MetaDimensionResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="systemic", dimensions=[])
     parsed.lens = "systemic"
-    return parsed.model_dump()
+    return _with_cost(parsed.model_dump(), result)
 
 
 @router.reasoner()
@@ -773,6 +796,7 @@ async def review_dimension(
     intake_summary: str = "",
     diff_patches: dict[str, str] | None = None,
     all_dimension_names: list[str] | None = None,
+    model: str = "",
 ) -> dict:
     ctx_files = context_files or []
     risks = risk_surfaces or []
@@ -927,6 +951,7 @@ async def review_dimension(
         prompt,
         schema=_ReviewFindingsResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else _ReviewFindingsResult()
     sub_review_dicts = []
@@ -942,11 +967,11 @@ async def review_dimension(
             for sr in parsed.sub_reviews[:2]
             if sr.review_prompt and sr.target_files
         ]
-    return {
+    return _with_cost({
         "findings": [finding.model_dump() for finding in parsed.findings],
         "sub_reviews": sub_review_dicts,
         "current_depth": current_depth,
-    }
+    }, result)
 
 
 @router.reasoner()
@@ -954,6 +979,7 @@ async def compound_finder_phase(
     cluster_findings: list[dict],
     repo_path: str = "",
     evidence_map: dict[str, dict] | None = None,
+    model: str = "",
 ) -> dict:
     import json as _json
 
@@ -1031,15 +1057,17 @@ async def compound_finder_phase(
         + "\n\nReturn strict JSON matching the schema.",
         schema=_CompoundResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else _CompoundResult()
-    return {"findings": [finding.model_dump() for finding in parsed.findings]}
+    return _with_cost({"findings": [finding.model_dump() for finding in parsed.findings]}, result)
 
 
 @router.reasoner()
 async def compound_dedup_phase(
     compound_findings: list[dict],
     individual_findings_summary: str = "",
+    model: str = "",
 ) -> dict:
     """Deduplicate compound findings via a single harness call.
 
@@ -1093,6 +1121,7 @@ async def compound_dedup_phase(
         + "\n\nReturn `keep_indices` as a list of 0-based indices of findings to KEEP. "
         "Include your reasoning.",
         schema=_CompoundDedupResult,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else _CompoundDedupResult()
 
@@ -1102,7 +1131,7 @@ async def compound_dedup_phase(
         # Fallback: keep all if harness returned nothing valid
         valid_indices = list(range(len(compound_findings)))
 
-    return {"keep_indices": valid_indices, "reasoning": parsed.reasoning}
+    return _with_cost({"keep_indices": valid_indices, "reasoning": parsed.reasoning}, result)
 
 
 @router.reasoner()
@@ -1111,6 +1140,7 @@ async def evidence_verifier(
     evidence_packages: dict[str, dict] | None = None,
     pr_context: str = "",
     repo_path: str = "",
+    model: str = "",
 ) -> dict:
     import json as _json
 
@@ -1206,9 +1236,10 @@ async def evidence_verifier(
         + findings_ref,
         schema=_VerificationResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else _VerificationResult()
-    return {"verified_findings": [vf.model_dump() for vf in parsed.verified_findings]}
+    return _with_cost({"verified_findings": [vf.model_dump() for vf in parsed.verified_findings]}, result)
 
 
 @router.reasoner()
@@ -1218,6 +1249,7 @@ async def adversary_phase(
     pr_context: str = "",
     repo_path: str = "",
     evidence_packages: dict[str, dict] | None = None,
+    model: str = "",
 ) -> dict:
     import json as _json
 
@@ -1333,9 +1365,10 @@ async def adversary_phase(
         + findings_ref,
         schema=_AdversaryPhaseResult,
         cwd=repo_path or None,
+        model=model or None,
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
-    return {"results": [item.model_dump() for item in parsed.results]}
+    return _with_cost({"results": [item.model_dump() for item in parsed.results]}, result)
 
 
 @router.reasoner()
@@ -1343,6 +1376,7 @@ async def coverage_gate(
     anatomy: dict,
     reviewed_clusters: list[str],
     dimension_names_reviewed: list[str] | None = None,
+    model: str = "",
 ) -> dict:
     import json as _json
 
@@ -1373,5 +1407,6 @@ async def coverage_gate(
         f"If gaps exist, return concise gap_descriptions.\n\n{context}",
         system="Analyze the coverage state and return the structured result.",
         schema=CoverageGate,
+        model=model or None,
     )
     return gate.model_dump()

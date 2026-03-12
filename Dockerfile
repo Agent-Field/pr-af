@@ -48,7 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd --gid 10001 praf && \
     useradd --uid 10001 --gid praf --create-home --home-dir /home/praf --shell /bin/sh praf && \
     su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
-    mkdir -p /workspaces /home/praf/.local/share && \
+    mkdir -p /workspaces /home/praf/.local/share /home/praf/.opencode/data && \
     chown -R praf:praf /app /workspaces /home/praf && \
     rm -rf /var/lib/apt/lists/*
 

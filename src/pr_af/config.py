@@ -9,7 +9,6 @@ Follows the Contract-AF config pattern: centralized, typed, auditable.
 from __future__ import annotations
 
 import os
-import tempfile
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
@@ -275,7 +274,8 @@ class AIIntegrationConfig(BaseModel):
             "GH_TOKEN",
         )
         env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
-        xdg = os.getenv("XDG_DATA_HOME") or os.path.join(tempfile.gettempdir(), "opencode-shared-data")
+        home = os.getenv("HOME", os.path.expanduser("~"))
+        xdg = os.getenv("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
         os.makedirs(xdg, exist_ok=True)
         env["XDG_DATA_HOME"] = xdg
         return env
