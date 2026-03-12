@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import HTTPException, Request
 
 from .config import AIIntegrationConfig, ReviewConfig
+from .cost_tracker import get_tracker
 from .orchestrator import ReviewOrchestrator
 from .reasoners import router as reasoner_router
 from .schemas.input import ReviewInput  # noqa: TC001
@@ -336,6 +337,9 @@ async def health() -> dict[str, str]:
 
 cast("Any", app).add_api_route("/health", health, methods=["GET"])
 
+
+# Register global litellm cost tracker — must happen before any LLM calls
+get_tracker()
 
 app.include_router(reasoner_router)
 

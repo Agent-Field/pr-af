@@ -287,7 +287,7 @@ async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str =
             review_depth=depth if depth != "auto" else _auto_depth(gate_result.complexity),
             pr_summary=_pr_summary(pr),
         )
-        return intake_result.model_dump()
+        return {**intake_result.model_dump(), "cost_usd": 0.0}
 
     fallback_input = _json.dumps(
         {
@@ -482,7 +482,7 @@ async def planning_phase(
     )
     if plan_result.parsed:
         return _with_cost(plan_result.parsed.model_dump(), plan_result)
-    return {"dimensions": [], "cross_ref_hints": []}
+    return {"dimensions": [], "cross_ref_hints": [], "cost_usd": 0.0}
 
 
 # ---------------------------------------------------------------------------
@@ -986,7 +986,7 @@ async def compound_finder_phase(
     ev_map = evidence_map or {}
     validated_findings = [ReviewFinding.model_validate(finding) for finding in cluster_findings]
     if len(validated_findings) < 2:
-        return {"findings": []}
+        return {"findings": [], "cost_usd": 0.0}
 
     cluster_titles = {finding.title for finding in validated_findings}
 
@@ -1077,7 +1077,11 @@ async def compound_dedup_phase(
     """
 
     if len(compound_findings) <= 1:
-        return {"keep_indices": list(range(len(compound_findings))), "reasoning": "single finding, no dedup needed"}
+        return {
+            "keep_indices": list(range(len(compound_findings))),
+            "reasoning": "single finding, no dedup needed",
+            "cost_usd": 0.0,
+        }
 
     numbered_findings: list[str] = []
     for idx, f in enumerate(compound_findings):
@@ -1409,4 +1413,4 @@ async def coverage_gate(
         schema=CoverageGate,
         model=model or None,
     )
-    return gate.model_dump()
+    return {**gate.model_dump(), "cost_usd": 0.0}
