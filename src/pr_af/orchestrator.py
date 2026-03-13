@@ -72,6 +72,29 @@ def _unwrap(result: object) -> dict:
     return cast("dict", result)
 
 
+async def _staggered_gather(
+    coros: list[Any],
+    delay: float = 2.0,
+    return_exceptions: bool = False,
+) -> list[Any]:
+    """Launch coroutines with a stagger delay between each to avoid burst
+    rate-limit hits on providers like OpenRouter.
+
+    Behaves like ``asyncio.gather()`` but introduces a small delay between
+    scheduling each coroutine as a task so that the first requests can
+    complete (or at least start) before the next ones hit the API.
+    """
+    if delay <= 0 or len(coros) <= 1:
+        return list(await asyncio.gather(*coros, return_exceptions=return_exceptions))
+
+    tasks: list[asyncio.Task[Any]] = []
+    for i, coro in enumerate(coros):
+        tasks.append(asyncio.create_task(coro))
+        if i < len(coros) - 1:
+            await asyncio.sleep(delay)
+    return list(await asyncio.gather(*tasks, return_exceptions=return_exceptions))
+
+
 class ReviewOrchestrator:
     """Orchestrates the 7-phase PR review pipeline.
 
@@ -290,7 +313,8 @@ class ReviewOrchestrator:
             return MetaDimensionResult.model_validate(result_raw)
 
         tasks = [run_lens(lens) for lens in lenses if lens in lens_map]
-        meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
+        stagger = self.config.budget.stagger_delay_seconds
+        meta_results: list[MetaDimensionResult] = await _staggered_gather(tasks, delay=stagger)
         self.meta_selector_results = meta_results
         self.effective_depth = self._escalate_depth(review_depth)
 
@@ -473,7 +497,10 @@ class ReviewOrchestrator:
             self._register_cost("adversary", self._extract_cost(adversary_raw))
             return self._extract_adversary_results(adversary_raw)
 
-        batch_results = await asyncio.gather(*[run_batch(b) for b in batches])
+        stagger = self.config.budget.stagger_delay_seconds
+        batch_results = await _staggered_gather(
+            [run_batch(b) for b in batches], delay=stagger,
+        )
 
         all_results: list[AdversaryResult] = []
         for batch_result in batch_results:
@@ -524,12 +551,13 @@ class ReviewOrchestrator:
                         flush=True,
                     )
                     sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
-                    await asyncio.gather(*sub_tasks)
+                    await _staggered_gather(sub_tasks, delay=stagger)
 
+        stagger = self.config.budget.stagger_delay_seconds
         try:
             tasks = [run_dimension(dim, current_depth) for dim in plan.dimensions]
             if tasks:
-                await asyncio.gather(*tasks)
+                await _staggered_gather(tasks, delay=stagger)
         finally:
             await findings_queue.put(None)
 
@@ -1147,7 +1175,10 @@ class ReviewOrchestrator:
             )
             compound_tasks.append(task)
 
-        results = await asyncio.gather(*compound_tasks, return_exceptions=True)
+        stagger = self.config.budget.stagger_delay_seconds
+        results = await _staggered_gather(
+            compound_tasks, delay=stagger, return_exceptions=True,
+        )
         compound_findings: list[ReviewFinding] = []
         for raw_result in results:
             if isinstance(raw_result, Exception):
