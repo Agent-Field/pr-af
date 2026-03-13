@@ -50,10 +50,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm && \
     npm install -g @anthropic-ai/claude-code --prefix /usr/local/share/npm-global && \
     groupadd --gid 10001 praf && \
-    useradd --uid 10001 --gid praf --create-home --home-dir /home/praf --shell /bin/sh praf && \
-    su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
+    useradd --uid 10001 --gid praf --no-create-home --home-dir /home/praf --shell /bin/sh praf && \
     mkdir -p /workspaces /home/praf/.local/share /home/praf/.opencode/data /home/praf/.claude && \
-    chown -R praf:praf /app /workspaces /home/praf && \
+    chown -R praf:praf /home/praf /app /workspaces && \
+    su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /home/praf/.config/opencode && \
