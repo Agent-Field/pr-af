@@ -67,8 +67,19 @@ class BudgetConfig(BaseModel):
     max_review_depth: int = 2
 
 
-def _default_tier_map() -> dict[str, str]:
-    """Build tier→model map from env vars, using sensible OpenRouter defaults."""
+def _default_tier_map(provider: str = "opencode") -> dict[str, str]:
+    """Build tier→model map from env vars, with provider-appropriate defaults.
+
+    OpenCode uses OpenRouter model IDs; Claude Code uses normalized identifiers
+    (haiku, sonnet, opus) that the Claude Agent SDK understands natively.
+    """
+    if provider == "claude-code":
+        return {
+            "budget": os.getenv("PR_AF_MODEL_BUDGET", "haiku"),
+            "mid": os.getenv("PR_AF_MODEL_MID", "sonnet"),
+            "premium": os.getenv("PR_AF_MODEL_PREMIUM", "opus"),
+        }
+    # opencode / default — OpenRouter model IDs
     ai_model = os.getenv(
         "PR_AF_AI_MODEL",
         os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "openrouter/google/gemini-2.5-flash")),
@@ -111,9 +122,9 @@ class ModelConfig(BaseModel):
     coverage_gate: str = "budget"  # Simple completeness check
     dedup_gate: str = "budget"  # Near-duplicate detection
 
-    def resolve(self) -> ModelConfig:
+    def resolve(self, provider: str = "opencode") -> ModelConfig:
         """Return a copy with all tier names resolved to actual model IDs."""
-        tier_map = _default_tier_map()
+        tier_map = _default_tier_map(provider)
         data = {}
         for field_name in self.model_fields:
             val = getattr(self, field_name)
@@ -237,7 +248,7 @@ class ReviewConfig(BaseModel):
     depth_rules: list[dict] = Field(default_factory=list)
 
     @classmethod
-    def from_input(cls, review_input: ReviewInput) -> ReviewConfig:
+    def from_input(cls, review_input: ReviewInput, provider: str = "opencode") -> ReviewConfig:
         """Merge per-call API overrides into defaults (SEC-AF pattern)."""
         config = cls()
 
@@ -279,7 +290,7 @@ class ReviewConfig(BaseModel):
             config.comments.suggestion_mode = review_input.suggestion_mode
 
         # Resolve tier names ('budget', 'mid', 'premium') → actual model IDs
-        config.models = config.models.resolve()
+        config.models = config.models.resolve(provider=provider)
 
         return config
 

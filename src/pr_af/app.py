@@ -205,7 +205,7 @@ async def review(
     resolved_repo_path, was_cloned = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
-    config = ReviewConfig.from_input(review_input)
+    config = ReviewConfig.from_input(review_input, provider=_ai_config.provider)
     orchestrator = ReviewOrchestrator(app=app, input=review_input, config=config)
     try:
         result = await orchestrator.run()
