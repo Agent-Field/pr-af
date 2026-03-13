@@ -919,11 +919,11 @@ class ReviewOrchestrator:
         for finding in scored_findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
 
-        # Use the higher of per-phase accumulated cost vs global litellm callback cost.
-        # The global tracker captures .ai() calls that per-phase tracking misses;
-        # per-phase tracking captures .harness() subprocess costs the callback misses.
+        # Per-phase tracking now captures both .harness() subprocess costs AND
+        # .ai() gate costs (via cost_tracker snapshots in harnesses.py).
+        # The global litellm tracker is kept in metadata for debugging/validation.
         global_tracked_cost = self._cost_tracker.total_cost
-        effective_cost = max(self.total_cost_usd, global_tracked_cost)
+        effective_cost = self.total_cost_usd
 
         summary = ReviewSummary(
             total_findings=len(scored_findings),

@@ -5,6 +5,7 @@ import os
 from pydantic import BaseModel, Field
 
 from ..blast_radius import compute_blast_radius
+from ..cost_tracker import get_tracker
 from ..diff_engine import cluster_changes, compute_diff_stats, parse_unified_diff
 from ..schemas.gates import CoverageGate, IntakeGate
 from ..schemas.input import GitHubPRData
@@ -267,12 +268,17 @@ async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str =
         default=str,
     )
 
+    _tracker = get_tracker()
+    _cost_before = _tracker.total_cost
+
     gate_result = await router.app.ai(
         f"Classify this pull request from metadata and diff footprint.\n\n{ai_input}",
         system="Return pr_type, complexity, and confident only. Use the provided schema.",
         schema=IntakeGate,
         model=gate_model or None,
     )
+
+    _ai_cost = _tracker.total_cost - _cost_before
 
     if gate_result.confident:
         paths = [changed.path for changed in pr.changed_files]
@@ -287,7 +293,7 @@ async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str =
             review_depth=depth if depth != "auto" else _auto_depth(gate_result.complexity),
             pr_summary=_pr_summary(pr),
         )
-        return {**intake_result.model_dump(), "cost_usd": 0.0}
+        return {**intake_result.model_dump(), "cost_usd": _ai_cost}
 
     fallback_input = _json.dumps(
         {
@@ -1413,6 +1419,9 @@ async def coverage_gate(
         },
         default=str,
     )
+    _tracker = get_tracker()
+    _cost_before = _tracker.total_cost
+
     gate = await router.app.ai(
         f"Determine whether review coverage is complete. "
         f"Compare reviewed cluster identifiers against all change clusters. "
@@ -1422,4 +1431,6 @@ async def coverage_gate(
         schema=CoverageGate,
         model=model or None,
     )
-    return {**gate.model_dump(), "cost_usd": 0.0}
+
+    _ai_cost = _tracker.total_cost - _cost_before
+    return {**gate.model_dump(), "cost_usd": _ai_cost}
