@@ -45,8 +45,13 @@ class BudgetConfig(BaseModel):
         }
     )
 
-    # Concurrency
-    max_concurrent_reviewers: int = 8
+    # Concurrency — kept low to avoid cascading rate-limit backoff
+    # when using OpenRouter or other rate-limited providers.
+    max_concurrent_reviewers: int = 3
+
+    # Stagger delay (seconds) between launching parallel tasks to avoid
+    # burst rate-limit hits.  Set to 0 to disable staggering.
+    stagger_delay_seconds: float = 2.0
 
     # Inner loop caps (per-reviewer)
     max_reference_follows_per_reviewer: int = 3
