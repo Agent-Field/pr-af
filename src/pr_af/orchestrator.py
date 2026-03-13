@@ -820,6 +820,22 @@ class ReviewOrchestrator:
 
         return current_depth
 
+    def cleanup(self) -> None:
+        """Release all heavy in-memory state after a review completes (or fails).
+
+        Called from the request handler's ``finally`` block so memory is reclaimed
+        even when the pipeline errors out mid-execution.
+        """
+        self._cleanup_context_dir()
+
+        # Drop large data structures so the GC can free them immediately
+        self.pr_data = None
+        self.intake_result = None
+        self.anatomy_result = None
+        self.meta_selector_results.clear()
+        self.cost_breakdown.clear()
+        self._cost_tracker.reset()
+
     def _cleanup_context_dir(self) -> None:
         repo_path = self.input.repo_path or ""
         if not repo_path:

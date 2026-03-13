@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false
+import contextlib
+import gc
 import hashlib
 import hmac
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -76,7 +79,12 @@ def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
     )
 
 
-def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
+def _resolve_repo(repo_path: str | None, pr_url: str | None) -> tuple[str, bool]:
+    """Resolve the repository path, cloning if necessary.
+
+    Returns (repo_path, was_cloned) — ``was_cloned`` is True when we created a
+    fresh clone under the workdir so the caller knows it's safe to delete later.
+    """
     workdir = os.getenv("PR_AF_WORKDIR", "/workspaces")
     target = repo_path
     pr_number: int | None = None
@@ -88,7 +96,7 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         pr_number = _extract_pr_number(pr_url)
 
     if isinstance(target, str) and os.path.isdir(target):
-        return str(Path(target).resolve())
+        return str(Path(target).resolve()), False
 
     if isinstance(target, str) and target.startswith(("https://", "http://", "git@")):
         repo_name = target.rstrip("/").split("/")[-1].replace(".git", "")
@@ -138,9 +146,9 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         if pr_number:
             _checkout_pr_branch(target_dir, pr_number)
 
-        return target_dir
+        return target_dir, True
 
-    return str(Path(os.getenv("PR_AF_REPO_PATH", os.getcwd())).resolve())
+    return str(Path(os.getenv("PR_AF_REPO_PATH", os.getcwd())).resolve()), False
 
 
 @app.reasoner()
@@ -194,7 +202,7 @@ async def review(
         suggestion_mode=suggestion_mode,
         no_budget=no_budget,
     )
-    resolved_repo_path = _resolve_repo(review_input.repo_path, review_input.pr_url)
+    resolved_repo_path, was_cloned = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
     config = ReviewConfig.from_input(review_input)
@@ -209,6 +217,20 @@ async def review(
         print(f"[PR-AF] Pipeline error: {exc}\n{_tb.format_exc()}", flush=True)
         cast("Any", app).note(f"Review pipeline failed: {exc}", tags=["review", "error"])
         raise HTTPException(status_code=500, detail={"error": f"review execution failed: {exc}"}) from exc
+    finally:
+        # --- Post-review cleanup: free memory and disk -----------------------
+        # 1. Drop heavy orchestrator references so GC can reclaim them
+        orchestrator.cleanup()
+        del orchestrator
+
+        # 2. Remove cloned repo from disk (only repos we cloned, not user-provided)
+        if was_cloned and resolved_repo_path:
+            with contextlib.suppress(OSError):
+                shutil.rmtree(resolved_repo_path)
+                print(f"[PR-AF] Cleaned up cloned repo: {resolved_repo_path}", flush=True)
+
+        # 3. Force a full GC pass to release fragmented arenas back to the OS
+        gc.collect()
 
     return result.model_dump()
 
