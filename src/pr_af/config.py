@@ -9,7 +9,7 @@ Follows the Contract-AF config pattern: centralized, typed, auditable.
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
 
@@ -122,12 +122,18 @@ class ModelConfig(BaseModel):
     coverage_gate: str = "budget"  # Simple completeness check
     dedup_gate: str = "budget"  # Near-duplicate detection
 
+    # Fields that use .ai() (OpenRouter) instead of .harness() (provider).
+    # These always resolve with the OpenRouter tier map regardless of provider.
+    _AI_FIELDS: ClassVar[set[str]] = {"intake_gate", "coverage_gate"}
+
     def resolve(self, provider: str = "opencode") -> ModelConfig:
         """Return a copy with all tier names resolved to actual model IDs."""
-        tier_map = _default_tier_map(provider)
+        harness_map = _default_tier_map(provider)
+        ai_map = _default_tier_map("opencode")  # .ai() always uses OpenRouter
         data = {}
         for field_name in self.model_fields:
             val = getattr(self, field_name)
+            tier_map = ai_map if field_name in self._AI_FIELDS else harness_map
             data[field_name] = resolve_model_tier(val, tier_map)
         return ModelConfig(**data)
 
