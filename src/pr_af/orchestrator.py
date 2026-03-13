@@ -296,10 +296,19 @@ class ReviewOrchestrator:
 
         all_dimensions: list[ReviewDimension] = []
         cross_ref_hints: list[str] = []
+        dropped_empty = 0
         for meta in meta_results:
             for dim in meta.dimensions:
                 dim = dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
+                if not dim.target_files:
+                    dropped_empty += 1
+                    continue
                 all_dimensions.append(dim)
+        if dropped_empty:
+            print(
+                f"[PR-AF] Dropped {dropped_empty} dimension(s) with empty target_files",
+                flush=True,
+            )
 
         all_dimensions = self._dedup_cross_meta(all_dimensions)
 
