@@ -24,15 +24,21 @@ class BudgetConfig(BaseModel):
     max_cost_usd: float = 2.0
     max_duration_seconds: int = 1800
 
-    # Phase-level cost allocation (USD)
+    # Set to True to disable all budget enforcement (global + phase).
+    # Useful for cost measurement / benchmarking runs.
+    no_budget: bool = False
+
+    # Phase-level cost allocation (USD) — proportions of the global budget.
+    # These are the defaults for a $2 global cap.  When max_cost_usd is
+    # overridden, phase budgets scale proportionally (see from_input()).
     phase_budgets: dict[str, float] = Field(
         default_factory=lambda: {
-            "intake": 0.05,
-            "anatomy": 0.15,
+            "intake": 0.10,
+            "anatomy": 0.20,
             "meta_selectors": 0.30,  # 3 parallel lenses
-            "review": 0.90,  # Most budget goes here
-            "adversary": 0.40,  # Parallel batches
-            "cross_ref": 0.30,
+            "review": 0.80,  # Most budget goes here
+            "adversary": 0.30,  # Parallel batches
+            "cross_ref": 0.20,
             "coverage": 0.10,
             "synthesis": 0.00,  # Code, no LLM cost
             "output": 0.00,  # Code, no LLM cost
@@ -237,6 +243,21 @@ class ReviewConfig(BaseModel):
         if review_input.max_coverage_iterations is not None:
             config.budget.max_coverage_iterations = review_input.max_coverage_iterations
         config.budget.max_review_depth = min(review_input.max_review_depth, 3)
+
+        # no_budget mode: disable all cost enforcement
+        if getattr(review_input, "no_budget", False):
+            config.budget.no_budget = True
+
+        # Scale phase budgets proportionally when global cap differs from default.
+        # Default phase budgets are calibrated for $2.  If the caller sets $50,
+        # each phase gets 25× its default allocation.
+        default_global = cls().budget.max_cost_usd  # $2.0
+        if review_input.max_cost_usd != default_global:
+            scale = review_input.max_cost_usd / default_global
+            config.budget.phase_budgets = {
+                phase: cap * scale
+                for phase, cap in config.budget.phase_budgets.items()
+            }
 
         if review_input.models:
             for field_name, model_id in review_input.models.items():

@@ -40,6 +40,7 @@ class ReviewInput(BaseModel):
     max_concurrent_reviewers: int | None = None
     max_coverage_iterations: int | None = None
     max_review_depth: int = 2  # Max recursive sub-review depth (1=flat, 2=one sub-level, 3=max)
+    no_budget: bool = False  # Disable all budget enforcement (for cost benchmarking)
 
     # Output
     output_format: str = "github"  # github | json | sarif | markdown
