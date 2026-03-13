@@ -164,11 +164,12 @@ async def review(
     dry_run: bool = False,
     post_pr_number: int | None = None,
     suggestion_mode: str = "comment",
+    no_budget: bool = False,
 ) -> dict[str, object]:
     print(
         f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, "
         f"diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, "
-        f"depth={depth!r}, dry_run={dry_run!r}",
+        f"depth={depth!r}, dry_run={dry_run!r}, no_budget={no_budget!r}",
         flush=True,
     )
     review_input = ReviewInput(
@@ -191,6 +192,7 @@ async def review(
         dry_run=dry_run,
         post_pr_number=post_pr_number,
         suggestion_mode=suggestion_mode,
+        no_budget=no_budget,
     )
     resolved_repo_path = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:

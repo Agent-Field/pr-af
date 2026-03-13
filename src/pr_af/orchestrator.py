@@ -966,6 +966,8 @@ class ReviewOrchestrator:
         )
 
     def _budget_or_timeout_exhausted(self, phase: str) -> bool:
+        if self.config.budget.no_budget:
+            return False
         elapsed = time.monotonic() - self.started_at
         if elapsed > self.config.budget.max_duration_seconds:
             self.budget_exhausted = True
