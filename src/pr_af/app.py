@@ -370,7 +370,43 @@ get_tracker()
 app.include_router(reasoner_router)
 
 
+def _diagnose_claude_cli() -> None:
+    """Run at startup to verify Claude CLI is functional."""
+    import subprocess as _sp
+
+    env = {**os.environ}
+    env.pop("CLAUDECODE", None)  # Remove nesting guard if present
+
+    try:
+        ver = _sp.run(
+            ["claude", "--version"], capture_output=True, text=True, env=env, timeout=10
+        )
+        print(f"[PR-AF] Claude CLI version: {ver.stdout.strip()} (exit {ver.returncode})", flush=True)
+        if ver.returncode != 0:
+            print(f"[PR-AF] Claude CLI stderr: {ver.stderr.strip()}", flush=True)
+    except FileNotFoundError:
+        print("[PR-AF] Claude CLI not found in PATH", flush=True)
+    except Exception as e:
+        print(f"[PR-AF] Claude CLI check failed: {e}", flush=True)
+
+    # Quick auth test
+    try:
+        test = _sp.run(
+            ["claude", "--print", "respond with only the word OK"],
+            capture_output=True, text=True, env=env, timeout=30
+        )
+        print(f"[PR-AF] Claude CLI auth test: exit={test.returncode}", flush=True)
+        if test.returncode == 0:
+            print(f"[PR-AF] Claude CLI auth: OK ({test.stdout.strip()[:50]})", flush=True)
+        else:
+            print(f"[PR-AF] Claude CLI auth FAILED: {test.stderr.strip()[:500]}", flush=True)
+    except Exception as e:
+        print(f"[PR-AF] Claude CLI auth test error: {e}", flush=True)
+
+
 def main() -> None:
+    if _ai_config.provider == "claude-code":
+        _diagnose_claude_cli()
     app.run(port=8004, host="0.0.0.0")
 
 
