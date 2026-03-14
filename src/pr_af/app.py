@@ -99,8 +99,10 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> tuple[str, bool]
         return str(Path(target).resolve()), False
 
     if isinstance(target, str) and target.startswith(("https://", "http://", "git@")):
+        import uuid as _uuid
+
         repo_name = target.rstrip("/").split("/")[-1].replace(".git", "")
-        target_dir = os.path.join(workdir, repo_name)
+        target_dir = os.path.join(workdir, f"{repo_name}-{_uuid.uuid4().hex[:8]}")
         os.makedirs(workdir, exist_ok=True)
 
         clone_url = target
