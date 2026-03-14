@@ -52,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     groupadd --gid 10001 praf && \
     useradd --uid 10001 --gid praf --no-create-home --home-dir /home/praf --shell /bin/sh praf && \
     mkdir -p /workspaces /home/praf/.local/share /home/praf/.opencode/data /home/praf/.claude && \
+    echo '{"hasCompletedOnboarding":true}' > /home/praf/.claude.json && \
     chown -R praf:praf /home/praf /app /workspaces && \
     su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
     rm -rf /var/lib/apt/lists/*

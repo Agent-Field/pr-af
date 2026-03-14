@@ -355,7 +355,12 @@ class AIIntegrationConfig(BaseModel):
             "GITHUB_TOKEN",
             "GH_TOKEN",
         )
-        env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
+        _placeholder = {"", "UNUSED", "unused", "none", "None"}
+        env: dict[str, str] = {
+            key: value
+            for key in env_keys
+            if (value := os.getenv(key)) and value not in _placeholder
+        }
         home = os.getenv("HOME", os.path.expanduser("~"))
         xdg = os.getenv("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
         os.makedirs(xdg, exist_ok=True)
