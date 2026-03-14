@@ -349,6 +349,7 @@ class AIIntegrationConfig(BaseModel):
         env_keys = (
             "OPENROUTER_API_KEY",
             "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
             "GITHUB_TOKEN",
