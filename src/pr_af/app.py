@@ -28,6 +28,15 @@ _project_root = Path(__file__).resolve().parents[2]
 load_dotenv(_project_root / ".env")
 
 _ai_config = AIIntegrationConfig.from_env()
+
+# When using claude-code provider, remove ANTHROPIC_API_KEY from the process
+# environment if it's a placeholder. Claude CLI checks ANTHROPIC_API_KEY before
+# CLAUDE_CODE_OAUTH_TOKEN and fails if it finds an invalid value.
+if _ai_config.provider == "claude-code":
+    _api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not _api_key or _api_key in ("UNUSED", "unused", "none", "None", "placeholder"):
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
 NODE_ID = os.getenv("PR_AF", "pr-af")
 HarnessConfig = _agentfield.HarnessConfig
 
