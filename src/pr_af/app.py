@@ -396,10 +396,20 @@ def _diagnose_claude_cli() -> None:
             capture_output=True, text=True, env=env, timeout=30
         )
         print(f"[PR-AF] Claude CLI auth test: exit={test.returncode}", flush=True)
-        if test.returncode == 0:
-            print(f"[PR-AF] Claude CLI auth: OK ({test.stdout.strip()[:50]})", flush=True)
-        else:
-            print(f"[PR-AF] Claude CLI auth FAILED: {test.stderr.strip()[:500]}", flush=True)
+        print(f"[PR-AF] Claude CLI stdout: {test.stdout.strip()[:500]}", flush=True)
+        print(f"[PR-AF] Claude CLI stderr: {test.stderr.strip()[:500]}", flush=True)
+        if test.returncode != 0:
+            # Also try with explicit --api-key flag
+            key = env.get("ANTHROPIC_API_KEY", "")
+            print(f"[PR-AF] ANTHROPIC_API_KEY set: {bool(key)}, prefix: {key[:15]}...", flush=True)
+            # Try JSON output mode for more detail
+            test2 = _sp.run(
+                ["claude", "--print", "--output-format", "json", "say OK"],
+                capture_output=True, text=True, env=env, timeout=30
+            )
+            print(f"[PR-AF] JSON mode: exit={test2.returncode}", flush=True)
+            print(f"[PR-AF] JSON stdout: {test2.stdout.strip()[:500]}", flush=True)
+            print(f"[PR-AF] JSON stderr: {test2.stderr.strip()[:500]}", flush=True)
     except Exception as e:
         print(f"[PR-AF] Claude CLI auth test error: {e}", flush=True)
 
