@@ -249,7 +249,10 @@ def _cluster_descriptions(clusters: list[ChangeCluster]) -> list[dict[str, objec
 
 
 @router.reasoner()
-async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str = "", fallback_model: str = "", provider: str = "") -> dict:
+async def intake_phase(
+    pr_data: dict, depth: str = "standard", gate_model: str = "",
+    fallback_model: str = "", provider: str = "",
+) -> dict:
     pr = GitHubPRData.model_validate(pr_data)
     files_changed = len(pr.changed_files)
     languages = _extract_languages(pr)
