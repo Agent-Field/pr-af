@@ -175,6 +175,7 @@ async def review(
     focus: str = "auto",
     ignore_paths: list[str] | None = None,
     hints: list[str] | None = None,
+    provider: str | None = None,
     models: dict[str, str] | None = None,
     max_concurrent_reviewers: int | None = None,
     max_coverage_iterations: int | None = None,
@@ -185,10 +186,12 @@ async def review(
     suggestion_mode: str = "comment",
     no_budget: bool = False,
 ) -> dict[str, object]:
+    effective_provider = provider or _ai_config.provider
     print(
         f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, "
         f"diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, "
-        f"depth={depth!r}, dry_run={dry_run!r}, no_budget={no_budget!r}",
+        f"depth={depth!r}, dry_run={dry_run!r}, no_budget={no_budget!r}, "
+        f"provider={provider!r} (effective={effective_provider!r})",
         flush=True,
     )
     review_input = ReviewInput(
@@ -203,6 +206,7 @@ async def review(
         focus=focus,
         ignore_paths=ignore_paths or [],
         hints=hints or [],
+        provider=provider,
         models=models,
         max_concurrent_reviewers=max_concurrent_reviewers,
         max_coverage_iterations=max_coverage_iterations,
@@ -216,7 +220,7 @@ async def review(
     resolved_repo_path, was_cloned = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
-    config = ReviewConfig.from_input(review_input, provider=_ai_config.provider)
+    config = ReviewConfig.from_input(review_input, provider=effective_provider)
     orchestrator = ReviewOrchestrator(app=app, input=review_input, config=config)
     try:
         result = await orchestrator.run()
