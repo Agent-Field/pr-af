@@ -30,6 +30,11 @@ class ReviewInput(BaseModel):
     ignore_paths: list[str] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)  # Project-specific review hints
 
+    # Provider override (per-call).  Selects the coding-agent harness:
+    # "opencode", "claude-code", "codex", "gemini".
+    # When None, falls back to the PR_AF_PROVIDER env var (server default).
+    provider: str | None = None
+
     # Model overrides (per-call API variable)
     # Keys match ModelConfig field names: intake_gate, planner, reviewer, etc.
     # Values are model identifiers (e.g. "anthropic/claude-sonnet-4", "openai/gpt-4o")

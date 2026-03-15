@@ -249,7 +249,7 @@ def _cluster_descriptions(clusters: list[ChangeCluster]) -> list[dict[str, objec
 
 
 @router.reasoner()
-async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str = "", fallback_model: str = "") -> dict:
+async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str = "", fallback_model: str = "", provider: str = "") -> dict:
     pr = GitHubPRData.model_validate(pr_data)
     files_changed = len(pr.changed_files)
     languages = _extract_languages(pr)
@@ -315,12 +315,13 @@ async def intake_phase(pr_data: dict, depth: str = "standard", gate_model: str =
         f"actual substance of the change (not just the PR title restated).\n\n{fallback_input}",
         schema=IntakeResult,
         model=fallback_model or None,
+        provider=provider or None,
     )
     return _with_cost(fallback_result.parsed.model_dump(), fallback_result) if fallback_result.parsed else {}
 
 
 @router.reasoner()
-async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "", model: str = "") -> dict:
+async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "", model: str = "", provider: str = "") -> dict:
     import json as _json
 
     pr = GitHubPRData.model_validate(pr_data)
@@ -378,6 +379,7 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "", model:
         schema=_AnatomySemanticResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
 
     parsed = semantic.parsed if semantic.parsed else _AnatomySemanticResult()
@@ -399,7 +401,7 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "", model:
 @router.reasoner()
 async def planning_phase(
     intake: dict, anatomy: dict, depth: str = "standard",
-    hints: list[str] | None = None, model: str = "",
+    hints: list[str] | None = None, model: str = "", provider: str = "",
 ) -> dict:
     import json as _json
 
@@ -485,6 +487,7 @@ async def planning_phase(
         f"{context}",
         schema=ReviewPlan,
         model=model or None,
+        provider=provider or None,
     )
     if plan_result.parsed:
         return _with_cost(plan_result.parsed.model_dump(), plan_result)
@@ -542,6 +545,7 @@ async def meta_semantic(
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
     model: str = "",
+    provider: str = "",
 ) -> dict:
     """Semantic lens: What does this code DO differently?
 
@@ -612,6 +616,7 @@ async def meta_semantic(
         schema=MetaDimensionResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="semantic", dimensions=[])
     parsed.lens = "semantic"
@@ -626,6 +631,7 @@ async def meta_mechanical(
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
     model: str = "",
+    provider: str = "",
 ) -> dict:
     """Mechanical lens: Does this code WORK correctly at the language level?
 
@@ -702,6 +708,7 @@ async def meta_mechanical(
         schema=MetaDimensionResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="mechanical", dimensions=[])
     parsed.lens = "mechanical"
@@ -716,6 +723,7 @@ async def meta_systemic(
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
     model: str = "",
+    provider: str = "",
 ) -> dict:
     """Systemic lens: How does this code FIT the codebase?
 
@@ -792,6 +800,7 @@ async def meta_systemic(
         schema=MetaDimensionResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="systemic", dimensions=[])
     parsed.lens = "systemic"
@@ -812,6 +821,7 @@ async def review_dimension(
     diff_patches: dict[str, str] | None = None,
     all_dimension_names: list[str] | None = None,
     model: str = "",
+    provider: str = "",
 ) -> dict:
     ctx_files = context_files or []
     risks = risk_surfaces or []
@@ -967,6 +977,7 @@ async def review_dimension(
         schema=_ReviewFindingsResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else _ReviewFindingsResult()
     sub_review_dicts = []
@@ -995,6 +1006,7 @@ async def compound_finder_phase(
     repo_path: str = "",
     evidence_map: dict[str, dict] | None = None,
     model: str = "",
+    provider: str = "",
 ) -> dict:
     import json as _json
 
@@ -1073,6 +1085,7 @@ async def compound_finder_phase(
         schema=_CompoundResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else _CompoundResult()
     return _with_cost({"findings": [finding.model_dump() for finding in parsed.findings]}, result)
@@ -1083,6 +1096,7 @@ async def compound_dedup_phase(
     compound_findings: list[dict],
     individual_findings_summary: str = "",
     model: str = "",
+    provider: str = "",
 ) -> dict:
     """Deduplicate compound findings via a single harness call.
 
@@ -1141,6 +1155,7 @@ async def compound_dedup_phase(
         "Include your reasoning.",
         schema=_CompoundDedupResult,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else _CompoundDedupResult()
 
@@ -1160,6 +1175,7 @@ async def evidence_verifier(
     pr_context: str = "",
     repo_path: str = "",
     model: str = "",
+    provider: str = "",
 ) -> dict:
     import json as _json
 
@@ -1256,6 +1272,7 @@ async def evidence_verifier(
         schema=_VerificationResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else _VerificationResult()
     return _with_cost({"verified_findings": [vf.model_dump() for vf in parsed.verified_findings]}, result)
@@ -1269,6 +1286,7 @@ async def adversary_phase(
     repo_path: str = "",
     evidence_packages: dict[str, dict] | None = None,
     model: str = "",
+    provider: str = "",
 ) -> dict:
     import json as _json
 
@@ -1385,6 +1403,7 @@ async def adversary_phase(
         schema=_AdversaryPhaseResult,
         cwd=repo_path or None,
         model=model or None,
+        provider=provider or None,
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
     return _with_cost({"results": [item.model_dump() for item in parsed.results]}, result)
@@ -1396,6 +1415,7 @@ async def coverage_gate(
     reviewed_clusters: list[str],
     dimension_names_reviewed: list[str] | None = None,
     model: str = "",
+    provider: str = "",  # unused — coverage_gate uses .ai(), not .harness()
 ) -> dict:
     import json as _json
 

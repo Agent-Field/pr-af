@@ -243,6 +243,7 @@ class ReviewOrchestrator:
             depth=self.input.depth,
             gate_model=self.config.models.intake_gate,
             fallback_model=self.config.models.intake_fallback,
+            provider=self.config.provider,
         )
         self.agent_invocations += 1
         self._register_cost("intake", self._extract_cost(result_raw))
@@ -260,6 +261,7 @@ class ReviewOrchestrator:
             intake=intake.model_dump(),
             repo_path=self.input.repo_path or "",
             model=self.config.models.anatomy_semantic,
+            provider=self.config.provider,
         )
         self.agent_invocations += 1
         self._register_cost("anatomy", self._extract_cost(result_raw))
@@ -276,6 +278,7 @@ class ReviewOrchestrator:
             depth=review_depth,
             hints=self.config.hints,
             model=self.config.models.planner,
+            provider=self.config.provider,
         )
         self.agent_invocations += 1
         self._register_cost("planning", self._extract_cost(result_raw))
@@ -307,6 +310,7 @@ class ReviewOrchestrator:
                 repo_path=self.input.repo_path or "",
                 diff_patches=self._build_file_patches(),
                 model=self.config.models.reviewer,
+                provider=self.config.provider,
             )
             self.agent_invocations += 1
             self._register_cost("meta_selectors", self._extract_cost(result_raw))
@@ -395,6 +399,7 @@ class ReviewOrchestrator:
             pr_context=self._build_pr_context_string(),
             repo_path=self.input.repo_path or "",
             model=self.config.models.reviewer,
+            provider=self.config.provider,
         )
         self.agent_invocations += 1
         self._register_cost("adversary", self._extract_cost(verifier_raw))
@@ -492,6 +497,7 @@ class ReviewOrchestrator:
                 repo_path=self.input.repo_path or "",
                 evidence_packages=batch_evidence if batch_evidence else None,
                 model=self.config.models.adversary,
+                provider=self.config.provider,
             )
             self.agent_invocations += 1
             self._register_cost("adversary", self._extract_cost(adversary_raw))
@@ -537,6 +543,7 @@ class ReviewOrchestrator:
                     diff_patches=dim_patches if dim_patches else None,
                     all_dimension_names=[d.name for d in plan.dimensions if d.id != dim.id],
                     model=self.config.models.reviewer,
+                    provider=self.config.provider,
                 )
                 self.agent_invocations += 1
                 self._register_cost("review", self._extract_cost(result_raw))
@@ -660,6 +667,7 @@ class ReviewOrchestrator:
                 reviewed_clusters=reviewed_clusters,
                 dimension_names_reviewed=dimension_names,
                 model=self.config.models.coverage_gate,
+                provider=self.config.provider,
             )
             self.agent_invocations += 1
             self._register_cost("coverage", self._extract_cost(gate_raw))
@@ -1143,6 +1151,7 @@ class ReviewOrchestrator:
             compound_findings=[f.model_dump() for f in compound_findings],
             individual_findings_summary=individual_summary,
             model=self.config.models.dedup_gate,
+            provider=self.config.provider,
         )
         self.agent_invocations += 1
         self._register_cost("cross_ref", self._extract_cost(dedup_raw))
@@ -1188,6 +1197,7 @@ class ReviewOrchestrator:
                 repo_path=self.input.repo_path or "",
                 evidence_map=cluster_evidence or None,
                 model=self.config.models.cross_ref,
+                provider=self.config.provider,
             )
             compound_tasks.append(task)
 

@@ -229,6 +229,10 @@ class ReviewConfig(BaseModel):
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     comments: CommentConfig = Field(default_factory=CommentConfig)
 
+    # Effective provider for this review ("opencode", "claude-code", etc.).
+    # Set by from_input(); harness calls use this for per-call provider override.
+    provider: str = "opencode"
+
     # File ignore patterns (glob)
     ignore_paths: list[str] = Field(
         default_factory=lambda: [
@@ -294,6 +298,9 @@ class ReviewConfig(BaseModel):
 
         if hasattr(review_input, "suggestion_mode") and review_input.suggestion_mode:
             config.comments.suggestion_mode = review_input.suggestion_mode
+
+        # Store the effective provider so downstream harness calls can override.
+        config.provider = provider
 
         # Resolve tier names ('budget', 'mid', 'premium') → actual model IDs
         config.models = config.models.resolve(provider=provider)
