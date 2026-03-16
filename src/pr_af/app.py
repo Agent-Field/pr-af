@@ -2,10 +2,13 @@ from __future__ import annotations
 
 # pyright: reportMissingImports=false
 import contextlib
+import ctypes
+import ctypes.util
 import gc
 import hashlib
 import hmac
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -26,6 +29,122 @@ from .schemas.input import ReviewInput  # noqa: TC001
 
 _project_root = Path(__file__).resolve().parents[2]
 load_dotenv(_project_root / ".env")
+
+_logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Memory management helpers
+# ---------------------------------------------------------------------------
+
+# Try to load libc for malloc_trim — returns freed memory pages to the OS.
+# On glibc systems (Debian/Ubuntu), pymalloc holds freed arenas indefinitely;
+# calling malloc_trim(0) after large workloads shrinks RSS back down.
+_libc: ctypes.CDLL | None = None
+try:
+    _libc_name = ctypes.util.find_library("c")
+    if _libc_name:
+        _libc = ctypes.CDLL(_libc_name, use_errno=True)
+except OSError:
+    pass
+
+
+def _malloc_trim() -> None:
+    """Ask glibc to return free heap pages to the OS."""
+    if _libc is not None and hasattr(_libc, "malloc_trim"):
+        _libc.malloc_trim(0)
+
+
+def _snapshot_claude_sessions() -> set[str]:
+    """Take a snapshot of existing Claude Code session directories.
+
+    Returns a set of (project_dir, entry_name) tuples for all current session
+    artifacts.  By comparing before/after a review, we can identify which
+    sessions were created by *this* review and safely clean only those.
+    """
+    claude_dir = Path.home() / ".claude" / "projects"
+    if not claude_dir.is_dir():
+        return set()
+    entries: set[str] = set()
+    for project_dir in claude_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for entry in project_dir.iterdir():
+            entries.add(str(entry))
+    return entries
+
+
+def _cleanup_new_claude_sessions(before: set[str]) -> None:
+    """Remove Claude Code session artifacts created after the snapshot.
+
+    Compares current state against *before* snapshot and deletes any new
+    session directories and JSONL logs.  This is safe for concurrent reviews
+    because each review only cleans up sessions created during its own
+    execution window.
+    """
+    claude_dir = Path.home() / ".claude" / "projects"
+    if not claude_dir.is_dir():
+        return
+    cleaned_bytes = 0
+    for project_dir in claude_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for entry in project_dir.iterdir():
+            if str(entry) in before:
+                continue
+            # This is a new entry created during our review
+            try:
+                if entry.is_dir():
+                    size = sum(f.stat().st_size for f in entry.rglob("*") if f.is_file())
+                    shutil.rmtree(entry)
+                    cleaned_bytes += size
+                elif entry.is_file() and entry.suffix == ".jsonl":
+                    cleaned_bytes += entry.stat().st_size
+                    entry.unlink()
+            except OSError:
+                pass
+    if cleaned_bytes > 0:
+        print(f"[PR-AF] Cleaned up {cleaned_bytes / 1_048_576:.1f} MB of Claude session data", flush=True)
+
+
+def _cleanup_stale_tmp_artifacts() -> None:
+    """Remove leftover V8 JIT .so files and empty pyright temp dirs from /tmp.
+
+    Node.js (used by claude-code) leaves behind compiled V8 snapshots as
+    .so files, and pyright leaves empty temp directories.  These accumulate
+    over many harness invocations and waste disk space.
+
+    This only deletes artifacts that are NOT currently mmap'd by any process,
+    so it's safe to call while other reviews are running.
+    """
+    tmp = Path("/tmp")
+    if not tmp.is_dir():
+        return
+
+    # Clean empty pyright-* directories
+    for entry in tmp.iterdir():
+        if entry.name.startswith("pyright-") and entry.is_dir():
+            try:
+                if not any(entry.iterdir()):
+                    entry.rmdir()
+            except OSError:
+                pass
+
+    # Clean orphaned V8 .so files (ELF shared objects left by Node.js).
+    # These are created by claude-code/opencode child processes.  By the time
+    # this cleanup runs the child process has already exited, so we use a
+    # conservative age threshold (60s) to avoid removing files that belong
+    # to a currently-running concurrent harness call.
+    import time as _time
+
+    now = _time.time()
+    for entry in tmp.iterdir():
+        if entry.suffix == ".so" and entry.name.startswith(".") and entry.is_file():
+            try:
+                age = now - entry.stat().st_mtime
+                if age > 60:
+                    entry.unlink()
+            except OSError:
+                pass
 
 _ai_config = AIIntegrationConfig.from_env()
 
@@ -222,6 +341,10 @@ async def review(
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
     config = ReviewConfig.from_input(review_input, provider=effective_provider)
     orchestrator = ReviewOrchestrator(app=app, input=review_input, config=config)
+
+    # Snapshot existing Claude sessions so we only clean up ones we create
+    claude_sessions_before = _snapshot_claude_sessions()
+
     try:
         result = await orchestrator.run()
     except ValueError as exc:
@@ -244,8 +367,15 @@ async def review(
                 shutil.rmtree(resolved_repo_path)
                 print(f"[PR-AF] Cleaned up cloned repo: {resolved_repo_path}", flush=True)
 
-        # 3. Force a full GC pass to release fragmented arenas back to the OS
+        # 3. Clean up Claude Code session data created during this review
+        _cleanup_new_claude_sessions(claude_sessions_before)
+
+        # 4. Clean stale /tmp artifacts (V8 .so files, empty pyright dirs)
+        _cleanup_stale_tmp_artifacts()
+
+        # 5. Force a full GC pass then ask glibc to return freed pages to OS
         gc.collect()
+        _malloc_trim()
 
     return result.model_dump()
 

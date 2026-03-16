@@ -647,6 +647,10 @@ class ReviewOrchestrator:
         compound_findings = await self._run_compound_analysis(confirmed_findings, evidence_map)
         all_findings.extend(compound_findings)
 
+        # Release evidence data — it's no longer needed after this phase
+        evidence_map.clear()
+        verification_map.clear()
+
         return all_findings, adversary_results
 
     async def _run_coverage_loop(
@@ -693,16 +697,21 @@ class ReviewOrchestrator:
                 plan=ReviewPlan(dimensions=gap_dims, cross_ref_hints=plan.cross_ref_hints),
                 findings_queue=gap_queue,
             )
+            new_findings: list[ReviewFinding] = []
             while True:
                 batch = await gap_queue.get()
                 if batch is None:
                     break
-                findings.extend(batch)
+                new_findings.extend(batch)
+            findings.extend(new_findings)
 
+            # Only extract evidence for newly discovered findings, not the
+            # entire accumulated list — avoids re-doing work and keeps memory
+            # proportional to the gap batch size rather than total findings.
             gap_evidence: dict[str, EvidencePackage] = {}
-            if findings and self.input.repo_path:
+            if new_findings and self.input.repo_path:
                 gap_evidence = await extract_evidence_for_findings(
-                    findings=findings,
+                    findings=new_findings,
                     repo_path=self.input.repo_path,
                     diff_patches=self._build_file_patches(),
                     blast_radius=self.anatomy_result.blast_radius if self.anatomy_result else None,
@@ -710,6 +719,10 @@ class ReviewOrchestrator:
 
             if findings and not self._budget_or_timeout_exhausted("adversary"):
                 adversary_results = await self._run_parallel_adversary(findings, gap_evidence)
+
+            # Explicitly release evidence data before next iteration
+            gap_evidence.clear()
+            del gap_evidence
 
             challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
             findings = [f for f in findings if f.title not in challenged_titles]

@@ -38,7 +38,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/src \
     PATH=/home/praf/.opencode/bin:/usr/local/share/npm-global/bin:${PATH} \
     XDG_DATA_HOME=/home/praf/.local/share \
-    PR_AF_WORKDIR=/workspaces
+    PR_AF_WORKDIR=/workspaces \
+    MALLOC_TRIM_THRESHOLD_=0
 
 WORKDIR /app
 
