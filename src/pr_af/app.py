@@ -165,19 +165,23 @@ async def review(
     suggestion_mode: str = "comment",
     provider: str | None = None,
     harness_model: str | None = None,
+    ai_model: str | None = None,
 ) -> dict[str, object]:
     # Runtime provider/model override via contextvars — concurrent-safe.
-    # Each review gets its own context; no global state mutation.
+    # harness_model: model ID for the harness provider (e.g., "claude-sonnet-4-6" for claude-code)
+    # ai_model: model ID for .ai() calls via litellm (e.g., "anthropic/claude-sonnet-4-6")
+    # When ai_model is not set, .ai() uses the container's default (from env vars).
     from .runtime_config import set_runtime_overrides
 
-    if provider or harness_model:
+    if provider or harness_model or ai_model:
         set_runtime_overrides(
             provider=provider,
             harness_model=harness_model,
-            ai_model=harness_model,  # .ai() uses the same model
+            ai_model=ai_model,
         )
         print(
-            f"[PR-AF] Runtime override: provider={provider}, harness_model={harness_model}",
+            f"[PR-AF] Runtime override: provider={provider}, "
+            f"harness_model={harness_model}, ai_model={ai_model}",
             flush=True,
         )
     print(
