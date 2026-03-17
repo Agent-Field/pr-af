@@ -200,6 +200,7 @@ class AdversaryResult(BaseModel):
     """Adversary reviewer's assessment of a finding."""
 
     finding_title: str
+    reference_key: str = ""  # e.g. "[F1]" — archei-compliant reference key
     verdict: str  # confirmed | challenged | missed_trap
     reason: str
     severity_adjustment: str = "none"  # boost | discount | none

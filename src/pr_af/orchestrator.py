@@ -139,22 +139,43 @@ class ReviewOrchestrator:
         self.anatomy_result = anatomy
         print(f"[PR-AF] Anatomy complete: {len(anatomy.files)} files, {len(anatomy.clusters)} clusters", flush=True)
 
-        print("[PR-AF] Phase 3: META-SELECTORS (3 parallel lenses)", flush=True)
-        plan = await self._run_meta_selectors(intake, anatomy, review_depth)
-
-        print(f"[PR-AF] Meta-selectors complete: {len(plan.dimensions)} dimensions", flush=True)
-
-        print("[PR-AF] Phase 4+5: REVIEW (parallel) + LAYER", flush=True)
+        print("[PR-AF] Phase 3+4+5: META-SELECTORS (streaming) → REVIEW → LAYER", flush=True)
+        dims_queue: asyncio.Queue[list[ReviewDimension] | None] = asyncio.Queue()
         findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
 
-        review_task = asyncio.create_task(self._run_parallel_review(plan, findings_queue))
-        layer_task = asyncio.create_task(self._run_review_layer(plan, findings_queue, anatomy))
+        # Meta-selectors emit dimensions to dims_queue as each lens completes.
+        # Streaming review consumes dims and launches reviewers immediately.
+        # Layer collects findings from the findings_queue.
+        meta_task = asyncio.create_task(
+            self._run_meta_selectors_streaming(intake, anatomy, review_depth, dims_queue)
+        )
+        review_task = asyncio.create_task(
+            self._run_streaming_review(dims_queue, findings_queue)
+        )
+        layer_task = asyncio.create_task(
+            self._run_review_layer(
+                ReviewPlan(dimensions=[]),  # Plan built incrementally
+                findings_queue,
+                anatomy,
+            )
+        )
 
-        _, layer_result = await asyncio.gather(review_task, layer_task)
+        meta_results, _, layer_result = await asyncio.gather(meta_task, review_task, layer_task)
+
+        # Collect the final plan from meta results for reporting
+        all_dimensions: list[ReviewDimension] = []
+        for meta in meta_results:
+            for dim in meta.dimensions:
+                all_dimensions.append(dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"}))
+        plan = ReviewPlan(dimensions=all_dimensions)
+        self.meta_selector_results = meta_results
+        self.effective_depth = self._escalate_depth(review_depth)
+
         all_findings, adversary_results = layer_result
 
         print(
-            f"[PR-AF] Review+Layer done: {len(all_findings)} findings, {len(adversary_results)} adversary results",
+            f"[PR-AF] Streaming pipeline done: {len(plan.dimensions)} dimensions, "
+            f"{len(all_findings)} findings, {len(adversary_results)} adversary results",
             flush=True,
         )
 
@@ -313,6 +334,172 @@ class ReviewOrchestrator:
 
         return ReviewPlan(dimensions=all_dimensions, cross_ref_hints=cross_ref_hints)
 
+    async def _run_meta_selectors_streaming(
+        self,
+        intake: IntakeResult,
+        anatomy: AnatomyResult,
+        review_depth: str,
+        dims_queue: asyncio.Queue[list[ReviewDimension] | None],
+    ) -> list[MetaDimensionResult]:
+        """Stream dimensions to queue as each lens completes.
+
+        Instead of blocking until all 3 lenses finish, each lens emits its
+        dimensions immediately upon completion. The streaming reviewer
+        (consuming dims_queue) can start reviewing those dimensions while
+        slower lenses are still running.
+        """
+        if self._budget_or_timeout_exhausted("meta_selectors"):
+            await dims_queue.put(None)
+            return []
+
+        lenses = self.meta_config.enabled_lenses
+        lens_map = {
+            "semantic": meta_semantic,
+            "mechanical": meta_mechanical,
+            "systemic": meta_systemic,
+        }
+
+        # Track all launched dimensions for incremental cross-meta dedup
+        launched_dims: list[ReviewDimension] = []
+        launched_lock = asyncio.Lock()
+        depth_profile = DEPTH_PROFILES.get(review_depth)
+        max_dims = depth_profile.max_dimensions if depth_profile else 999
+
+        async def run_lens_and_emit(lens_name: str) -> MetaDimensionResult:
+            fn = lens_map[lens_name]
+            result_raw = await fn(
+                intake=intake.model_dump(),
+                anatomy=anatomy.model_dump(),
+                depth=review_depth,
+                repo_path=self.input.repo_path or "",
+                diff_patches=self._build_file_patches(),
+            )
+            self.agent_invocations += 1
+            self._register_cost("meta_selectors", self._extract_cost(result_raw))
+            meta = MetaDimensionResult.model_validate(result_raw)
+
+            # Prefix dimension IDs with lens name
+            dims = [
+                dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
+                for dim in meta.dimensions
+            ]
+
+            # Incremental cross-meta dedup: check new dims against already-launched
+            async with launched_lock:
+                new_dims: list[ReviewDimension] = []
+                for dim in dims:
+                    key = "|".join(sorted(dim.target_files))
+                    duplicate = False
+                    for existing in launched_dims:
+                        existing_key = "|".join(sorted(existing.target_files))
+                        if key == existing_key and dim.priority <= existing.priority:
+                            duplicate = True
+                            break
+                    if not duplicate and len(launched_dims) + len(new_dims) < max_dims:
+                        new_dims.append(dim)
+                launched_dims.extend(new_dims)
+
+            if new_dims:
+                print(
+                    f"[PR-AF] {meta.lens} lens complete: {len(meta.dimensions)} dims → "
+                    f"{len(new_dims)} after dedup → streaming to reviewers",
+                    flush=True,
+                )
+                await dims_queue.put(new_dims)
+            else:
+                print(
+                    f"[PR-AF] {meta.lens} lens complete: {len(meta.dimensions)} dims "
+                    f"(all deduped or at cap)",
+                    flush=True,
+                )
+
+            return meta
+
+        tasks = [run_lens_and_emit(lens) for lens in lenses if lens in lens_map]
+        meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
+
+        # Signal that no more dimensions will arrive
+        await dims_queue.put(None)
+
+        total_dims = sum(len(m.dimensions) for m in meta_results)
+        print(
+            f"[PR-AF] All meta-selectors done: "
+            f"{' + '.join(f'{m.lens}({len(m.dimensions)})' for m in meta_results)} "
+            f"= {total_dims} total → {len(launched_dims)} launched",
+            flush=True,
+        )
+
+        return meta_results
+
+    async def _run_streaming_review(
+        self,
+        dims_queue: asyncio.Queue[list[ReviewDimension] | None],
+        findings_queue: asyncio.Queue[list[ReviewFinding] | None],
+    ) -> None:
+        """Consume dimensions from queue and launch reviewers as they arrive.
+
+        Dimensions stream in as each meta-selector lens completes. This allows
+        early lenses' dimensions to be reviewed concurrently with slower lenses
+        still running. When all dimensions are reviewed, sends None sentinel
+        to findings_queue.
+        """
+        max_depth = self.config.budget.max_review_depth
+        semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
+        all_dim_names: list[str] = []
+        review_tasks: list[asyncio.Task] = []
+
+        async def run_dimension(dim: ReviewDimension, depth: int) -> None:
+            if self._budget_or_timeout_exhausted("review"):
+                return
+            async with semaphore:
+                all_patches = self._build_file_patches()
+                dim_patches = {f: p for f, p in all_patches.items() if f in dim.target_files}
+
+                result_raw = await review_dimension(
+                    review_prompt=dim.review_prompt,
+                    target_files=dim.target_files,
+                    context_files=dim.context_files,
+                    repo_path=self.input.repo_path or "",
+                    current_depth=depth,
+                    max_depth=max_depth,
+                    pr_narrative=self.anatomy_result.pr_narrative if self.anatomy_result else "",
+                    risk_surfaces=self.anatomy_result.risk_surfaces if self.anatomy_result else [],
+                    intake_summary=self.intake_result.pr_summary if self.intake_result else "",
+                    diff_patches=dim_patches if dim_patches else None,
+                    all_dimension_names=[n for n in all_dim_names if n != dim.name],
+                )
+                self.agent_invocations += 1
+                self._register_cost("review", self._extract_cost(result_raw))
+                findings = self._extract_findings(result_raw, dim)
+                await findings_queue.put(findings)
+
+                sub_reviews = self._extract_sub_reviews(result_raw, dim)
+                if sub_reviews and depth < max_depth and not self._budget_or_timeout_exhausted("review"):
+                    print(
+                        f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} "
+                        f"sub-review(s) at depth {depth + 1}/{max_depth}",
+                        flush=True,
+                    )
+                    sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
+                    await asyncio.gather(*sub_tasks)
+
+        try:
+            # Consume dimension batches as they arrive from meta-selectors
+            while True:
+                batch = await dims_queue.get()
+                if batch is None:
+                    break
+                all_dim_names.extend(dim.name for dim in batch)
+                for dim in batch:
+                    task = asyncio.create_task(run_dimension(dim, 0))
+                    review_tasks.append(task)
+
+            # Wait for all launched reviewers to complete
+            if review_tasks:
+                await asyncio.gather(*review_tasks)
+        finally:
+            await findings_queue.put(None)
+
     def _dedup_cross_meta(self, dimensions: list[ReviewDimension]) -> list[ReviewDimension]:
         seen_targets: dict[str, ReviewDimension] = {}
         deduped: list[ReviewDimension] = []
@@ -359,10 +546,21 @@ class ReviewOrchestrator:
         verification_map: dict[str, dict] = {}
         raw_verified = verifier_raw.get("verified_findings", []) if isinstance(verifier_raw, dict) else []
 
+        # Build reference key → title mapping for backward compatibility
+        # The verifier may return results keyed by reference_key ([F1], [F2], ...)
+        # or by title (old style). Support both.
+        ref_key_to_title: dict[str, str] = {
+            f"[F{idx + 1}]": f.title for idx, f in enumerate(findings)
+        }
+
         for vf in raw_verified:
             if not isinstance(vf, dict):
                 continue
             title = vf.get("title", "")
+            ref_key = vf.get("reference_key", "")
+            # Resolve reference key to title if title is missing
+            if not title and ref_key:
+                title = ref_key_to_title.get(ref_key, "")
             if not title:
                 continue
             verification_map[title] = vf

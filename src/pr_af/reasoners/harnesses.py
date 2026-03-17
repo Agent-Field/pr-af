@@ -71,6 +71,7 @@ class _AdversaryPhaseResult(BaseModel):
 
 class _VerifiedFinding(BaseModel):
     title: str = ""
+    reference_key: str = ""  # e.g. "[F1]" — used for archei-compliant matching
     verified: bool = True
     actual_behavior: str = ""
     revised_severity: str = ""
@@ -137,6 +138,99 @@ def _write_context_file(content: str, name: str, repo_path: str) -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     return path
+
+
+def _format_findings_for_llm(
+    findings: list[dict],
+    evidence_packages: dict[str, dict] | None = None,
+) -> str:
+    """Format findings as natural language narrative with reference keys.
+
+    Per archei rules: context for another LLM agent should be a string,
+    not JSON. This produces a readable narrative with [F1], [F2], etc.
+    reference keys for programmatic mapping downstream.
+    """
+    ev_map = evidence_packages or {}
+    lines: list[str] = []
+
+    for idx, f in enumerate(findings):
+        ref_key = f"[F{idx + 1}]"
+        title = f.get("title", "Untitled")
+        severity = f.get("severity", "unknown")
+        confidence = f.get("confidence", 0.5)
+        file_path = f.get("file_path", "")
+        line_start = f.get("line_start", 0)
+        body = f.get("body", "")
+        evidence = f.get("evidence", "")
+        suggestion = f.get("suggestion")
+        dimension = f.get("dimension_name", "")
+
+        location = file_path
+        if line_start:
+            location = f"{file_path}:{line_start}"
+
+        lines.append(f'{ref_key} "{title}" ({severity}, confidence: {confidence})')
+        if location:
+            lines.append(f"  File: {location}")
+        if dimension:
+            lines.append(f"  Dimension: {dimension}")
+        if body:
+            lines.append(f"  Claim: {body}")
+        if evidence:
+            lines.append(f"  Evidence: {evidence}")
+        if suggestion:
+            lines.append(f"  Suggestion: {suggestion}")
+
+        ev = ev_map.get(title, {})
+        if ev:
+            primary_code = ev.get("primary_code", "")
+            if primary_code:
+                truncated = primary_code[:4000]
+                lines.append(f"  Source code at location:\n    {truncated}")
+            caller_snippets = ev.get("caller_snippets", [])
+            if caller_snippets:
+                snippets_text = "; ".join(str(s)[:500] for s in caller_snippets[:5])
+                lines.append(f"  Call sites: {snippets_text}")
+            diff_hunk = ev.get("diff_hunk", "")
+            if diff_hunk:
+                lines.append(f"  Diff patch:\n    {diff_hunk[:2000]}")
+            import_context = ev.get("import_context", "")
+            if import_context:
+                lines.append(f"  Import context: {import_context}")
+            related_code = ev.get("related_code", "")
+            if related_code:
+                lines.append(f"  Related code: {related_code[:2000]}")
+            cross_ref = ev.get("cross_ref_snippets", [])
+            if cross_ref:
+                refs_text = "; ".join(str(s)[:500] for s in cross_ref[:3])
+                lines.append(f"  Cross-references: {refs_text}")
+            # Include verification info if present
+            verification = ev.get("verification")
+            if verification:
+                verified = verification.get("verified", True)
+                actual = verification.get("actual_behavior", "")
+                notes = verification.get("verification_notes", "")
+                status = "verified" if verified else "falsified"
+                lines.append(f"  Verification status: {status}")
+                if actual:
+                    lines.append(f"  Actual behavior: {actual}")
+                if notes:
+                    lines.append(f"  Verification notes: {notes}")
+
+        lines.append("")  # blank line between findings
+
+    return "\n".join(lines)
+
+
+def _build_reference_key_map(findings: list[dict]) -> dict[str, str]:
+    """Build a mapping from reference keys like [F1] to finding titles.
+
+    Returns: {"[F1]": "Missing error handler...", "[F2]": "Unused param...", ...}
+    """
+    return {
+        f"[F{idx + 1}]": f.get("title", "Untitled")
+        for idx, f in enumerate(findings)
+    }
 
 
 def _extract_areas(paths: list[str]) -> list[str]:
@@ -1116,95 +1210,71 @@ async def evidence_verifier(
     pr_context: str = "",
     repo_path: str = "",
 ) -> dict:
-    import json as _json
-
-    validated_findings = [ReviewFinding.model_validate(f) for f in findings]
     ev_map = evidence_packages or {}
 
-    findings_payload: list[dict] = []
-    for f in validated_findings:
-        entry: dict = {
-            "title": f.title,
-            "severity": f.severity,
-            "file_path": f.file_path,
-            "line_start": f.line_start,
-            "dimension_name": f.dimension_name,
-            "body": f.body,
-            "evidence": f.evidence,
-            "confidence": f.confidence,
-        }
-        ev = ev_map.get(f.title, {})
-        if ev:
-            entry["extracted_code"] = {
-                "primary_code": ev.get("primary_code", "")[:4000],
-                "caller_snippets": ev.get("caller_snippets", [])[:5],
-                "diff_hunk": ev.get("diff_hunk", "")[:2000],
-                "import_context": ev.get("import_context", ""),
-                "related_code": ev.get("related_code", "")[:2000],
-                "cross_ref_snippets": ev.get("cross_ref_snippets", [])[:3],
-            }
-        findings_payload.append(entry)
+    # Build archei-compliant narrative instead of JSON dump
+    findings_narrative = _format_findings_for_llm(findings, ev_map)
+    ref_key_map = _build_reference_key_map(findings)
 
-    findings_text = _json.dumps(findings_payload, default=str)
-
-    if len(findings_text) > 12000 and repo_path:
-        file_path = _write_context_file(findings_text, "verification_findings.json", repo_path)
+    if len(findings_narrative) > 12000 and repo_path:
+        file_path = _write_context_file(
+            findings_narrative, "verification_findings.txt", repo_path
+        )
         findings_ref = (
             "Findings with extracted code written to: " + file_path + "\n"
-            "Read this file for the full list of findings and their extracted code context."
+            "Read this file for the full list of findings and their code context."
         )
     else:
-        findings_ref = findings_text
+        findings_ref = findings_narrative
 
     result = await router.app.harness(
         "You are a senior engineer performing independent verification of code review findings "
         "before they reach the adversarial challenge phase. Each finding below was produced by "
-        "a reviewer who read the repository, and each includes `extracted_code` — real source "
-        "code pulled programmatically from the repo around the finding location.\n\n"
+        "a reviewer who read the repository. Where available, real source code extracted "
+        "programmatically from the repo is included inline.\n\n"
         "## Your Role\n\n"
         "You are not the original reviewer, and you are not the adversary. You are an "
         "independent investigator. Your job is to determine what the code ACTUALLY does "
         "at each finding location, and whether the reviewer's claim about the code's "
         "behavior is factually accurate.\n\n"
+        "## Finding Reference Keys\n\n"
+        "Each finding is labeled with a reference key like [F1], [F2], etc. Use these keys "
+        "in your output to identify which finding you are verifying. You may also include "
+        "the title for clarity, but the reference_key field is the primary identifier.\n\n"
         "## How to Investigate\n\n"
         "For each finding, you have two sources of truth:\n\n"
-        "1. **`extracted_code`** — actual source code around the finding location, call sites "
-        "of mentioned functions, the diff patch, and import/dependency context. This was "
-        "extracted programmatically, so it is what the code really says.\n\n"
+        "1. **Inline source code** — where available, real source code around the finding "
+        "location, call sites, diff patches, and import context are included directly in "
+        "the finding narrative below.\n\n"
         "2. **The repository itself** — you have full access. Use it to trace connections "
-        "the extracted code doesn't cover: follow function calls across modules, check how "
+        "the inline code doesn't cover: follow function calls across modules, check how "
         "values flow through layers, understand the broader architecture around the finding.\n\n"
-        "Start with the extracted code to understand the local picture. Then browse the repo "
-        "to understand the broader context — how does this code connect to the rest of the "
-        "system? What are the upstream callers and downstream consumers? What are the implicit "
-        "contracts this code participates in?\n\n"
+        "Start with the inline code to understand the local picture. Then browse the repo "
+        "to understand the broader context.\n\n"
         "## What to Determine\n\n"
         "For each finding, answer these questions through investigation:\n\n"
-        "- **Does the code actually behave as the reviewer claims?** Read the `extracted_code` "
-        "and compare it against the reviewer's description in `body`. If the reviewer says "
-        "'this function uses string comparison' but the extracted code shows `errors.Is()`, "
+        "- **Does the code actually behave as the reviewer claims?** Read the source code "
+        "and compare it against the reviewer's claim. If the reviewer says "
+        "'this function uses string comparison' but the code shows `errors.Is()`, "
         "the claim is factually wrong.\n\n"
-        "- **Is the described scenario actually reachable?** Check `caller_snippets` and "
+        "- **Is the described scenario actually reachable?** Check call sites and "
         "browse the repo for call paths. Can the problematic state the reviewer describes "
-        "actually occur in practice? Are there guards, validators, or type constraints "
-        "upstream that prevent it?\n\n"
-        "- **What does the broader context reveal?** The `import_context` and `related_code` "
+        "actually occur in practice? Are there guards upstream that prevent it?\n\n"
+        "- **What does the broader context reveal?** Import context and related code "
         "show how this file connects to the rest of the codebase. Sometimes a finding looks "
-        "valid in isolation but is prevented by code in another module. Sometimes it looks "
-        "minor in isolation but is amplified by how the code is used elsewhere.\n\n"
-        "- **Is the severity proportionate?** Based on what you found, does the severity "
-        "match the actual impact? A 'critical' finding should have a concrete, traceable "
-        "failure path. An 'important' finding should have a realistic scenario.\n\n"
+        "valid in isolation but is prevented by code in another module.\n\n"
+        "- **Is the severity proportionate?** A 'critical' finding should have a concrete, "
+        "traceable failure path. An 'important' finding should have a realistic scenario.\n\n"
         "## Output\n\n"
         "For each finding, return:\n"
-        "- `title`: the finding's title (must match exactly)\n"
+        "- `reference_key`: the finding's reference key (e.g. [F1], [F2])\n"
+        "- `title`: the finding's title\n"
         "- `verified`: true if the code behavior matches the reviewer's claim, false if it doesn't\n"
         "- `actual_behavior`: what the code ACTUALLY does at this location (brief, factual)\n"
         "- `revised_severity`: your assessment of the correct severity (critical/important/suggestion/nitpick)\n"
         "- `revised_confidence`: your confidence in the finding's validity (0.0-1.0)\n"
         "- `verification_notes`: what you found during investigation that the downstream "
-        "adversary should know — especially any discrepancies between the claim and reality, "
-        "or important context from the broader codebase\n\n"
+        "adversary should know\n\n"
         + ("## PR Context\n\n" + pr_context + "\n\n" if pr_context else "")
         + "## Findings to Verify\n\n"
         + findings_ref,
@@ -1212,7 +1282,20 @@ async def evidence_verifier(
         cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else _VerificationResult()
-    return {"verified_findings": [vf.model_dump() for vf in parsed.verified_findings]}
+
+    # Resolve reference keys back to titles for backward compatibility
+    resolved_findings: list[dict] = []
+    for vf in parsed.verified_findings:
+        vf_dict = vf.model_dump()
+        # If verifier used reference_key but not title, resolve from map
+        if vf.reference_key and not vf.title:
+            vf_dict["title"] = ref_key_map.get(vf.reference_key, vf.reference_key)
+        elif vf.reference_key and vf.title:
+            # Both present — keep title as-is (verifier may have matched exactly)
+            pass
+        resolved_findings.append(vf_dict)
+
+    return {"verified_findings": resolved_findings}
 
 
 @router.reasoner()
@@ -1223,48 +1306,26 @@ async def adversary_phase(
     repo_path: str = "",
     evidence_packages: dict[str, dict] | None = None,
 ) -> dict:
-    import json as _json
-
-    validated_findings = [ReviewFinding.model_validate(finding) for finding in findings]
     skepticism = "standard"
     if ai_generated_confidence > 0.5:
         skepticism = "high"
 
     ev_map = evidence_packages or {}
 
-    findings_with_evidence: list[dict] = []
-    for f in validated_findings:
-        entry: dict = {
-            "title": f.title,
-            "severity": f.severity,
-            "file_path": f.file_path,
-            "dimension_name": f.dimension_name,
-            "body": f.body,
-            "evidence": f.evidence,
-            "suggestion": f.suggestion,
-            "confidence": f.confidence,
-        }
-        ev = ev_map.get(f.title, {})
-        if ev:
-            entry["ground_truth"] = {
-                "primary_code": ev.get("primary_code", "")[:3000],
-                "caller_snippets": ev.get("caller_snippets", [])[:5],
-                "diff_hunk": ev.get("diff_hunk", "")[:2000],
-                "import_context": ev.get("import_context", ""),
-                "related_code": ev.get("related_code", "")[:2000],
-            }
-        findings_with_evidence.append(entry)
+    # Build archei-compliant narrative instead of JSON dump
+    findings_narrative = _format_findings_for_llm(findings, ev_map)
+    ref_key_map = _build_reference_key_map(findings)
 
-    findings_summary = _json.dumps(findings_with_evidence, default=str)
-
-    if len(findings_summary) > 10000 and repo_path:
-        file_path = _write_context_file(findings_summary, "adversary_findings.json", repo_path)
+    if len(findings_narrative) > 10000 and repo_path:
+        file_path = _write_context_file(
+            findings_narrative, "adversary_findings.txt", repo_path
+        )
         findings_ref = (
             "Full findings with ground-truth evidence written to: " + file_path + "\n"
             "Read this file for complete finding details and code evidence."
         )
     else:
-        findings_ref = "Findings with ground-truth evidence:\n" + findings_summary
+        findings_ref = "Findings with ground-truth evidence:\n\n" + findings_narrative
 
     has_evidence = bool(ev_map)
 
@@ -1272,22 +1333,16 @@ async def adversary_phase(
     if has_evidence:
         evidence_instruction = (
             "## Ground-Truth Evidence (CRITICAL)\n\n"
-            "Each finding below includes a `ground_truth` section containing ACTUAL CODE "
-            "extracted programmatically from the repository. This is the REAL code — not the "
-            "reviewer's description of it. Use this as your primary verification source:\n\n"
-            "- `primary_code`: The actual source code around the finding location (with line numbers)\n"
-            "- `caller_snippets`: Real call sites of functions mentioned in the finding\n"
-            "- `diff_hunk`: The actual diff patch for this file\n"
-            "- `import_context`: What this file imports and what imports it\n"
-            "- `related_code`: Code from non-PR files that interact with the finding\n\n"
+            "Each finding below includes actual source code extracted programmatically from "
+            "the repository — this is the REAL code, not the reviewer's description of it. "
+            "Use the inline source code, call sites, diff patches, and import context as "
+            "your primary verification source.\n\n"
             "**VERIFICATION PROTOCOL**: For each finding:\n"
             "1. Read the reviewer's CLAIM about what the code does\n"
-            "2. Read the `ground_truth.primary_code` to see what the code ACTUALLY does\n"
-            "3. If the claim contradicts the ground truth → CHALLENGE as false positive\n"
-            "4. If the claim matches the ground truth → check caller_snippets to verify "
-            "the failure scenario is reachable\n"
-            "5. You may ALSO browse the repo for additional verification, but the ground "
-            "truth should catch most false positives\n\n"
+            "2. Read the inline source code to see what the code ACTUALLY does\n"
+            "3. If the claim contradicts the source code, CHALLENGE as false positive\n"
+            "4. If the claim matches, check call sites to verify the failure scenario is reachable\n"
+            "5. You may ALSO browse the repo for additional verification\n\n"
         )
     else:
         evidence_instruction = (
@@ -1300,29 +1355,33 @@ async def adversary_phase(
     result = await router.app.harness(
         "You are the adversarial reviewer. Your job is to CHALLENGE every finding and "
         "determine whether it is real or a false positive. You are skeptical by default.\n\n"
+        "## Finding Reference Keys\n\n"
+        "Each finding is labeled with a reference key like [F1], [F2], etc. Use these keys "
+        "in your output via the reference_key field to identify which finding you are "
+        "challenging. You may also include the finding_title for clarity.\n\n"
         + evidence_instruction
         + "## For Each Finding, Determine:\n\n"
-        "1. **Does the ground truth match the claim?** Compare the reviewer's description "
-        "against the actual code in `ground_truth.primary_code`. If the reviewer says "
-        "'function X uses string comparison' but the actual code uses `errors.Is()`, "
+        "1. **Does the source code match the claim?** Compare the reviewer's claim "
+        "against the actual code provided inline. If the reviewer says "
+        "'function X uses string comparison' but the code uses `errors.Is()`, "
         "that is a false positive — CHALLENGE it immediately.\n\n"
-        "2. **Is the failure scenario reachable?** Check `ground_truth.caller_snippets` "
+        "2. **Is the failure scenario reachable?** Check the call sites provided "
         "to see if the described call path actually exists. Are there guards upstream "
         "that prevent the bad state? Does the calling code handle the condition?\n\n"
         "3. **Is the severity correct?** A 'critical' finding must have a concrete crash "
-        "or corruption scenario traceable through the ground truth. If the primary code "
+        "or corruption scenario traceable through the code. If the code "
         "shows the issue is handled, downgrade or challenge.\n\n"
-        "4. **Cross-file interactions**: Check `ground_truth.related_code` and "
-        "`ground_truth.import_context` to understand the broader context. A finding "
+        "4. **Cross-file interactions**: Check related code and "
+        "import context to understand the broader context. A finding "
         "might look valid in isolation but be prevented by code in another file.\n\n"
         "5. **Hidden traps**: Did the reviewer find a real issue but miss a WORSE "
-        "version visible in the ground truth code?\n\n"
+        "version visible in the source code?\n\n"
         "## Verdicts\n\n"
-        "- **confirmed**: The ground truth supports the finding. The claim matches the "
+        "- **confirmed**: The source code supports the finding. The claim matches the "
         "actual code. The failure scenario is reachable.\n"
-        "- **challenged**: The ground truth contradicts the finding. The actual code "
+        "- **challenged**: The source code contradicts the finding. The actual code "
         "does NOT do what the reviewer claims, OR upstream guards prevent the failure.\n"
-        "- **escalated**: The ground truth reveals the issue is WORSE than the reviewer "
+        "- **escalated**: The source code reveals the issue is WORSE than the reviewer "
         "described.\n\n"
         "Skepticism mode: " + skepticism + "\n"
         "AI-generated confidence: "
@@ -1339,7 +1398,18 @@ async def adversary_phase(
         cwd=repo_path or None,
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
-    return {"results": [item.model_dump() for item in parsed.results]}
+
+    # Resolve reference keys back to finding_titles for backward compatibility
+    resolved_results: list[dict] = []
+    for item in parsed.results:
+        item_dict = item.model_dump()
+        if item.reference_key and not item.finding_title:
+            item_dict["finding_title"] = ref_key_map.get(
+                item.reference_key, item.reference_key
+            )
+        resolved_results.append(item_dict)
+
+    return {"results": resolved_results}
 
 
 @router.reasoner()
@@ -1381,6 +1451,7 @@ async def coverage_gate(
     return gate.model_dump()
 
 
+@router.reasoner()
 async def finding_relevance_gate(finding: dict) -> dict:
     """Fast .ai() classifier: is this finding a real functional bug or noise?"""
     import json as _json
@@ -1416,9 +1487,30 @@ async def finding_relevance_gate(finding: dict) -> dict:
     }
 
 
+@router.reasoner()
 async def output_calibration_gate(findings: list[dict]) -> dict:
-    """Final .ai() gate: keep only findings worth posting as PR comments."""
+    """Final calibration gate: keep only findings worth posting as PR comments.
+
+    Uses .ai() for small batches (<= 5 findings) and falls back to .harness()
+    for larger batches where deeper reasoning over many findings is needed.
+    """
     import json as _json
+
+    calibration_prompt = (
+        "You are a senior engineer deciding which code review comments to post on a PR.\n\n"
+        "Keep ONLY findings about:\n"
+        "- Functional correctness bugs\n"
+        "- Security vulnerabilities\n"
+        "- Data integrity issues\n"
+        "- Race conditions or concurrency bugs\n"
+        "- Resource leaks\n\n"
+        "Drop findings about:\n"
+        "- Style preferences, naming conventions\n"
+        "- Design opinions without functional impact\n"
+        "- Suggestions that are nice-to-have but not bugs\n"
+        "- Nitpicks about formatting or documentation\n\n"
+        "Return the indices of findings to KEEP.\n\n"
+    )
 
     numbered = []
     for i, f in enumerate(findings):
@@ -1433,32 +1525,38 @@ async def output_calibration_gate(findings: list[dict]) -> dict:
 
     findings_json = _json.dumps(numbered, default=str)
 
-    gate = await router.app.ai(
-        f"You are a senior engineer deciding which code review comments to post on a PR.\n\n"
-        f"Keep ONLY findings about:\n"
-        f"- Functional correctness bugs\n"
-        f"- Security vulnerabilities\n"
-        f"- Data integrity issues\n"
-        f"- Race conditions or concurrency bugs\n"
-        f"- Resource leaks\n\n"
-        f"Drop findings about:\n"
-        f"- Style preferences, naming conventions\n"
-        f"- Design opinions without functional impact\n"
-        f"- Suggestions that are nice-to-have but not bugs\n"
-        f"- Nitpicks about formatting or documentation\n\n"
-        f"Return the indices of findings to KEEP.\n\n"
-        f"Findings:\n{findings_json}",
-        system="Select findings to keep. Be selective — only real functional issues.",
+    # .ai() fallback pattern: small input uses fast .ai(), large input
+    # uses .harness() for deeper reasoning per archei rules
+    if len(findings) <= 5:
+        gate = await router.app.ai(
+            calibration_prompt + f"Findings:\n{findings_json}",
+            system="Select findings to keep. Be selective — only real functional issues.",
+            schema=OutputCalibrationGate,
+        )
+        return gate.model_dump()
+
+    # Large batch: use .harness() which can reason more deeply about
+    # interactions between many findings and make better keep/drop decisions
+    result = await router.app.harness(
+        calibration_prompt
+        + "There are many findings to evaluate. Consider interactions between findings "
+        "— sometimes multiple findings point to the same root cause and only the best "
+        "representative should be kept. Also consider whether the density of findings "
+        "in a particular file indicates a systemic issue worth calling out separately.\n\n"
+        + f"Findings:\n{findings_json}",
         schema=OutputCalibrationGate,
     )
-
-    return gate.model_dump()
+    parsed = result.parsed if result.parsed else OutputCalibrationGate(
+        keep_indices=list(range(len(findings))), reasoning="fallback: keep all"
+    )
+    return parsed.model_dump()
 
 
 class _SemanticDedupResult(BaseModel):
     keep_indices: list[int] = Field(default_factory=list)
 
 
+@router.reasoner()
 async def batch_semantic_dedup(findings: list[dict]) -> list[int]:
     """Single .harness() call to deduplicate semantically similar findings.
 
