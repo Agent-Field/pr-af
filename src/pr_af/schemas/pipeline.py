@@ -230,5 +230,5 @@ class MetaSelectorConfig(BaseModel):
 
     enabled_lenses: list[str] = Field(default_factory=lambda: ["semantic", "mechanical", "systemic"])
     confidence_threshold: float = 0.6  # Minimum confidence for a finding to pass Level 2 filter
-    adversary_batch_size: int = 5  # How many findings per parallel adversary batch
-    max_adversary_batches: int = 4  # Hard cap on parallel adversary instances
+    adversary_batch_size: int = 10  # How many findings per parallel adversary batch
+    max_adversary_batches: int = 0  # 0 = dynamic (covers ALL findings)

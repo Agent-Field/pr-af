@@ -25,14 +25,17 @@ from .github.client import GitHubClient
 from .reasoners.harnesses import (
     adversary_phase,
     anatomy_phase,
+    batch_semantic_dedup,
     compound_dedup_phase,
     compound_finder_phase,
     coverage_gate,
     evidence_verifier,
+    finding_relevance_gate,
     intake_phase,
     meta_mechanical,
     meta_semantic,
     meta_systemic,
+    output_calibration_gate,
     planning_phase,  # Keep for backward compat
     review_dimension,
 )
@@ -161,7 +164,7 @@ class ReviewOrchestrator:
         self.adversary_confirmed_count = sum(1 for result in adversary_results if result.verdict == "confirmed")
 
         print("[PR-AF] Phase 7: SYNTHESIS", flush=True)
-        scored_findings = self._synthesize(all_findings, adversary_results)
+        scored_findings = await self._synthesize(all_findings, adversary_results)
         print(f"[PR-AF] Synthesis complete: {len(scored_findings)} scored findings", flush=True)
 
         print("[PR-AF] Phase 8: OUTPUT", flush=True)
@@ -334,22 +337,18 @@ class ReviewOrchestrator:
         findings: list[ReviewFinding],
         evidence_map: dict[str, EvidencePackage],
     ) -> tuple[list[ReviewFinding], dict[str, dict]]:
-        high_priority = [f for f in findings if f.severity in ("critical", "important")]
-        low_priority = [f for f in findings if f.severity not in ("critical", "important")]
-
-        if not high_priority:
+        if not findings:
             return findings, {}
 
         print(
-            f"[PR-AF] Evidence Verification: verifying {len(high_priority)} "
-            f"critical/important findings (skipping {len(low_priority)} lower-severity)",
+            f"[PR-AF] Evidence Verification: verifying ALL {len(findings)} findings",
             flush=True,
         )
 
-        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in high_priority if f.title in evidence_map}
+        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in findings if f.title in evidence_map}
 
         verifier_raw = await evidence_verifier(
-            findings=[f.model_dump() for f in high_priority],
+            findings=[f.model_dump() for f in findings],
             evidence_packages=ev_packages if ev_packages else None,
             pr_context=self._build_pr_context_string(),
             repo_path=self.input.repo_path or "",
@@ -419,11 +418,13 @@ class ReviewOrchestrator:
         ev_map = evidence_map or {}
         ver_map = verification_map or {}
 
+        # Dynamic batching: cover ALL findings, no silent truncation
         batches: list[list[ReviewFinding]] = []
         for i in range(0, len(findings), batch_size):
             batches.append(findings[i : i + batch_size])
-            if len(batches) >= max_batches:
-                break
+        # Apply hard cap only if explicitly set (>0)
+        if max_batches > 0 and len(batches) > max_batches:
+            batches = batches[:max_batches]
 
         async def run_batch(batch: list[ReviewFinding]) -> list[AdversaryResult]:
             if self._budget_or_timeout_exhausted("adversary"):
@@ -571,12 +572,35 @@ class ReviewOrchestrator:
             )
 
         verification_map: dict[str, dict] = {}
-        high_priority = [f for f in all_findings if f.severity in ("critical", "important")]
-        if high_priority and evidence_map and not self._budget_or_timeout_exhausted("adversary"):
+        if all_findings and evidence_map and not self._budget_or_timeout_exhausted("adversary"):
             all_findings, verification_map = await self._run_evidence_verification(
                 all_findings,
                 evidence_map,
             )
+
+        # Phase B1: Finding relevance gate — parallel .ai() classification
+        if all_findings and not self._budget_or_timeout_exhausted("adversary"):
+            print(
+                f"[PR-AF] Relevance Gate: classifying {len(all_findings)} findings",
+                flush=True,
+            )
+            gate_results = await asyncio.gather(
+                *[finding_relevance_gate(f.model_dump()) for f in all_findings]
+            )
+            noise_categories = {"style_preference", "design_opinion", "false_positive"}
+            filtered: list[ReviewFinding] = []
+            dropped_count = 0
+            for finding, gate_result in zip(all_findings, gate_results):
+                if gate_result.get("confident") and gate_result.get("category") in noise_categories:
+                    dropped_count += 1
+                else:
+                    filtered.append(finding)
+            if dropped_count:
+                print(
+                    f"[PR-AF] Relevance Gate: dropped {dropped_count} non-functional findings",
+                    flush=True,
+                )
+            all_findings = filtered
 
         adversary_results: list[AdversaryResult] = []
         if all_findings and not self._budget_or_timeout_exhausted("adversary"):
@@ -590,9 +614,9 @@ class ReviewOrchestrator:
         confirmed_findings = [f for f in all_findings if f.title not in challenged_titles]
 
         compound_findings = await self._run_compound_analysis(confirmed_findings, evidence_map)
-        all_findings.extend(compound_findings)
+        confirmed_findings.extend(compound_findings)
 
-        return all_findings, adversary_results
+        return confirmed_findings, adversary_results
 
     async def _run_coverage_loop(
         self,
@@ -659,12 +683,31 @@ class ReviewOrchestrator:
 
         return findings, adversary_results
 
-    def _synthesize(
+    async def _synthesize(
         self,
         findings: list[ReviewFinding],
         adversary_results: list[AdversaryResult],
     ) -> list[ScoredFinding]:
         deduped = deduplicate_exact(findings)
+
+        # Phase C1: Semantic dedup when >8 findings
+        if len(deduped) > 8:
+            print(
+                f"[PR-AF] Semantic Dedup: analyzing {len(deduped)} findings for duplicates",
+                flush=True,
+            )
+            keep_indices = await batch_semantic_dedup(
+                [f.model_dump() for f in deduped]
+            )
+            if keep_indices:
+                valid_indices = {i for i in keep_indices if 0 <= i < len(deduped)}
+                before_count = len(deduped)
+                deduped = [f for i, f in enumerate(deduped) if i in valid_indices]
+                print(
+                    f"[PR-AF] Semantic Dedup: {before_count} → {len(deduped)} findings",
+                    flush=True,
+                )
+
         scored = score_findings(
             findings=deduped,
             adversary_results=adversary_results,
@@ -672,6 +715,27 @@ class ReviewOrchestrator:
             ai_generated=self.intake_result.ai_generated if self.intake_result else 0.0,
             blast_radius_size=len(self.anatomy_result.blast_radius) if self.anatomy_result else 0,
         )
+
+        # Phase C2: Output calibration gate
+        if len(scored) > 3:
+            print(
+                f"[PR-AF] Output Calibration: reviewing {len(scored)} scored findings",
+                flush=True,
+            )
+            calibration = await output_calibration_gate(
+                [f.model_dump() for f in scored]
+            )
+            keep_indices = calibration.get("keep_indices", [])
+            if keep_indices:
+                valid_indices = {i for i in keep_indices if 0 <= i < len(scored)}
+                before_count = len(scored)
+                scored = [f for i, f in enumerate(scored) if i in valid_indices]
+                print(
+                    f"[PR-AF] Output Calibration: {before_count} → {len(scored)} findings "
+                    f"({calibration.get('reasoning', '')})",
+                    flush=True,
+                )
+
         return scored[: self.config.comments.max_comments]
 
     def _normalize_path(self, path: str) -> str:

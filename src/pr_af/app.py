@@ -234,7 +234,7 @@ async def _fire_review(
     input_payload: dict[str, object] = {
         "pr_url": pr_url,
         "depth": "standard",
-        "dry_run": False,
+        "dry_run": True,
     }
     if hints:
         input_payload["hints"] = hints

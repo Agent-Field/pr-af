@@ -51,7 +51,7 @@ class BudgetConfig(BaseModel):
     max_cross_ref_deep_dives: int = 5
 
     # Outer loop caps (pipeline)
-    max_coverage_iterations: int = 2
+    max_coverage_iterations: int = 0
 
     # Recursive sub-review depth (1=flat, 2=one sub-level, 3=max)
     max_review_depth: int = 2
@@ -104,10 +104,10 @@ class ScoringConfig(BaseModel):
 
     confidence_thresholds: dict[str, float] = Field(
         default_factory=lambda: {
-            "critical": 0.2,
-            "important": 0.3,
-            "suggestion": 0.4,
-            "nitpick": 0.4,
+            "critical": 0.5,
+            "important": 0.5,
+            "suggestion": 0.7,
+            "nitpick": 1.0,  # Effectively dropped
         }
     )
 
@@ -115,8 +115,8 @@ class ScoringConfig(BaseModel):
 class CommentConfig(BaseModel):
     """Comment formatting and posting preferences."""
 
-    min_severity: str = "nitpick"  # Minimum severity to include in summary/comments
-    max_comments: int = 25  # Cap inline comments to avoid overwhelming
+    min_severity: str = "suggestion"  # Minimum severity to include in summary/comments
+    max_comments: int = 15  # Cap inline comments to avoid overwhelming
     include_suggestions: bool = True  # Include ```suggestion blocks
     include_dimension_attribution: bool = True  # Show which dimension found it
     include_confidence: bool = True  # Show confidence score
@@ -247,7 +247,7 @@ class AIIntegrationConfig(BaseModel):
     ai_model: str = Field(
         default_factory=lambda: os.getenv(
             "PR_AF_AI_MODEL",
-            os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "minimax/minimax-m2.5")),
+            os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", os.getenv("HARNESS_MODEL", "minimax/minimax-m2.5"))),
         )
     )
     max_turns: int = Field(default_factory=lambda: int(os.getenv("PR_AF_MAX_TURNS", "50")))

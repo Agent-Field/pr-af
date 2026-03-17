@@ -19,12 +19,13 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - AGENTFIELD_SERVER=http://agentfield:8080
+      - AGENTFIELD_SERVER=${AGENTFIELD_SERVER:-http://agentfield:8080}
       - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
-      - AGENT_CALLBACK_URL=http://pr-af:8004
+      - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://pr-af:8004}
+      # HARNESS_MODEL is the single source of truth for model selection.
+      # To change model, set HARNESS_MODEL in .env or override here.
       - HARNESS_PROVIDER=opencode
-      - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/moonshotai/kimi-k2.5}
-      - AI_MODEL=${AI_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/minimax/minimax-m2.5}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GH_TOKEN=${GH_TOKEN:-}

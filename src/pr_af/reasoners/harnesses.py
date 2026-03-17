@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..blast_radius import compute_blast_radius
 from ..diff_engine import cluster_changes, compute_diff_stats, parse_unified_diff
-from ..schemas.gates import CoverageGate, IntakeGate
+from ..schemas.gates import CoverageGate, FindingRelevanceGate, IntakeGate, OutputCalibrationGate
 from ..schemas.input import GitHubPRData
 from ..schemas.pipeline import (
     AdversaryResult,
@@ -697,58 +697,62 @@ async def meta_systemic(
             f"Read this file for complete PR context including diff patches."
         )
 
+    # Extract intake/anatomy fields for adaptive prompt construction
+    intake_data = intake or {}
+    anatomy_data = anatomy or {}
+    pr_type = intake_data.get("pr_type", "unknown")
+    complexity = intake_data.get("complexity", "standard")
+    risk_signals = intake_data.get("risk_signals", [])
+    risk_surfaces = anatomy_data.get("risk_surfaces", [])
+    cluster_names = [c.get("name", "") for c in anatomy_data.get("clusters", [])] if isinstance(anatomy_data.get("clusters"), list) else []
+
     result = await router.app.harness(
         f"You are a principal engineer designing review dimensions through the SYSTEMIC lens.\n\n"
-        f"## Your Lens: SYSTEMIC — How does this code FIT?\n\n"
-        f"You are responsible for generating review dimensions that investigate whether "
-        f"this change is ARCHITECTURALLY sound and consistent with the codebase. Think about:\n\n"
-        f"- **Pattern consistency**: Does this change follow established patterns in the "
-        f"codebase, or does it introduce a new pattern where one already exists? If it "
-        f"introduces a new pattern, is it justified?\n"
-        f"- **Complexity impact**: Does this change increase cyclomatic complexity? "
-        f"Are there deeply nested conditionals, god functions, or tangled dependencies?\n"
-        f"- **Abstraction quality**: Are the right things abstracted? Is there unnecessary "
-        f"indirection, or conversely, inline code that should be extracted?\n"
-        f"- **Test coverage alignment**: Are the changes tested? Do tests cover the "
-        f"interesting edge cases, or just the happy path? Are there test patterns that "
-        f"should be followed?\n"
-        f"- **Documentation debt**: Are public APIs documented? Are complex algorithms "
-        f"explained? Are there misleading comments that weren't updated?\n"
-        f"- **Dependency hygiene**: Are new dependencies justified? Are there lighter "
-        f"alternatives? Is the dependency well-maintained?\n"
-        f"- **Migration completeness**: If this is part of a larger migration, is it "
-        f"complete or does it leave the codebase in a mixed state?\n\n"
+        f"## Your Lens: SYSTEMIC — Functional Risks from Architectural Choices\n\n"
+        f"Based on this PR's characteristics:\n"
+        f"- Type: {pr_type}, Complexity: {complexity}\n"
+        f"- Risk signals: {risk_signals}\n"
+        f"- Risk surfaces: {risk_surfaces}\n"
+        f"- Change clusters: {cluster_names}\n\n"
+        f"Generate systemic review dimensions focused on **functional risks** specific to "
+        f"THIS PR. You must adapt your focus to what could actually break in production for "
+        f"this specific change.\n\n"
+        f"## Examples of GOOD systemic dimensions (functional risks):\n"
+        f"- 'Cross-module state consistency after migration' (for a migration PR)\n"
+        f"- 'Transaction safety across new service boundary' (for a service refactor)\n"
+        f"- 'Backward compatibility of changed public API signatures' (for an API change)\n"
+        f"- 'Data integrity through concurrent access paths' (for shared-state changes)\n\n"
+        f"## Examples of dimensions to SKIP (not functional risks):\n"
+        f"- 'Naming consistency across modules' (style)\n"
+        f"- 'Test coverage patterns' (process)\n"
+        f"- 'Documentation completeness' (docs)\n"
+        f"- 'Code complexity metrics' (style)\n"
+        f"- 'Dependency version freshness' (hygiene)\n\n"
+        f"Only generate dimensions where the architectural concern could lead to a "
+        f"**runtime bug, data loss, security issue, or production incident**.\n\n"
         f"## Investigation Protocol\n\n"
-        f"You have full access to the repository. The context below gives you a starting "
-        f"point — PR summary, anatomy, and diff patches.\n\n"
+        f"You have full access to the repository.\n"
         f"- START by reading the context to understand WHAT changed.\n"
         f"- THEN browse the actual source files to understand HOW the changed code fits into "
         f"the broader codebase.\n"
-        f"- Browse similar files in the same directories to understand existing patterns and "
-        f"compare the changed code against those patterns.\n"
-        f"- ADAPT your investigation based on what you discover — if the change deviates from "
-        f"an established architecture pattern, trace where else that pattern is enforced.\n\n"
+        f"- ADAPT your investigation based on what you discover.\n\n"
         f"## What NOT to Include\n\n"
         f"Do NOT generate dimensions about:\n"
         f"- Whether the logic produces correct results (that's Semantic)\n"
         f"- Whether the code will run without type/import errors (that's Mechanical)\n"
-        f"- Specific bug hunting (that's Semantic/Mechanical)\n\n"
+        f"- Style, naming, formatting, or documentation concerns\n"
+        f"- Test coverage or testing patterns\n\n"
         f"## Dimension Craft\n\n"
-        f"Each dimension must target a SPECIFIC systemic concern.\n"
-        f"Good: 'Does the new `UserService` class follow the existing service pattern "
-        f"(stateless, injected deps, interface-first)?'\n"
-        f"Bad: 'Check code quality'\n\n"
-        f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
-        f"target_files, context_files, and priority (higher = more critical).\n"
+        f"Each dimension must target a SPECIFIC functional risk from an architectural choice.\n"
+        f"Each dimension needs: id, name, review_prompt, target_files, context_files, priority.\n"
         f"The review_prompt must include specific file paths and line ranges discovered during "
-        f"your repository investigation, plus the pattern comparisons the reviewer should validate.\n\n"
+        f"your repository investigation.\n\n"
         f"## Quality Gate\n\n"
         f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
-        f"by what you discovered in the actual codebase. If your rationale says 'visible in the "
-        f"diff' or 'based on the patches', you have not investigated enough.\n\n"
-        f"Depth '{depth}' means: quick=0-1 dimensions, standard=1-2, deep=2-3\n"
-        f"Systemic concerns are LOWER priority than Semantic and Mechanical. "
-        f"If the PR is a focused bugfix with no architectural impact, return ZERO dimensions.\n\n"
+        f"by what you discovered in the actual codebase.\n\n"
+        f"Depth '{depth}' means: quick=0 dimensions, standard=0-1, deep=1-2\n"
+        f"If the PR is a focused bugfix or small feature with no cross-cutting architectural "
+        f"impact, return ZERO dimensions. Prefer zero over noise.\n\n"
         f"Also provide a rationale explaining your dimension choices and a confidence "
         f"score (0-1) for how completely your dimensions cover the systemic risk surface.\n\n"
         f"{context_ref}",
@@ -1229,7 +1233,7 @@ async def adversary_phase(
     ev_map = evidence_packages or {}
 
     findings_with_evidence: list[dict] = []
-    for f in validated_findings[:20]:
+    for f in validated_findings:
         entry: dict = {
             "title": f.title,
             "severity": f.severity,
@@ -1375,3 +1379,120 @@ async def coverage_gate(
         schema=CoverageGate,
     )
     return gate.model_dump()
+
+
+async def finding_relevance_gate(finding: dict) -> dict:
+    """Fast .ai() classifier: is this finding a real functional bug or noise?"""
+    import json as _json
+
+    finding_summary = _json.dumps(
+        {
+            "title": finding.get("title", ""),
+            "severity": finding.get("severity", ""),
+            "body": finding.get("body", "")[:500],
+            "file_path": finding.get("file_path", ""),
+            "evidence": finding.get("evidence", "")[:300],
+        },
+        default=str,
+    )
+
+    gate = await router.app.ai(
+        f"Classify this code review finding.\n\n"
+        f"A 'real_bug' is a finding about functional correctness, security, data integrity, "
+        f"or runtime behavior that could cause a production incident.\n\n"
+        f"A 'style_preference' is about naming, formatting, code organization, or pattern "
+        f"consistency that has no functional impact.\n\n"
+        f"A 'design_opinion' is a subjective architectural preference that wouldn't cause bugs.\n\n"
+        f"A 'false_positive' is a finding where the described issue doesn't actually exist in "
+        f"the code or is based on a misunderstanding.\n\n"
+        f"Finding:\n{finding_summary}",
+        system="Classify this finding accurately. When in doubt, classify as real_bug.",
+        schema=FindingRelevanceGate,
+    )
+
+    return {
+        "category": gate.category,
+        "confident": gate.confident,
+    }
+
+
+async def output_calibration_gate(findings: list[dict]) -> dict:
+    """Final .ai() gate: keep only findings worth posting as PR comments."""
+    import json as _json
+
+    numbered = []
+    for i, f in enumerate(findings):
+        numbered.append({
+            "index": i,
+            "title": f.get("title", ""),
+            "severity": f.get("severity", ""),
+            "body": f.get("body", "")[:300],
+            "file_path": f.get("file_path", ""),
+            "score": f.get("score", 0),
+        })
+
+    findings_json = _json.dumps(numbered, default=str)
+
+    gate = await router.app.ai(
+        f"You are a senior engineer deciding which code review comments to post on a PR.\n\n"
+        f"Keep ONLY findings about:\n"
+        f"- Functional correctness bugs\n"
+        f"- Security vulnerabilities\n"
+        f"- Data integrity issues\n"
+        f"- Race conditions or concurrency bugs\n"
+        f"- Resource leaks\n\n"
+        f"Drop findings about:\n"
+        f"- Style preferences, naming conventions\n"
+        f"- Design opinions without functional impact\n"
+        f"- Suggestions that are nice-to-have but not bugs\n"
+        f"- Nitpicks about formatting or documentation\n\n"
+        f"Return the indices of findings to KEEP.\n\n"
+        f"Findings:\n{findings_json}",
+        system="Select findings to keep. Be selective — only real functional issues.",
+        schema=OutputCalibrationGate,
+    )
+
+    return gate.model_dump()
+
+
+class _SemanticDedupResult(BaseModel):
+    keep_indices: list[int] = Field(default_factory=list)
+
+
+async def batch_semantic_dedup(findings: list[dict]) -> list[int]:
+    """Single .harness() call to deduplicate semantically similar findings.
+
+    Returns indices of findings to keep.
+    """
+    import json as _json
+
+    numbered = []
+    for i, f in enumerate(findings):
+        numbered.append({
+            "index": i,
+            "title": f.get("title", ""),
+            "severity": f.get("severity", ""),
+            "file_path": f.get("file_path", ""),
+            "line_start": f.get("line_start", 0),
+            "body": f.get("body", "")[:200],
+        })
+
+    findings_json = _json.dumps(numbered, default=str)
+
+    result = await router.app.harness(
+        f"You are deduplicating code review findings. Multiple findings may describe "
+        f"the same underlying issue from different angles or in different words.\n\n"
+        f"For each group of semantically similar findings (same root cause, same code "
+        f"location, or same conceptual issue), keep ONLY the best representative — "
+        f"the one with the most specific and actionable description.\n\n"
+        f"Two findings are semantically similar if:\n"
+        f"- They describe the same bug/issue in different words\n"
+        f"- They point to the same root cause but from different code paths\n"
+        f"- One is a generalization of the other\n\n"
+        f"Return the indices of findings to KEEP (not the ones to drop).\n\n"
+        f"Findings:\n{findings_json}",
+        schema=_SemanticDedupResult,
+    )
+
+    parsed = result.parsed if result.parsed else _SemanticDedupResult()
+    return parsed.keep_indices
