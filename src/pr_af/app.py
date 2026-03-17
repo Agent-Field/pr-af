@@ -163,7 +163,33 @@ async def review(
     dry_run: bool = False,
     post_pr_number: int | None = None,
     suggestion_mode: str = "comment",
+    provider: str | None = None,
+    harness_model: str | None = None,
 ) -> dict[str, object]:
+    # Runtime provider/model override — allows switching between opencode/claude-code
+    # and different models per API call without restarting the container.
+    if provider or harness_model:
+        override_provider = provider or _ai_config.provider
+        override_model = harness_model or _ai_config.harness_model
+        app.harness_config = HarnessConfig(
+            provider=override_provider,
+            model=override_model,
+            max_turns=_ai_config.max_turns,
+            env=_ai_config.provider_env(),
+            opencode_bin=_ai_config.opencode_bin,
+            permission_mode="auto",
+        )
+        # Also update .ai() config if using claude-code (it uses ANTHROPIC_API_KEY directly)
+        if override_provider == "claude-code":
+            app.ai_config = AIConfig(
+                model=override_model,
+                api_key=os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENROUTER_API_KEY", "")),
+                api_base="https://api.anthropic.com/v1" if os.getenv("ANTHROPIC_API_KEY") else "https://openrouter.ai/api/v1",
+            )
+        print(
+            f"[PR-AF] Runtime override: provider={override_provider}, model={override_model}",
+            flush=True,
+        )
     print(
         f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, "
         f"diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, "
