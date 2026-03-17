@@ -29,7 +29,6 @@ from .reasoners.harnesses import (
     compound_dedup_phase,
     compound_finder_phase,
     coverage_gate,
-    evidence_verifier,
     finding_relevance_gate,
     verify_single_finding,
     intake_phase,
@@ -154,11 +153,7 @@ class ReviewOrchestrator:
             self._run_streaming_review(dims_queue, findings_queue)
         )
         layer_task = asyncio.create_task(
-            self._run_review_layer(
-                ReviewPlan(dimensions=[]),  # Plan built incrementally
-                findings_queue,
-                anatomy,
-            )
+            self._run_review_layer(findings_queue, anatomy)
         )
 
         meta_results, _, layer_result = await asyncio.gather(meta_task, review_task, layer_task)
@@ -677,7 +672,7 @@ class ReviewOrchestrator:
 
         return all_results
 
-    async def _run_parallel_review(
+    async def _run_gap_review(
         self,
         plan: ReviewPlan,
         findings_queue: asyncio.Queue[list[ReviewFinding] | None],
@@ -757,7 +752,6 @@ class ReviewOrchestrator:
 
     async def _run_review_layer(
         self,
-        plan: ReviewPlan,
         findings_queue: asyncio.Queue[list[ReviewFinding] | None],
         anatomy: AnatomyResult,
     ) -> tuple[list[ReviewFinding], list[AdversaryResult]]:
@@ -870,7 +864,7 @@ class ReviewOrchestrator:
                 break
 
             gap_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
-            await self._run_parallel_review(
+            await self._run_gap_review(
                 plan=ReviewPlan(dimensions=gap_dims, cross_ref_hints=plan.cross_ref_hints),
                 findings_queue=gap_queue,
             )
@@ -989,13 +983,13 @@ class ReviewOrchestrator:
         return ranges
 
     def _build_file_patches(self) -> dict[str, str]:
-        if not self.pr_data:
-            return {}
-        patches: dict[str, str] = {}
-        for cf in self.pr_data.changed_files:
-            if cf.patch:
-                patches[cf.path] = cf.patch
-        return patches
+        if not hasattr(self, "_cached_file_patches"):
+            if not self.pr_data:
+                return {}
+            self._cached_file_patches: dict[str, str] = {
+                cf.path: cf.patch for cf in self.pr_data.changed_files if cf.patch
+            }
+        return self._cached_file_patches
 
     def _build_pr_context_string(self) -> str:
         parts = []
@@ -1263,68 +1257,49 @@ class ReviewOrchestrator:
                     return float(inner_cost)
         return None
 
-    def _extract_findings(self, result_raw: object, dim: ReviewDimension) -> list[ReviewFinding]:
+    def _extract_raw_list(self, result_raw: object) -> list[dict[str, Any]]:
+        """Extract a list of dicts from a reasoner result, checking common keys."""
         payload = _unwrap(result_raw)
-        findings_raw: list[dict[str, Any]]
-        if isinstance(payload, dict):
-            if isinstance(payload.get("findings"), list):
-                findings_raw = cast("list[dict[str, Any]]", payload["findings"])
-            elif isinstance(payload.get("results"), list):
-                findings_raw = cast("list[dict[str, Any]]", payload["results"])
-            else:
-                findings_raw = []
-        elif isinstance(payload, list):
-            findings_raw = cast("list[dict[str, Any]]", payload)
-        else:
-            findings_raw = []
-
-        findings: list[ReviewFinding] = []
-        for item in findings_raw:
-            if not isinstance(item, dict):
-                continue
-            normalized = {
-                "dimension_id": item.get("dimension_id", dim.id),
-                "dimension_name": item.get("dimension_name", dim.name),
-                "file_path": item.get("file_path", ""),
-                "line_start": int(item.get("line_start", 0) or 0),
-                "line_end": int(item.get("line_end", 0) or 0),
-                "hunk_context": item.get("hunk_context", ""),
-                "severity": item.get("severity", "suggestion"),
-                "title": item.get("title", "Untitled finding"),
-                "body": item.get("body", ""),
-                "suggestion": item.get("suggestion"),
-                "evidence": item.get("evidence", ""),
-                "confidence": float(item.get("confidence", 0.5) or 0.5),
-                "tags": item.get("tags", []),
-            }
-            findings.append(ReviewFinding.model_validate(normalized))
-
-        return findings
-
-    def _extract_compound_findings(self, result_raw: object) -> list[ReviewFinding]:
-        payload = _unwrap(result_raw)
-        raw_list: list[dict[str, Any]] = []
         if isinstance(payload, dict):
             for key in ("findings", "results"):
                 value = payload.get(key)
                 if isinstance(value, list):
-                    raw_list = cast("list[dict[str, Any]]", value)
-                    break
-        elif isinstance(payload, list):
-            raw_list = cast("list[dict[str, Any]]", payload)
+                    return cast("list[dict[str, Any]]", value)
+            return []
+        if isinstance(payload, list):
+            return cast("list[dict[str, Any]]", payload)
+        return []
+
+    def _extract_findings(
+        self,
+        result_raw: object,
+        dim: ReviewDimension | None = None,
+        defaults: dict[str, str] | None = None,
+    ) -> list[ReviewFinding]:
+        """Extract ReviewFinding objects from a reasoner result.
+
+        Uses dim for dimension_id/name defaults, or explicit defaults dict
+        for compound/gap findings.
+        """
+        raw_list = self._extract_raw_list(result_raw)
+        dim_id = (dim.id if dim else defaults.get("dimension_id", "unknown")) if defaults or dim else "unknown"
+        dim_name = (dim.name if dim else defaults.get("dimension_name", "Unknown")) if defaults or dim else "Unknown"
+        default_severity = defaults.get("severity", "suggestion") if defaults else "suggestion"
+        default_title = defaults.get("title", "Untitled finding") if defaults else "Untitled finding"
+
         findings: list[ReviewFinding] = []
         for item in raw_list:
             if not isinstance(item, dict):
                 continue
             normalized = {
-                "dimension_id": "compound",
-                "dimension_name": "Compound Analysis",
+                "dimension_id": item.get("dimension_id", dim_id),
+                "dimension_name": item.get("dimension_name", dim_name),
                 "file_path": item.get("file_path", ""),
                 "line_start": int(item.get("line_start", 0) or 0),
                 "line_end": int(item.get("line_end", item.get("line_start", 0)) or 0),
-                "hunk_context": "",
-                "severity": item.get("severity", "important"),
-                "title": item.get("title", "Untitled compound finding"),
+                "hunk_context": item.get("hunk_context", ""),
+                "severity": item.get("severity", default_severity),
+                "title": item.get("title", default_title),
                 "body": item.get("body", ""),
                 "suggestion": item.get("suggestion"),
                 "evidence": item.get("evidence", ""),
@@ -1332,6 +1307,7 @@ class ReviewOrchestrator:
                 "tags": item.get("tags", []),
             }
             findings.append(ReviewFinding.model_validate(normalized))
+
         return findings
 
     async def _dedup_compound_findings(
@@ -1398,7 +1374,15 @@ class ReviewOrchestrator:
                 continue
             self.agent_invocations += 1
             self._register_cost("cross_ref", self._extract_cost(raw_result))
-            new_findings = self._extract_compound_findings(raw_result)
+            new_findings = self._extract_findings(
+                raw_result,
+                defaults={
+                    "dimension_id": "compound",
+                    "dimension_name": "Compound Analysis",
+                    "severity": "important",
+                    "title": "Untitled compound finding",
+                },
+            )
             compound_findings.extend(new_findings)
 
         if len(compound_findings) > 1:
