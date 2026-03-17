@@ -242,7 +242,7 @@ async def _fire_review(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                f"{_CP_URL}/api/v1/execute/async/pr-af.review",
+                f"{_CP_URL}/api/v1/execute/async/{NODE_ID}.review",
                 content=body,
                 headers={"Content-Type": "application/json"},
             )
