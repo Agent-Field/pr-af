@@ -1204,6 +1204,59 @@ async def compound_dedup_phase(
 
 
 @router.reasoner()
+async def verify_single_finding(
+    finding_narrative: str,
+    reference_key: str = "",
+    pr_context: str = "",
+    repo_path: str = "",
+) -> dict:
+    """Verify a single finding against the actual source code.
+
+    Each finding gets its own .harness() that browses the repo independently.
+    This enables parallel verification of all findings.
+
+    Input follows archei rules: finding_narrative is a string (LLM context),
+    reference_key is structured (code uses for mapping).
+    """
+    result = await router.app.harness(
+        "You are a senior engineer performing independent verification of a single "
+        "code review finding. Your job is to determine what the code ACTUALLY does "
+        "at the finding location and whether the reviewer's claim is factually accurate.\n\n"
+        "## How to Investigate\n\n"
+        "1. Read the finding narrative below — it includes the reviewer's claim, "
+        "evidence, and any inline source code.\n"
+        "2. Browse the repository to verify: open the file mentioned, read the "
+        "function, trace callers, check if upstream guards prevent the failure.\n"
+        "3. Compare the reviewer's CLAIM against what the code ACTUALLY does.\n\n"
+        "## What to Determine\n\n"
+        "- **Does the code behave as claimed?** If the reviewer says 'function X "
+        "doesn't handle exception Y' — does it?\n"
+        "- **Is the failure scenario reachable?** Are there guards upstream?\n"
+        "- **Is the severity proportionate?** A 'critical' needs a concrete crash path.\n\n"
+        "## Output\n\n"
+        "Return a single verification result with:\n"
+        f"- `reference_key`: \"{reference_key}\"\n"
+        "- `title`: the finding's title from the narrative\n"
+        "- `verified`: true if the claim matches reality, false if it doesn't\n"
+        "- `actual_behavior`: what the code ACTUALLY does (brief, factual)\n"
+        "- `revised_severity`: your assessment (critical/important/suggestion/nitpick)\n"
+        "- `revised_confidence`: your confidence in the finding (0.0-1.0)\n"
+        "- `verification_notes`: key context for the downstream adversary\n\n"
+        + ("## PR Context\n\n" + pr_context + "\n\n" if pr_context else "")
+        + "## Finding to Verify\n\n"
+        + finding_narrative,
+        schema=_VerifiedFinding,
+        cwd=repo_path or None,
+    )
+    parsed = result.parsed if result.parsed else _VerifiedFinding()
+    vf_dict = parsed.model_dump()
+    # Ensure reference_key is set even if the harness didn't return it
+    if not vf_dict.get("reference_key"):
+        vf_dict["reference_key"] = reference_key
+    return vf_dict
+
+
+@router.reasoner()
 async def evidence_verifier(
     findings: list[dict],
     evidence_packages: dict[str, dict] | None = None,

@@ -31,6 +31,7 @@ from .reasoners.harnesses import (
     coverage_gate,
     evidence_verifier,
     finding_relevance_gate,
+    verify_single_finding,
     intake_phase,
     meta_mechanical,
     meta_semantic,
@@ -528,43 +529,58 @@ class ReviewOrchestrator:
             return findings, {}
 
         print(
-            f"[PR-AF] Evidence Verification: verifying ALL {len(findings)} findings",
+            f"[PR-AF] Evidence Verification: verifying {len(findings)} findings in parallel",
             flush=True,
         )
 
+        from .reasoners.harnesses import _format_findings_for_llm
+
         ev_packages = {f.title: evidence_map[f.title].model_dump() for f in findings if f.title in evidence_map}
+        pr_context = self._build_pr_context_string()
+        repo_path = self.input.repo_path or ""
 
-        verifier_raw = await evidence_verifier(
-            findings=[f.model_dump() for f in findings],
-            evidence_packages=ev_packages if ev_packages else None,
-            pr_context=self._build_pr_context_string(),
-            repo_path=self.input.repo_path or "",
+        # Build per-finding narratives and launch parallel verification
+        async def verify_one(idx: int, finding: ReviewFinding) -> dict:
+            if self._budget_or_timeout_exhausted("adversary"):
+                return {}
+            ref_key = f"[F{idx + 1}]"
+            ev = ev_packages.get(finding.title)
+            finding_ev = {finding.title: ev} if ev else None
+            narrative = _format_findings_for_llm(
+                [finding.model_dump()], finding_ev
+            )
+            result = await verify_single_finding(
+                finding_narrative=narrative,
+                reference_key=ref_key,
+                pr_context=pr_context,
+                repo_path=repo_path,
+            )
+            self.agent_invocations += 1
+            self._register_cost("adversary", self._extract_cost(result))
+            return result if isinstance(result, dict) else {}
+
+        verification_results = await asyncio.gather(
+            *[verify_one(idx, f) for idx, f in enumerate(findings)]
         )
-        self.agent_invocations += 1
-        self._register_cost("adversary", self._extract_cost(verifier_raw))
 
+        # Build verification map from parallel results
         verification_map: dict[str, dict] = {}
-        raw_verified = verifier_raw.get("verified_findings", []) if isinstance(verifier_raw, dict) else []
-
-        # Build reference key → title mapping for backward compatibility
-        # The verifier may return results keyed by reference_key ([F1], [F2], ...)
-        # or by title (old style). Support both.
         ref_key_to_title: dict[str, str] = {
             f"[F{idx + 1}]": f.title for idx, f in enumerate(findings)
         }
 
-        for vf in raw_verified:
-            if not isinstance(vf, dict):
+        for vf in verification_results:
+            if not vf:
                 continue
             title = vf.get("title", "")
             ref_key = vf.get("reference_key", "")
-            # Resolve reference key to title if title is missing
             if not title and ref_key:
                 title = ref_key_to_title.get(ref_key, "")
             if not title:
                 continue
             verification_map[title] = vf
 
+        # Apply verification results to findings
         updated_findings: list[ReviewFinding] = []
         falsified_count = 0
         for f in findings:
