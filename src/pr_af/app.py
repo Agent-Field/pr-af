@@ -24,7 +24,7 @@ _project_root = Path(__file__).resolve().parents[2]
 load_dotenv(_project_root / ".env")
 
 _ai_config = AIIntegrationConfig.from_env()
-NODE_ID = os.getenv("PR_AF", "pr-af")
+NODE_ID = os.getenv("PR_AF_NODE_ID", os.getenv("PR_AF", "pr-af"))
 HarnessConfig = _agentfield.HarnessConfig
 
 app = Agent(
@@ -179,15 +179,44 @@ async def review(
             opencode_bin=_ai_config.opencode_bin,
             permission_mode="auto",
         )
-        # Also update .ai() config if using claude-code (it uses ANTHROPIC_API_KEY directly)
-        if override_provider == "claude-code":
+        # .ai() calls go through OpenRouter or Anthropic API (not the harness provider).
+        # Map short claude-code model names to proper API model IDs.
+        _ANTHROPIC_MODEL_MAP = {
+            "sonnet": "claude-sonnet-4-6",
+            "haiku": "claude-haiku-4-5-20251001",
+            "opus": "claude-opus-4-6",
+        }
+        _OPENROUTER_MODEL_MAP = {
+            "sonnet": "openrouter/anthropic/claude-sonnet-4-6",
+            "haiku": "openrouter/anthropic/claude-haiku-4-5-20251001",
+            "opus": "openrouter/anthropic/claude-opus-4-6",
+        }
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+        openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+        if anthropic_key and override_provider == "claude-code":
+            # Direct Anthropic API with native model IDs
+            ai_model_id = _ANTHROPIC_MODEL_MAP.get(override_model, override_model)
             app.ai_config = AIConfig(
-                model=override_model,
-                api_key=os.getenv("ANTHROPIC_API_KEY", os.getenv("OPENROUTER_API_KEY", "")),
-                api_base="https://api.anthropic.com/v1" if os.getenv("ANTHROPIC_API_KEY") else "https://openrouter.ai/api/v1",
+                model=ai_model_id,
+                api_key=anthropic_key,
+                api_base="https://api.anthropic.com/v1",
+            )
+        else:
+            # OpenRouter — for claude-code short names, map to openrouter format;
+            # for opencode models already in openrouter/x format, strip the prefix
+            # since OpenRouter API expects just the model path
+            ai_model_id = _OPENROUTER_MODEL_MAP.get(override_model, override_model)
+            # opencode models come as "openrouter/provider/model" — strip "openrouter/" for API
+            if ai_model_id.startswith("openrouter/"):
+                ai_model_id = ai_model_id[len("openrouter/"):]
+            app.ai_config = AIConfig(
+                model=ai_model_id,
+                api_key=openrouter_key,
+                api_base="https://openrouter.ai/api/v1",
             )
         print(
-            f"[PR-AF] Runtime override: provider={override_provider}, model={override_model}",
+            f"[PR-AF] Runtime override: provider={override_provider}, "
+            f"harness_model={override_model}, ai_model={app.ai_config.model}",
             flush=True,
         )
     print(

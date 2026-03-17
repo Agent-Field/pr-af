@@ -34,42 +34,64 @@ PR-AF encodes this process as a multi-agent pipeline where the **review strategy
 
 ## Pipeline Overview
 
-The pipeline runs in 7 phases. Phases 1-3 are sequential (each builds on the previous). Phases 4-5 overlap via streaming. Phases 6-7 run after all findings are finalized.
+The pipeline runs in overlapping phases. Phases 1-2 are sequential. Phases 3-5 overlap via streaming — review dimensions start executing as each meta-selector lens completes, without waiting for all three. Phase 6 runs after all findings are finalized.
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         PR-AF Pipeline                              │
-│                                                                     │
-│  ┌──────────┐   ┌──────────┐   ┌──────────┐                        │
-│  │ Phase 1  │──▶│ Phase 2  │──▶│ Phase 3  │                        │
-│  │ INTAKE   │   │ ANATOMY  │   │ PLANNING │                        │
-│  │ .ai()+fb │   │ code+hrn │   │ .harness │                        │
-│  └──────────┘   └──────────┘   └────┬─────┘                        │
-│                                     │                               │
-│                    ┌────────────────┼────────────────┐              │
-│                    ▼                ▼                ▼              │
-│              ┌──────────┐   ┌──────────┐   ┌──────────┐            │
-│  Phase 4:    │Reviewer A│   │Reviewer B│   │Reviewer C│  ...       │
-│  PARALLEL    │.harness()│   │.harness()│   │.harness()│            │
-│  REVIEW      └────┬─────┘   └────┬─────┘   └────┬─────┘            │
-│                   │              │              │                   │
-│                   └──────────────┼──────────────┘                   │
-│                                  │  findings stream                 │
-│                                  ▼  (asyncio.Queue)                 │
-│              ┌──────────────────────────────────────┐               │
-│  Phase 5:    │  Cross-Ref     Adversary    Coverage │               │
-│  REVIEW      │  Resolver      Reviewer      Gate   │               │
-│  LAYER       │  .harness()   .harness()    .ai()   │               │
-│              └──────────────────┬───────────────────┘               │
-│                                 │                                   │
-│                    ┌────────────┼────────────┐                      │
-│                    ▼                         ▼                      │
-│              ┌──────────┐             ┌──────────┐                  │
-│  Phase 6:    │SYNTHESIS │  Phase 7:   │  OUTPUT  │                  │
-│              │  (code)  │──────────▶  │  (code)  │                  │
-│              └──────────┘             └──────────┘                  │
-└─────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                           PR-AF Pipeline                                 │
+│                                                                          │
+│  ┌──────────┐   ┌──────────┐                                             │
+│  │ Phase 1  │──▶│ Phase 2  │                                             │
+│  │ INTAKE   │   │ ANATOMY  │                                             │
+│  │ .ai()+fb │   │ code+hrn │                                             │
+│  └──────────┘   └────┬─────┘                                             │
+│                      │                                                   │
+│     Phase 3: META-SELECTORS (3 parallel lenses, streaming)               │
+│     ┌────────────┬────────────┬────────────┐                             │
+│     │ Semantic   │ Mechanical │ Systemic   │  ← parallel .harness()      │
+│     │ .harness() │ .harness() │ .harness() │                             │
+│     └─────┬──────┘─────┬──────┘─────┬──────┘                             │
+│           │            │            │                                     │
+│           ▼ (done 1st) │            ▼ (done 2nd)    dims stream          │
+│     ┌──────────────────┼──────────────────────┐  (asyncio.Queue)         │
+│     │  Incremental cross-meta dedup           │                          │
+│     └──────────────────┼──────────────────────┘                          │
+│                        │                                                 │
+│  Phase 4: STREAMING REVIEW (starts as dims arrive)                       │
+│     ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐                 │
+│     │Reviewer A│ │Reviewer B│ │Reviewer C│ │    ...   │  ← parallel     │
+│     │.harness()│ │.harness()│ │.harness()│ │.harness()│                  │
+│     └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘                  │
+│          └────────────┼────────────┴─────────────┘                       │
+│                       │  findings stream (asyncio.Queue)                 │
+│                       ▼                                                  │
+│  Phase 5: REVIEW LAYER                                                   │
+│     ┌──────────────────────────────────────────────────┐                 │
+│     │ Evidence    Verification   Relevance   Adversary │                 │
+│     │ Extraction  (N parallel    Gate        (batched  │                 │
+│     │ (code)      .harness())   (.ai())      .harness) │                 │
+│     │                                                  │                 │
+│     │ Compound Analysis (parallel .harness())          │                 │
+│     └──────────────────────┬───────────────────────────┘                 │
+│                            │                                             │
+│  Phase 6: SYNTHESIS        │  Phase 7: OUTPUT                            │
+│     ┌──────────┐           │  ┌──────────┐                               │
+│     │ Dedup +  │───────────┴─▶│ GitHub   │                               │
+│     │ Score +  │              │ Comments │                                │
+│     │ Calibrate│              │ + Review │                                │
+│     └──────────┘              └──────────┘                               │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Runtime Configuration
+
+Provider and model can be overridden per API call — no container restart needed:
+
+```json
+{"input": {"pr_url": "...", "provider": "claude-code", "harness_model": "sonnet"}}
+```
+
+Supported providers: `opencode` (default), `claude-code`. The `.harness()` calls use the provider directly; `.ai()` calls are routed through OpenRouter or Anthropic API with automatic model ID mapping.
 
 ---
 

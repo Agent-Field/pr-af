@@ -19,14 +19,16 @@ services:
     ports:
       - "8004:8004"
     environment:
+      - PR_AF_NODE_ID=${PR_AF_NODE_ID:-pr-af}
       - AGENTFIELD_SERVER=${AGENTFIELD_SERVER:-http://agentfield:8080}
       - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
       - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://pr-af:8004}
-      # HARNESS_MODEL is the single source of truth for model selection.
-      # To change model, set HARNESS_MODEL in .env or override here.
-      - HARNESS_PROVIDER=opencode
+      # HARNESS_PROVIDER + HARNESS_MODEL are defaults. Can be overridden
+      # per-call via the provider/harness_model API parameters.
+      - HARNESS_PROVIDER=${HARNESS_PROVIDER:-opencode}
       - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/minimax/minimax-m2.5}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GH_TOKEN=${GH_TOKEN:-}
       - XDG_DATA_HOME=/home/praf/.local/share

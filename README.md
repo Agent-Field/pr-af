@@ -33,6 +33,41 @@ curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
 ```
 
+### Model & Provider Selection
+
+PR-AF supports multiple LLM providers per call — no container restart needed:
+
+```bash
+# Default: opencode + openrouter model (set via env vars)
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
+
+# Claude Code + Sonnet (highest precision)
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123", "provider": "claude-code", "harness_model": "sonnet"}}'
+
+# Claude Code + Haiku (fast, budget)
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123", "provider": "claude-code", "harness_model": "haiku"}}'
+
+# Dry run (no GitHub posting, returns findings only)
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123", "dry_run": true}}'
+```
+
+| Parameter | Default | Options |
+|-----------|---------|---------|
+| `provider` | `opencode` (env) | `opencode`, `claude-code` |
+| `harness_model` | env `HARNESS_MODEL` | Any model ID for the provider (e.g., `sonnet`, `haiku`, `openrouter/moonshotai/kimi-k2.5`) |
+| `depth` | `auto` | `quick`, `standard`, `deep` |
+| `dry_run` | `false` | `true` — returns findings without posting to GitHub |
+| `max_cost_usd` | `2.0` | Budget cap in USD |
+| `max_duration_seconds` | `300` | Timeout in seconds |
+
 Posts inline GitHub review comments with evidence-grounded findings:
 
 ```jsonc
@@ -56,7 +91,7 @@ Posts inline GitHub review comments with evidence-grounded findings:
 }
 ```
 
-Custom review strategy per PR. Evidence-grounded. Zero false positives. ~$0.80 for a 500-line PR.
+Custom review strategy per PR. Evidence-grounded. ~$0.80 for a 500-line PR.
 
 ---
 
@@ -165,16 +200,25 @@ docker compose up --build
 Starts AgentField control plane (`http://localhost:8080`) + PR-AF agent.
 
 ```bash
+# Fire a review
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
   -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
-```
 
-Poll for results:
-
-```bash
+# Poll for results
 curl http://localhost:8080/api/v1/executions/<execution_id>
 ```
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENROUTER_API_KEY` | required | API key for OpenRouter models |
+| `ANTHROPIC_API_KEY` | optional | Required for `claude-code` provider |
+| `GITHUB_TOKEN` | optional | For fetching PR data and posting reviews |
+| `HARNESS_PROVIDER` | `opencode` | Default provider (`opencode` or `claude-code`) |
+| `HARNESS_MODEL` | `openrouter/minimax/minimax-m2.5` | Default model for the provider |
+| `PR_AF_NODE_ID` | `pr-af` | Node ID for AgentField registration |
 
 ## GitHub Actions Integration
 
