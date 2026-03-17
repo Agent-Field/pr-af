@@ -166,29 +166,18 @@ async def review(
     provider: str | None = None,
     harness_model: str | None = None,
 ) -> dict[str, object]:
-    # Runtime provider/model override per API call. No restart needed.
-    # AgentField handles provider routing — we just pass through.
+    # Runtime provider/model override via contextvars — concurrent-safe.
+    # Each review gets its own context; no global state mutation.
+    from .runtime_config import set_runtime_overrides
+
     if provider or harness_model:
-        override_provider = provider or _ai_config.provider
-        override_model = harness_model or _ai_config.harness_model
-        app.harness_config = HarnessConfig(
-            provider=override_provider,
-            model=override_model,
-            max_turns=_ai_config.max_turns,
-            env=_ai_config.provider_env(),
-            opencode_bin=_ai_config.opencode_bin,
-            permission_mode="auto",
-        )
-        # .ai() uses the same model via OpenRouter (pass through, no mapping)
-        ai_model = harness_model or _ai_config.ai_model
-        app.ai_config = AIConfig(
-            model=ai_model,
-            api_key=os.getenv("OPENROUTER_API_KEY", ""),
-            api_base="https://openrouter.ai/api/v1",
+        set_runtime_overrides(
+            provider=provider,
+            harness_model=harness_model,
+            ai_model=harness_model,  # .ai() uses the same model
         )
         print(
-            f"[PR-AF] Runtime override: provider={override_provider}, "
-            f"harness_model={override_model}, ai_model={ai_model}",
+            f"[PR-AF] Runtime override: provider={provider}, harness_model={harness_model}",
             flush=True,
         )
     print(

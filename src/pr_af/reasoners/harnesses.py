@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..blast_radius import compute_blast_radius
 from ..diff_engine import cluster_changes, compute_diff_stats, parse_unified_diff
+from ..runtime_config import get_ai_kwargs, get_harness_kwargs
 from ..schemas.gates import CoverageGate, FindingRelevanceGate, IntakeGate, OutputCalibrationGate
 from ..schemas.input import GitHubPRData
 from ..schemas.pipeline import (
@@ -357,6 +358,7 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
         f"Classify this pull request from metadata and diff footprint.\n\n{ai_input}",
         system="Return pr_type, complexity, and confident only. Use the provided schema.",
         schema=IntakeGate,
+        **get_ai_kwargs(),
     )
 
     if gate_result.confident:
@@ -393,6 +395,7 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
         f"AI-generation confidence, and write a technical PR summary that captures the "
         f"actual substance of the change (not just the PR title restated).\n\n{fallback_input}",
         schema=IntakeResult,
+        **get_harness_kwargs(),
     )
     return fallback_result.parsed.model_dump() if fallback_result.parsed else {}
 
@@ -455,6 +458,7 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dic
         f"{context}",
         schema=_AnatomySemanticResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
 
     parsed = semantic.parsed if semantic.parsed else _AnatomySemanticResult()
@@ -558,6 +562,7 @@ async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", h
         f"- If the PR has a narrow scope, fewer dimensions is BETTER than padding with fluff\n\n"
         f"{context}",
         schema=ReviewPlan,
+        **get_harness_kwargs(),
     )
     return plan_result.parsed.model_dump() if plan_result.parsed else {"dimensions": [], "cross_ref_hints": []}
 
@@ -652,6 +657,7 @@ async def meta_semantic(
         f"{context_ref}",
         schema=MetaDimensionResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="semantic", dimensions=[])
     parsed.lens = "semantic"
@@ -708,6 +714,7 @@ async def meta_mechanical(
         f"{context_ref}",
         schema=MetaDimensionResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="mechanical", dimensions=[])
     parsed.lens = "mechanical"
@@ -797,6 +804,7 @@ async def meta_systemic(
         f"{context_ref}",
         schema=MetaDimensionResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else MetaDimensionResult(lens="systemic", dimensions=[])
     parsed.lens = "systemic"
@@ -913,6 +921,7 @@ async def review_dimension(
         prompt,
         schema=_ReviewFindingsResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else _ReviewFindingsResult()
     sub_review_dicts = []
@@ -1017,6 +1026,7 @@ async def compound_finder_phase(
         + "\n\nReturn strict JSON matching the schema.",
         schema=_CompoundResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else _CompoundResult()
     return {"findings": [finding.model_dump() for finding in parsed.findings]}
@@ -1079,6 +1089,7 @@ async def compound_dedup_phase(
         + "\n\nReturn `keep_indices` as a list of 0-based indices of findings to KEEP. "
         "Include your reasoning.",
         schema=_CompoundDedupResult,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else _CompoundDedupResult()
 
@@ -1135,6 +1146,7 @@ async def verify_single_finding(
         + finding_narrative,
         schema=_VerifiedFinding,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else _VerifiedFinding()
     vf_dict = parsed.model_dump()
@@ -1221,6 +1233,7 @@ async def evidence_verifier(
         + findings_ref,
         schema=_VerificationResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else _VerificationResult()
 
@@ -1324,6 +1337,7 @@ async def adversary_phase(
         + findings_ref,
         schema=_AdversaryPhaseResult,
         cwd=repo_path or None,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
 
@@ -1375,6 +1389,7 @@ async def coverage_gate(
         f"If gaps exist, return concise gap_descriptions.\n\n{context}",
         system="Analyze the coverage state and return the structured result.",
         schema=CoverageGate,
+        **get_ai_kwargs(),
     )
     return gate.model_dump()
 
@@ -1407,6 +1422,7 @@ async def finding_relevance_gate(finding: dict) -> dict:
         f"Finding:\n{finding_summary}",
         system="Classify this finding accurately. When in doubt, classify as real_bug.",
         schema=FindingRelevanceGate,
+        **get_ai_kwargs(),
     )
 
     return {
@@ -1460,6 +1476,7 @@ async def output_calibration_gate(findings: list[dict]) -> dict:
             calibration_prompt + f"Findings:\n{findings_json}",
             system="Select findings to keep. Be selective — only real functional issues.",
             schema=OutputCalibrationGate,
+            **get_ai_kwargs(),
         )
         return gate.model_dump()
 
@@ -1473,6 +1490,7 @@ async def output_calibration_gate(findings: list[dict]) -> dict:
         "in a particular file indicates a systemic issue worth calling out separately.\n\n"
         + f"Findings:\n{findings_json}",
         schema=OutputCalibrationGate,
+        **get_harness_kwargs(),
     )
     parsed = result.parsed if result.parsed else OutputCalibrationGate(
         keep_indices=list(range(len(findings))), reasoning="fallback: keep all"
@@ -1518,6 +1536,7 @@ async def batch_semantic_dedup(findings: list[dict]) -> list[int]:
         f"Return the indices of findings to KEEP (not the ones to drop).\n\n"
         f"Findings:\n{findings_json}",
         schema=_SemanticDedupResult,
+        **get_harness_kwargs(),
     )
 
     parsed = result.parsed if result.parsed else _SemanticDedupResult()
