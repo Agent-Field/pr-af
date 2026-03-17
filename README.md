@@ -43,27 +43,32 @@ curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
   -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
 
-# Claude Code + Sonnet (highest precision)
+# Kimi k2.5 via OpenCode (high breadth, fast)
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123", "provider": "claude-code", "harness_model": "sonnet"}}'
+  -d '{"input": {"pr_url": "...", "provider": "opencode", "harness_model": "openrouter/moonshotai/kimi-k2.5"}}'
 
-# Claude Code + Haiku (fast, budget)
+# Claude Sonnet via Claude Code (highest precision)
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123", "provider": "claude-code", "harness_model": "haiku"}}'
+  -d '{"input": {"pr_url": "...", "provider": "claude-code", "harness_model": "claude-sonnet-4-6"}}'
+
+# Claude Haiku via Claude Code (fast, budget)
+curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -d '{"input": {"pr_url": "...", "provider": "claude-code", "harness_model": "claude-haiku-4-5"}}'
 
 # Dry run (no GitHub posting, returns findings only)
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123", "dry_run": true}}'
+  -d '{"input": {"pr_url": "...", "dry_run": true}}'
 ```
 
-| Parameter | Default | Options |
-|-----------|---------|---------|
-| `provider` | `opencode` (env) | `opencode`, `claude-code` |
-| `harness_model` | env `HARNESS_MODEL` | Any model ID for the provider (e.g., `sonnet`, `haiku`, `openrouter/moonshotai/kimi-k2.5`) |
-| `depth` | `auto` | `quick`, `standard`, `deep` |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `provider` | `opencode` (env) | Harness provider: `opencode` or `claude-code` |
+| `harness_model` | env `HARNESS_MODEL` | Full model ID for the provider (e.g., `openrouter/moonshotai/kimi-k2.5`, `claude-sonnet-4-6`) |
+| `depth` | `auto` | Review depth: `quick`, `standard`, `deep` |
 | `dry_run` | `false` | `true` — returns findings without posting to GitHub |
 | `max_cost_usd` | `2.0` | Budget cap in USD |
 | `max_duration_seconds` | `300` | Timeout in seconds |
