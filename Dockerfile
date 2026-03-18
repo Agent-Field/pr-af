@@ -15,6 +15,7 @@ COPY src/ src/
 
 RUN pip install --no-cache-dir --prefix=/install \
     "agentfield" \
+    "claude-agent-sdk" \
     "pydantic>=2.0" \
     "httpx>=0.27" \
     "python-dotenv>=1.0" \
