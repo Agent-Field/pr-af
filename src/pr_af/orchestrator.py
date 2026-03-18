@@ -786,30 +786,6 @@ class ReviewOrchestrator:
                 evidence_map,
             )
 
-        # Phase B1: Finding relevance gate — parallel .ai() classification
-        if all_findings and not self._budget_or_timeout_exhausted("adversary"):
-            print(
-                f"[PR-AF] Relevance Gate: classifying {len(all_findings)} findings",
-                flush=True,
-            )
-            gate_results = await asyncio.gather(
-                *[finding_relevance_gate(f.model_dump()) for f in all_findings]
-            )
-            noise_categories = {"style_preference", "design_opinion", "false_positive"}
-            filtered: list[ReviewFinding] = []
-            dropped_count = 0
-            for finding, gate_result in zip(all_findings, gate_results):
-                if gate_result.get("confident") and gate_result.get("category") in noise_categories:
-                    dropped_count += 1
-                else:
-                    filtered.append(finding)
-            if dropped_count:
-                print(
-                    f"[PR-AF] Relevance Gate: dropped {dropped_count} non-functional findings",
-                    flush=True,
-                )
-            all_findings = filtered
-
         adversary_results: list[AdversaryResult] = []
         if all_findings and not self._budget_or_timeout_exhausted("adversary"):
             adversary_results = await self._run_parallel_adversary(
@@ -897,25 +873,6 @@ class ReviewOrchestrator:
         adversary_results: list[AdversaryResult],
     ) -> list[ScoredFinding]:
         deduped = deduplicate_exact(findings)
-
-        # Phase C1: Semantic dedup when >8 findings
-        if len(deduped) > 8:
-            print(
-                f"[PR-AF] Semantic Dedup: analyzing {len(deduped)} findings for duplicates",
-                flush=True,
-            )
-            keep_indices = await batch_semantic_dedup(
-                [f.model_dump() for f in deduped]
-            )
-            if keep_indices:
-                valid_indices = {i for i in keep_indices if 0 <= i < len(deduped)}
-                before_count = len(deduped)
-                deduped = [f for i, f in enumerate(deduped) if i in valid_indices]
-                print(
-                    f"[PR-AF] Semantic Dedup: {before_count} → {len(deduped)} findings",
-                    flush=True,
-                )
-
         scored = score_findings(
             findings=deduped,
             adversary_results=adversary_results,
@@ -923,27 +880,6 @@ class ReviewOrchestrator:
             ai_generated=self.intake_result.ai_generated if self.intake_result else 0.0,
             blast_radius_size=len(self.anatomy_result.blast_radius) if self.anatomy_result else 0,
         )
-
-        # Phase C2: Output calibration gate
-        if len(scored) > 3:
-            print(
-                f"[PR-AF] Output Calibration: reviewing {len(scored)} scored findings",
-                flush=True,
-            )
-            calibration = await output_calibration_gate(
-                [f.model_dump() for f in scored]
-            )
-            keep_indices = calibration.get("keep_indices", [])
-            if keep_indices:
-                valid_indices = {i for i in keep_indices if 0 <= i < len(scored)}
-                before_count = len(scored)
-                scored = [f for i, f in enumerate(scored) if i in valid_indices]
-                print(
-                    f"[PR-AF] Output Calibration: {before_count} → {len(scored)} findings "
-                    f"({calibration.get('reasoning', '')})",
-                    flush=True,
-                )
-
         return scored[: self.config.comments.max_comments]
 
     def _normalize_path(self, path: str) -> str:
