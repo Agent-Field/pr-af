@@ -56,13 +56,24 @@ def get_harness_kwargs() -> dict[str, str]:
     return kwargs
 
 
-def get_ai_kwargs() -> dict[str, str]:
+def get_ai_kwargs() -> dict[str, object]:
     """Returns model kwargs to spread into .ai() calls.
 
     When no override is set, returns empty dict (SDK uses its defaults).
+    When the model uses anthropic/ prefix, injects ANTHROPIC_API_KEY and
+    api_base so litellm routes to Anthropic instead of OpenRouter.
     """
-    kwargs: dict[str, str] = {}
+    import os
+
+    kwargs: dict[str, object] = {}
     m = _ai_model.get()
     if m is not None:
         kwargs["model"] = m
+        # When using anthropic/ prefix, litellm needs the Anthropic API key
+        # and base URL — not the OpenRouter ones from ai_config.
+        if m.startswith("anthropic/"):
+            anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+            if anthropic_key:
+                kwargs["api_key"] = anthropic_key
+                kwargs["api_base"] = "https://api.anthropic.com/v1"
     return kwargs
