@@ -75,5 +75,4 @@ def get_ai_kwargs() -> dict[str, object]:
             anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
             if anthropic_key:
                 kwargs["api_key"] = anthropic_key
-                kwargs["api_base"] = "https://api.anthropic.com/v1"
     return kwargs
