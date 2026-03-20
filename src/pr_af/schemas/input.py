@@ -36,6 +36,11 @@ class ReviewInput(BaseModel):
     # Unset keys fall back to defaults from env or ReviewConfig.
     models: dict[str, str] | None = None
 
+    # Per-phase provider+model overrides (via API)
+    # Keys: phase names (intake_gate, anatomy, cluster_scout, reviewer, adversary, etc.)
+    # Values: {"provider": "...", "model": "..."} or just "model_id" (string shorthand)
+    phase_config: dict[str, dict[str, str] | str] | None = None
+
     # Budget overrides
     max_concurrent_reviewers: int | None = None
     max_coverage_iterations: int | None = None

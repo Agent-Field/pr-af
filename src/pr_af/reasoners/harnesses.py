@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 from ..blast_radius import compute_blast_radius
 from ..diff_engine import cluster_changes, compute_diff_stats, parse_unified_diff
-from ..runtime_config import get_ai_kwargs, get_harness_kwargs
+from ..runtime_config import get_ai_kwargs, get_harness_kwargs, get_harness_kwargs_for
 from ..schemas.gates import CoverageGate, FindingRelevanceGate, IntakeGate, OutputCalibrationGate
 from ..schemas.input import GitHubPRData
 from ..schemas.pipeline import (
@@ -458,7 +458,7 @@ async def anatomy_phase(pr_data: dict, intake: dict, repo_path: str = "") -> dic
         f"{context}",
         schema=_AnatomySemanticResult,
         cwd=repo_path or None,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("anatomy"),
     )
 
     parsed = semantic.parsed if semantic.parsed else _AnatomySemanticResult()
@@ -568,302 +568,403 @@ async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", h
 
 
 # ---------------------------------------------------------------------------
-# Meta-Dimension Selectors (3 parallel lenses)
-# Each produces ReviewDimensions through its specific analytical lens.
-# The orchestrator spawns all 3 in parallel, collects results, deduplicates.
+# Scout/Strategist Meta-Selectors
+#
+# Instead of one harness per lens browsing the entire repo serially,
+# N scouts browse in parallel (one per cluster), then one strategist
+# reasons over their reports to produce MetaDimensionResult.
+#
+# Data flows follow archei rules:
+#   - Scout output: investigation as STRING (strategist LLM consumes it)
+#   - Triage gate: flat .ai() schema (2 fields)
+#   - Strategist input: all scout narratives concatenated as STRING
+#   - Strategist output: MetaDimensionResult (hybrid — same as before)
 # ---------------------------------------------------------------------------
 
+# Lens-specific focus descriptions for scout investigation prompts
+_LENS_FOCUS = {
+    "semantic": (
+        "SEMANTIC — What does this code DO differently?\n\n"
+        "Investigate the BEHAVIORAL and LOGICAL aspects of changes in this cluster:\n"
+        "- Logic changes: Does the new code produce different results for ANY input?\n"
+        "- API contract changes: Do callers still get what they expect?\n"
+        "- Concurrency & state: Thread safety, shared mutable state, resource lifecycle.\n"
+        "- Security implications: Auth bypass, input validation, secret handling.\n"
+        "- Error handling: Are exceptions caught the same way? Silent swallows?\n"
+        "- Data flow: Type coercions, format changes, encoding differences.\n\n"
+        "Do NOT investigate: code style, naming, formatting, type signatures, "
+        "architectural patterns (those belong to other lenses)."
+    ),
+    "mechanical": (
+        "MECHANICAL — Does this code WORK correctly at the language level?\n\n"
+        "Investigate STRUCTURAL correctness in this cluster:\n"
+        "- Type correctness: Do return types match what callers expect?\n"
+        "- Signature compatibility: Do ALL callers pass the right arguments?\n"
+        "- Decorator/middleware effects: Are all call paths aware of injected params?\n"
+        "- Framework contract compliance: Correct method signatures for overrides?\n"
+        "- Import/dependency resolution: Valid imports, no circular deps?\n"
+        "- Runtime mechanics: Will this code execute without AttributeError, TypeError?\n\n"
+        "Do NOT investigate: whether logic is correct, code quality, business logic."
+    ),
+    "systemic": (
+        "SYSTEMIC — Functional risks from architectural choices.\n\n"
+        "Investigate FUNCTIONAL RISKS specific to architectural decisions in this cluster:\n"
+        "- Cross-module state consistency after changes\n"
+        "- Transaction safety across service boundaries\n"
+        "- Backward compatibility of changed public APIs\n"
+        "- Data integrity through concurrent access paths\n\n"
+        "SKIP: naming consistency, test coverage, documentation, code complexity, "
+        "dependency freshness. Only generate insights where the architectural concern "
+        "could lead to a runtime bug, data loss, security issue, or production incident.\n\n"
+        "Do NOT investigate: whether logic produces correct results (Semantic), "
+        "whether code will run without type errors (Mechanical)."
+    ),
+}
 
-def _build_meta_context(intake: dict, anatomy: dict, diff_patches: dict[str, str] | None = None) -> str:
-    """Build shared context string for all meta-selectors."""
+# Lens-specific strategist instructions
+_LENS_STRATEGIST_FOCUS = {
+    "semantic": (
+        "Generate review dimensions investigating BEHAVIORAL and LOGICAL aspects. "
+        "Good: 'Does the migration from sync to async preserve error propagation?' "
+        "Bad: 'Check for concurrency issues'"
+    ),
+    "mechanical": (
+        "Generate review dimensions investigating STRUCTURAL correctness. "
+        "Good: 'Do all callers of process_item() pass the new context parameter?' "
+        "Bad: 'Check for type errors'"
+    ),
+    "systemic": (
+        "Generate review dimensions investigating FUNCTIONAL RISKS from architectural choices. "
+        "Good: 'Cross-module state consistency after migration' "
+        "Bad: 'Naming consistency across modules'. "
+        "If the PR has no systemic risk, return ZERO dimensions. Prefer zero over noise."
+    ),
+}
+
+
+@router.reasoner()
+async def cluster_triage(
+    cluster_id: str,
+    cluster_files: list[str],
+    pr_type: str,
+    lens: str,
+) -> dict:
+    """Fast .ai() gate to skip irrelevant clusters before scouting.
+
+    Textbook .ai(): < 200 tokens input, flat 2-field schema, fast classification.
+    """
+    from ..schemas.gates import ClusterTriageGate
+
+    import json as _json
+
+    context = _json.dumps({
+        "cluster_id": cluster_id,
+        "files": cluster_files,
+        "pr_type": pr_type,
+        "lens": lens,
+    })
+
+    gate = await router.app.ai(
+        f"Should this file cluster be investigated for a {lens} review?\n\n"
+        f"A cluster is worth scouting if ANY of its files could contain "
+        f"issues relevant to the {lens} lens. Skip only if the cluster is clearly "
+        f"irrelevant (e.g., docs-only cluster for a mechanical lens).\n\n"
+        f"When in doubt, say worth_scouting=true.\n\n{context}",
+        system="Determine if this cluster needs investigation. Err on the side of scouting.",
+        schema=ClusterTriageGate,
+        **get_ai_kwargs(),
+    )
+
+    return gate.model_dump()
+
+
+@router.reasoner()
+async def cluster_scout(
+    cluster_id: str,
+    cluster_files: list[str],
+    lens_focus: str,
+    pr_context: str,
+    cross_cluster_edges: str,
+    repo_path: str = "",
+    diff_patches: dict[str, str] | None = None,
+) -> dict:
+    """Scout .harness() that investigates one cluster through one lens.
+
+    Has tool access to browse repo files, trace callers, read imports.
+    Multi-turn — reads X, decides to read Y based on what it finds.
+
+    Output follows archei rules:
+    - cluster_id: structured (code groups by this)
+    - investigation: STRING (strategist LLM consumes it)
+    - confident: structured (code uses for fallback)
+    """
+    from ..schemas.pipeline import ClusterScoutReport
+
+    diff_section = ""
+    if diff_patches:
+        relevant = {f: diff_patches[f] for f in cluster_files if f in diff_patches}
+        if relevant:
+            patches_text = "\n\n".join(
+                f"### {path}\n```diff\n{patch}\n```"
+                for path, patch in relevant.items()
+            )
+            if repo_path and len(patches_text) > 6000:
+                patch_file = _write_context_file(
+                    patches_text, f"scout_{cluster_id}_patches.md", repo_path
+                )
+                diff_section = (
+                    f"\n\n## Diff Patches\n\n"
+                    f"Full patches written to: {patch_file}\n"
+                    f"Read this file for detailed diff context."
+                )
+            else:
+                diff_section = f"\n\n## Diff Patches\n\n{patches_text}"
+
+    result = await router.app.harness(
+        f"You are a code scout investigating a specific cluster of changed files "
+        f"through a specific analytical lens.\n\n"
+        f"## Your Lens\n\n{lens_focus}\n\n"
+        f"## Your Cluster\n\n"
+        f"Cluster: {cluster_id}\n"
+        f"Files: {', '.join(cluster_files)}\n\n"
+        f"## PR Context\n\n{pr_context}\n\n"
+        f"## Cross-Cluster Dependencies\n\n{cross_cluster_edges}\n\n"
+        f"## Investigation Protocol\n\n"
+        f"1. Read each file in your cluster thoroughly.\n"
+        f"2. For each changed function/method, trace its callers and consumers.\n"
+        f"3. Note risk signals specific to your lens.\n"
+        f"4. Follow references to other files when relevant (up to 3 hops).\n"
+        f"5. Identify specific areas that would benefit from deeper review.\n\n"
+        f"## Output\n\n"
+        f"Write a narrative investigation report in the `investigation` field. Include:\n"
+        f"- What you found in each file (specific functions, line ranges)\n"
+        f"- Risk signals you discovered\n"
+        f"- Suggested review dimension ideas with specific investigation questions\n"
+        f"- Cross-cluster interactions you noticed\n\n"
+        f"Set `confident` to false if you couldn't adequately investigate "
+        f"(e.g., couldn't read files, input was too large).\n\n"
+        f"Write your investigation as natural language — the strategist who reads "
+        f"this is an LLM that reasons over narrative text, not structured JSON."
+        f"{diff_section}",
+        schema=ClusterScoutReport,
+        cwd=repo_path or None,
+        **get_harness_kwargs_for("cluster_scout"),
+    )
+
+    parsed = result.parsed if result.parsed else ClusterScoutReport(
+        cluster_id=cluster_id, investigation="Scout could not produce results.", confident=False
+    )
+    if not parsed.cluster_id:
+        parsed = parsed.model_copy(update={"cluster_id": cluster_id})
+    return parsed.model_dump()
+
+
+@router.reasoner()
+async def meta_strategist(
+    lens: str,
+    scout_reports_narrative: str,
+    cross_cluster_edges: str,
+    pr_context: str,
+    depth: str = "standard",
+) -> dict:
+    """Strategist .harness() that reasons over scout reports to produce dimensions.
+
+    Why .harness() not .ai():
+    - Output is MetaDimensionResult with nested ReviewDimension objects
+      containing narrative review_prompt fields — violates .ai()'s flat schema rule
+    - Input is all scout reports (~2500+ tokens) — exceeds .ai()'s comfort zone
+
+    Input follows archei rules: all context as STRING (LLM consumes it).
+    Output: MetaDimensionResult (hybrid — structured for routing, strings for reviewers).
+    """
+    strategist_focus = _LENS_STRATEGIST_FOCUS.get(lens, "")
+
+    depth_guides = {
+        "quick": "quick=1-2 dimensions",
+        "standard": "standard=2-3 dimensions",
+        "deep": "deep=3-5 dimensions",
+    }
+    depth_guide = depth_guides.get(depth, "standard=2-3 dimensions")
+
+    result = await router.app.harness(
+        f"You are a principal engineer designing review dimensions through the "
+        f"{lens.upper()} lens. You have received investigation reports from scouts "
+        f"who each explored a different cluster of changed files.\n\n"
+        f"## Your Focus\n\n{strategist_focus}\n\n"
+        f"## Scout Investigation Reports\n\n{scout_reports_narrative}\n\n"
+        f"## Cross-Cluster Dependencies\n\n{cross_cluster_edges}\n\n"
+        f"## PR Context\n\n{pr_context}\n\n"
+        f"## Your Task\n\n"
+        f"Synthesize the scout reports into review DIMENSIONS. Each dimension is a "
+        f"specific investigation question that another senior engineer will carry out "
+        f"with full repo access.\n\n"
+        f"The scouts did the INVESTIGATION — they read files, traced callers, "
+        f"found risk signals. Your job is STRATEGIC: decide what review dimensions "
+        f"to generate based on their findings.\n\n"
+        f"## Dimension Craft\n\n"
+        f"Each dimension must be SPECIFIC, not generic.\n"
+        f"Each dimension needs: id, name, review_prompt (complete briefing with "
+        f"file paths and line ranges from scout reports), target_files, context_files, "
+        f"and priority (higher = more critical).\n\n"
+        f"The review_prompt must leverage the specific details scouts discovered — "
+        f"function names, line ranges, caller information, risk signals.\n\n"
+        f"## Cross-Cluster Synthesis\n\n"
+        f"Look for interactions BETWEEN clusters that individual scouts couldn't see. "
+        f"If Scout A found a changed function and Scout B found a caller of that "
+        f"function, that's a dimension only you can create.\n\n"
+        f"## Quality Gate\n\n"
+        f"Only generate dimensions backed by scout findings. If scouts found no "
+        f"risk in your lens, return ZERO dimensions. Do not pad.\n\n"
+        f"Depth: {depth_guide}\n\n"
+        f"Also provide a rationale explaining your dimension choices and a confidence "
+        f"score (0-1) for how completely your dimensions cover the {lens} risk surface.",
+        schema=MetaDimensionResult,
+        **get_harness_kwargs_for("meta_strategist"),
+    )
+
+    parsed = result.parsed if result.parsed else MetaDimensionResult(
+        lens=lens, dimensions=[]
+    )
+    parsed.lens = lens
+    return parsed.model_dump()
+
+
+@router.reasoner()
+async def meta_lens_with_scouts(
+    lens: str,
+    intake: dict,
+    anatomy: dict,
+    depth: str = "standard",
+    repo_path: str = "",
+    diff_patches: dict[str, str] | None = None,
+    max_scouts: int = 5,
+) -> dict:
+    """Orchestrate scouts + strategist for a single lens.
+
+    Replaces the monolithic meta_semantic/meta_mechanical/meta_systemic.
+    Flow: triage → parallel scouts → strategist → MetaDimensionResult.
+    """
+    import asyncio
     import json as _json
 
     intake_result = IntakeResult.model_validate(intake)
     anatomy_result = AnatomyResult.model_validate(anatomy)
 
-    payload: dict[str, object] = {
-        "intake": {
-            "pr_type": intake_result.pr_type,
-            "complexity": intake_result.complexity,
-            "pr_summary": intake_result.pr_summary,
-            "areas_touched": intake_result.areas_touched,
-            "risk_signals": intake_result.risk_signals,
-        },
-        "clusters": _cluster_descriptions(anatomy_result.clusters),
-        "risk_surfaces": anatomy_result.risk_surfaces,
-        "pr_narrative": anatomy_result.pr_narrative,
-        "blast_radius": anatomy_result.blast_radius[:20],
-        "intent_gaps": anatomy_result.intent_gaps,
-        "unrelated_changes": anatomy_result.unrelated_changes,
-        "context_notes": anatomy_result.context_notes,
-        "diff_stats": {
-            "total_files": anatomy_result.stats.total_files,
-            "total_additions": anatomy_result.stats.total_additions,
-            "total_deletions": anatomy_result.stats.total_deletions,
-        },
-        "file_paths": [f.path for f in anatomy_result.files[:30]],
-    }
+    clusters = anatomy_result.clusters
+    if not clusters:
+        return MetaDimensionResult(lens=lens, dimensions=[]).model_dump()
 
-    if diff_patches:
-        payload["diff_patches"] = dict(list(diff_patches.items())[:15])
+    # Build PR context as string (per archei: LLM context → string)
+    pr_context = (
+        f"PR Type: {intake_result.pr_type}\n"
+        f"Complexity: {intake_result.complexity}\n"
+        f"Summary: {intake_result.pr_summary}\n"
+        f"Risk Signals: {', '.join(intake_result.risk_signals)}\n"
+        f"Risk Surfaces: {', '.join(anatomy_result.risk_surfaces)}\n"
+        f"PR Narrative: {anatomy_result.pr_narrative}"
+    )
 
-    return _json.dumps(payload, default=str)
+    # Compute cross-cluster edges from dependency graph (programmatic, not LLM)
+    dep_graph = anatomy_result.dependency_graph or {}
+    edge_lines: list[str] = []
+    cluster_file_sets = {c.id: set(c.files) for c in clusters}
+    for file_path, importers in dep_graph.items():
+        file_cluster = None
+        for cid, files in cluster_file_sets.items():
+            if file_path in files:
+                file_cluster = cid
+                break
+        if not file_cluster:
+            continue
+        for importer in importers:
+            importer_cluster = None
+            for cid, files in cluster_file_sets.items():
+                if importer in files:
+                    importer_cluster = cid
+                    break
+            if importer_cluster and importer_cluster != file_cluster:
+                edge_lines.append(
+                    f"- {file_path} ({file_cluster}) ← imported by {importer} ({importer_cluster})"
+                )
 
+    cross_cluster_edges = "\n".join(edge_lines) if edge_lines else "No cross-cluster dependencies detected."
 
-@router.reasoner()
-async def meta_semantic(
-    intake: dict,
-    anatomy: dict,
-    depth: str = "standard",
-    repo_path: str = "",
-    diff_patches: dict[str, str] | None = None,
-) -> dict:
-    """Semantic lens: What does this code DO differently?
+    lens_focus = _LENS_FOCUS.get(lens, "")
 
-    Focuses on logic, behavior, API contracts, concurrency, security, error handling.
-    Asks: "If I run the old code and the new code side by side, where do they diverge?"
-    """
-    context = _build_meta_context(intake, anatomy, diff_patches)
-    context_ref = f"{context}"
-    if repo_path and len(context) > 8000:
-        file_path = _write_context_file(context, "meta_semantic_context.json", repo_path)
-        context_ref = (
-            f"\n\nFull analysis context written to: {file_path}\n"
-            f"Read this file for complete PR context including diff patches."
+    # --- Triage: fast .ai() gate per cluster ---
+    async def triage_cluster(cluster: ChangeCluster) -> bool:
+        result = await cluster_triage(
+            cluster_id=cluster.id,
+            cluster_files=cluster.files,
+            pr_type=intake_result.pr_type,
+            lens=lens,
+        )
+        gate = result if isinstance(result, dict) else {}
+        worth = gate.get("worth_scouting", True)
+        confident = gate.get("confident", True)
+        # If not confident, scout anyway (err on side of investigation)
+        return worth or not confident
+
+    triage_results = await asyncio.gather(
+        *[triage_cluster(c) for c in clusters]
+    )
+    scoutable = [c for c, worth in zip(clusters, triage_results) if worth]
+
+    if not scoutable:
+        return MetaDimensionResult(
+            lens=lens, dimensions=[], confidence=0.9,
+            rationale="All clusters triaged as irrelevant for this lens.",
+        ).model_dump()
+
+    # --- Parallel scouts (one per cluster, capped) ---
+    scout_clusters = scoutable[:max_scouts]
+
+    async def run_scout(cluster: ChangeCluster) -> dict:
+        cluster_patches = {
+            f: diff_patches[f] for f in cluster.files
+            if diff_patches and f in diff_patches
+        } if diff_patches else None
+
+        return await cluster_scout(
+            cluster_id=cluster.id,
+            cluster_files=cluster.files,
+            lens_focus=lens_focus,
+            pr_context=pr_context,
+            cross_cluster_edges=cross_cluster_edges,
+            repo_path=repo_path,
+            diff_patches=cluster_patches,
         )
 
-    result = await router.app.harness(
-        f"You are a principal engineer designing review dimensions through the SEMANTIC lens.\n\n"
-        f"## Your Lens: SEMANTIC — What does this code DO differently?\n\n"
-        f"You are responsible for generating review dimensions that investigate the "
-        f"BEHAVIORAL and LOGICAL aspects of this change. Think about:\n\n"
-        f"- **Logic changes**: Does the new code produce different results than the old code "
-        f"for ANY input? Not just the happy path — edge cases, error conditions, boundary values.\n"
-        f"- **API contract changes**: Do callers still get what they expect? Return types, "
-        f"error types, side effects, ordering guarantees.\n"
-        f"- **Concurrency & state**: Thread safety, shared mutable state, lock ordering, "
-        f"resource lifecycle changes.\n"
-        f"- **Security implications**: Authentication bypass, authorization checks, input "
-        f"validation changes, secret handling.\n"
-        f"- **Error handling**: Are exceptions caught the same way? Are error codes preserved? "
-        f"Are there silent swallows or unhandled paths?\n"
-        f"- **Data flow**: Does data pass through the same transformations? Are there type "
-        f"coercions, format changes, or encoding differences?\n\n"
-        f"## Investigation Protocol\n\n"
-        f"You have full access to the repository. The context below gives you a starting "
-        f"point — PR summary, anatomy, and diff patches.\n\n"
-        f"- START by reading the context to understand WHAT changed.\n"
-        f"- THEN browse the actual source files to understand HOW the changed code fits into "
-        f"the broader codebase.\n"
-        f"- Read the changed functions. Then find their callers. Trace how data flows through "
-        f"them. Check what error paths exist.\n"
-        f"- ADAPT your investigation based on what you discover — if you find a concerning "
-        f"pattern, dig deeper in adjacent files and call paths.\n\n"
-        f"## What NOT to Include\n\n"
-        f"Do NOT generate dimensions about:\n"
-        f"- Code style, naming, formatting (that's Systemic)\n"
-        f"- Type signatures, calling conventions, decorator mechanics (that's Mechanical)\n"
-        f"- Pattern consistency, architectural fit (that's Systemic)\n\n"
-        f"## Dimension Craft\n\n"
-        f"Each dimension must be a SPECIFIC investigation question, not a generic category.\n"
-        f"Good: 'Does the migration from sync to async preserve error propagation to callers?'\n"
-        f"Bad: 'Check for concurrency issues'\n\n"
-        f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
-        f"target_files, context_files, and priority (higher = more critical).\n"
-        f"The review_prompt must include specific file paths and line ranges discovered during "
-        f"your repository investigation, plus the exact verification steps the reviewer should run.\n\n"
-        f"## Quality Gate\n\n"
-        f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
-        f"by what you discovered in the actual codebase. If your rationale says 'visible in the "
-        f"diff' or 'based on the patches', you have not investigated enough.\n\n"
-        f"Depth '{depth}' means: quick=1-2 dimensions, standard=2-3, deep=3-5\n"
-        f"If the PR has no semantic risk, return ZERO dimensions. Do not pad.\n\n"
-        f"Also provide a rationale explaining your dimension choices and a confidence "
-        f"score (0-1) for how completely your dimensions cover the semantic risk surface.\n\n"
-        f"{context_ref}",
-        schema=MetaDimensionResult,
-        cwd=repo_path or None,
-        **get_harness_kwargs(),
+    scout_results = await asyncio.gather(
+        *[run_scout(c) for c in scout_clusters]
     )
-    parsed = result.parsed if result.parsed else MetaDimensionResult(lens="semantic", dimensions=[])
-    parsed.lens = "semantic"
-    return parsed.model_dump()
 
-
-@router.reasoner()
-async def meta_mechanical(
-    intake: dict,
-    anatomy: dict,
-    depth: str = "standard",
-    repo_path: str = "",
-    diff_patches: dict[str, str] | None = None,
-) -> dict:
-    """Mechanical lens: Does this code WORK correctly at the language level?
-
-    Focuses on types, signatures, calling conventions, decorator effects,
-    framework interactions. Asks: "Will this code compile/run without errors?"
-    """
-    context = _build_meta_context(intake, anatomy, diff_patches)
-    context_ref = f"{context}"
-    if repo_path and len(context) > 8000:
-        file_path = _write_context_file(context, "meta_mechanical_context.json", repo_path)
-        context_ref = (
-            f"\n\nFull analysis context written to: {file_path}\n"
-            f"Read this file for complete PR context including diff patches."
+    # --- Build strategist input as narrative string (per archei: LLM context → string) ---
+    report_sections: list[str] = []
+    for report in scout_results:
+        if not isinstance(report, dict):
+            continue
+        cid = report.get("cluster_id", "unknown")
+        investigation = report.get("investigation", "No findings.")
+        confident = report.get("confident", True)
+        report_sections.append(
+            f"### Cluster: {cid} (confident: {confident})\n\n{investigation}"
         )
 
-    result = await router.app.harness(
-        f"You are a principal engineer designing review dimensions through the MECHANICAL lens.\n\n"
-        f"## Your Lens: MECHANICAL — Does this code WORK correctly?\n\n"
-        f"You are responsible for generating review dimensions that investigate whether "
-        f"the code is STRUCTURALLY correct at the language and framework level. Think about:\n\n"
-        f"- **Type correctness**: Do function return types match what callers expect? "
-        f"Are there implicit type coercions that will fail at runtime? Does `list[dict]` "
-        f"flow where `str` is expected?\n"
-        f"- **Signature compatibility**: If a function's parameters changed, do ALL callers "
-        f"(direct and indirect) still pass the right arguments? Are there default values "
-        f"that mask breakage?\n"
-        f"- **Decorator/middleware effects**: When a decorator injects parameters (like "
-        f"thread-local storage), are all call paths aware? Does calling a method directly "
-        f"vs through a dispatcher change what parameters it receives?\n"
-        f"- **Framework contract compliance**: Does this code satisfy the framework's "
-        f"expectations? Correct method signatures for overrides, proper hook registration, "
-        f"required return types for middleware chains.\n"
-        f"- **Import/dependency resolution**: Are all imports valid? Are there circular "
-        f"dependencies? Are optional dependencies guarded?\n"
-        f"- **Runtime mechanics**: Will this code actually execute without AttributeError, "
-        f"TypeError, KeyError, ImportError? Trace the exact runtime behavior.\n\n"
-        f"## Investigation Protocol\n\n"
-        f"You have full access to the repository. The context below gives you a starting "
-        f"point — PR summary, anatomy, and diff patches.\n\n"
-        f"- START by reading the context to understand WHAT changed.\n"
-        f"- THEN browse the actual source files to understand HOW the changed code fits into "
-        f"the broader codebase.\n"
-        f"- Read the actual function signatures that changed. Then search for all callers of "
-        f"those functions. Check whether callers pass the right arguments and whether import "
-        f"chains still resolve correctly.\n"
-        f"- ADAPT your investigation based on what you discover — if you find one caller or "
-        f"dependency break, keep tracing until you understand blast radius.\n\n"
-        f"## What NOT to Include\n\n"
-        f"Do NOT generate dimensions about:\n"
-        f"- Whether the logic is correct (that's Semantic)\n"
-        f"- Code quality or patterns (that's Systemic)\n"
-        f"- Business logic validation (that's Semantic)\n\n"
-        f"## Dimension Craft\n\n"
-        f"Each dimension must target a SPECIFIC mechanical concern.\n"
-        f"Good: 'Do all callers of `process_item()` pass the new `context` parameter "
-        f"added in this PR?'\n"
-        f"Bad: 'Check for type errors'\n\n"
-        f"Each dimension needs: id, name, review_prompt (complete briefing for the reviewer), "
-        f"target_files, context_files, and priority (higher = more critical).\n"
-        f"The review_prompt must include specific file paths and line ranges discovered during "
-        f"your repository investigation, plus the exact call sites/import chains to verify.\n\n"
-        f"## Quality Gate\n\n"
-        f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
-        f"by what you discovered in the actual codebase. If your rationale says 'visible in the "
-        f"diff' or 'based on the patches', you have not investigated enough.\n\n"
-        f"Depth '{depth}' means: quick=1-2 dimensions, standard=2-3, deep=3-5\n"
-        f"If the PR has no mechanical risk, return ZERO dimensions. Do not pad.\n\n"
-        f"Also provide a rationale explaining your dimension choices and a confidence "
-        f"score (0-1) for how completely your dimensions cover the mechanical risk surface.\n\n"
-        f"{context_ref}",
-        schema=MetaDimensionResult,
-        cwd=repo_path or None,
-        **get_harness_kwargs(),
+    scout_reports_narrative = (
+        "\n\n---\n\n".join(report_sections)
+        if report_sections
+        else "No scout reports produced."
     )
-    parsed = result.parsed if result.parsed else MetaDimensionResult(lens="mechanical", dimensions=[])
-    parsed.lens = "mechanical"
-    return parsed.model_dump()
 
-
-@router.reasoner()
-async def meta_systemic(
-    intake: dict,
-    anatomy: dict,
-    depth: str = "standard",
-    repo_path: str = "",
-    diff_patches: dict[str, str] | None = None,
-) -> dict:
-    """Systemic lens: How does this code FIT the codebase?
-
-    Focuses on patterns, complexity, readability, architectural coherence,
-    test coverage. Asks: "Does this change make the codebase better or worse?"
-    """
-    context = _build_meta_context(intake, anatomy, diff_patches)
-    context_ref = f"{context}"
-    if repo_path and len(context) > 8000:
-        file_path = _write_context_file(context, "meta_systemic_context.json", repo_path)
-        context_ref = (
-            f"\n\nFull analysis context written to: {file_path}\n"
-            f"Read this file for complete PR context including diff patches."
-        )
-
-    # Extract intake/anatomy fields for adaptive prompt construction
-    intake_data = intake or {}
-    anatomy_data = anatomy or {}
-    pr_type = intake_data.get("pr_type", "unknown")
-    complexity = intake_data.get("complexity", "standard")
-    risk_signals = intake_data.get("risk_signals", [])
-    risk_surfaces = anatomy_data.get("risk_surfaces", [])
-    cluster_names = [c.get("name", "") for c in anatomy_data.get("clusters", [])] if isinstance(anatomy_data.get("clusters"), list) else []
-
-    result = await router.app.harness(
-        f"You are a principal engineer designing review dimensions through the SYSTEMIC lens.\n\n"
-        f"## Your Lens: SYSTEMIC — Functional Risks from Architectural Choices\n\n"
-        f"Based on this PR's characteristics:\n"
-        f"- Type: {pr_type}, Complexity: {complexity}\n"
-        f"- Risk signals: {risk_signals}\n"
-        f"- Risk surfaces: {risk_surfaces}\n"
-        f"- Change clusters: {cluster_names}\n\n"
-        f"Generate systemic review dimensions focused on **functional risks** specific to "
-        f"THIS PR. You must adapt your focus to what could actually break in production for "
-        f"this specific change.\n\n"
-        f"## Examples of GOOD systemic dimensions (functional risks):\n"
-        f"- 'Cross-module state consistency after migration' (for a migration PR)\n"
-        f"- 'Transaction safety across new service boundary' (for a service refactor)\n"
-        f"- 'Backward compatibility of changed public API signatures' (for an API change)\n"
-        f"- 'Data integrity through concurrent access paths' (for shared-state changes)\n\n"
-        f"## Examples of dimensions to SKIP (not functional risks):\n"
-        f"- 'Naming consistency across modules' (style)\n"
-        f"- 'Test coverage patterns' (process)\n"
-        f"- 'Documentation completeness' (docs)\n"
-        f"- 'Code complexity metrics' (style)\n"
-        f"- 'Dependency version freshness' (hygiene)\n\n"
-        f"Only generate dimensions where the architectural concern could lead to a "
-        f"**runtime bug, data loss, security issue, or production incident**.\n\n"
-        f"## Investigation Protocol\n\n"
-        f"You have full access to the repository.\n"
-        f"- START by reading the context to understand WHAT changed.\n"
-        f"- THEN browse the actual source files to understand HOW the changed code fits into "
-        f"the broader codebase.\n"
-        f"- ADAPT your investigation based on what you discover.\n\n"
-        f"## What NOT to Include\n\n"
-        f"Do NOT generate dimensions about:\n"
-        f"- Whether the logic produces correct results (that's Semantic)\n"
-        f"- Whether the code will run without type/import errors (that's Mechanical)\n"
-        f"- Style, naming, formatting, or documentation concerns\n"
-        f"- Test coverage or testing patterns\n\n"
-        f"## Dimension Craft\n\n"
-        f"Each dimension must target a SPECIFIC functional risk from an architectural choice.\n"
-        f"Each dimension needs: id, name, review_prompt, target_files, context_files, priority.\n"
-        f"The review_prompt must include specific file paths and line ranges discovered during "
-        f"your repository investigation.\n\n"
-        f"## Quality Gate\n\n"
-        f"Do NOT generate dimensions based solely on diff text. Every dimension must be informed "
-        f"by what you discovered in the actual codebase.\n\n"
-        f"Depth '{depth}' means: quick=0 dimensions, standard=0-1, deep=1-2\n"
-        f"If the PR is a focused bugfix or small feature with no cross-cutting architectural "
-        f"impact, return ZERO dimensions. Prefer zero over noise.\n\n"
-        f"Also provide a rationale explaining your dimension choices and a confidence "
-        f"score (0-1) for how completely your dimensions cover the systemic risk surface.\n\n"
-        f"{context_ref}",
-        schema=MetaDimensionResult,
-        cwd=repo_path or None,
-        **get_harness_kwargs(),
+    # --- Strategist: synthesize scout reports into dimensions ---
+    return await meta_strategist(
+        lens=lens,
+        scout_reports_narrative=scout_reports_narrative,
+        cross_cluster_edges=cross_cluster_edges,
+        pr_context=pr_context,
+        depth=depth,
     )
-    parsed = result.parsed if result.parsed else MetaDimensionResult(lens="systemic", dimensions=[])
-    parsed.lens = "systemic"
-    return parsed.model_dump()
 
 
 @router.reasoner()
@@ -1033,7 +1134,7 @@ async def review_dimension(
         prompt,
         schema=_ReviewFindingsResult,
         cwd=repo_path or None,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("reviewer"),
     )
     parsed = result.parsed if result.parsed else _ReviewFindingsResult()
     sub_review_dicts = []
@@ -1062,8 +1163,6 @@ async def compound_finder_phase(
     repo_path: str = "",
     evidence_map: dict[str, dict] | None = None,
 ) -> dict:
-    import json as _json
-
     ev_map = evidence_map or {}
     validated_findings = [ReviewFinding.model_validate(finding) for finding in cluster_findings]
     if len(validated_findings) < 2:
@@ -1071,47 +1170,21 @@ async def compound_finder_phase(
 
     cluster_titles = {finding.title for finding in validated_findings}
 
-    findings_with_context: list[dict] = []
-    for f in validated_findings[:4]:
-        entry: dict = {
-            "title": f.title,
-            "severity": f.severity,
-            "file_path": f.file_path,
-            "line_start": f.line_start,
-            "line_end": f.line_end,
-            "dimension_name": f.dimension_name,
-            "body": f.body,
-            "evidence": f.evidence,
-            "suggestion": f.suggestion,
-            "tags": f.tags,
-        }
-        ev = ev_map.get(f.title, {})
-        if ev:
-            entry["evidence_package"] = {
-                "primary_code": ev.get("primary_code", "")[:4000],
-                "import_context": ev.get("import_context", "")[:2500],
-                "caller_snippets": ev.get("caller_snippets", [])[:5],
-                "related_code": ev.get("related_code", "")[:2500],
-                "cross_ref_snippets": ev.get("cross_ref_snippets", [])[:4],
-            }
-        findings_with_context.append(entry)
-
     relevant_evidence: dict[str, dict] = {title: ev_map[title] for title in cluster_titles if title in ev_map}
-    payload = {
-        "cluster_findings": findings_with_context,
-        "cluster_evidence": relevant_evidence,
-    }
-    findings_summary = _json.dumps(payload, default=str)
+    findings_narrative = _format_findings_for_llm(
+        [f.model_dump() for f in validated_findings[:4]],
+        relevant_evidence,
+    )
 
-    if len(findings_summary) > 10000 and repo_path:
-        file_path = _write_context_file(findings_summary, "compound_cluster_findings.json", repo_path)
+    if len(findings_narrative) > 10000 and repo_path:
+        file_path = _write_context_file(findings_narrative, "compound_cluster_findings.txt", repo_path)
         findings_ref = (
             "Cluster findings and evidence written to: "
             + file_path
             + "\nRead this file for complete compound-analysis context."
         )
     else:
-        findings_ref = "Cluster context:\n" + findings_summary
+        findings_ref = "Cluster context:\n\n" + findings_narrative
 
     result = await router.app.harness(
         "You are a compound-risk investigator for PR findings. You are given a SMALL cluster "
@@ -1138,7 +1211,7 @@ async def compound_finder_phase(
         + "\n\nReturn strict JSON matching the schema.",
         schema=_CompoundResult,
         cwd=repo_path or None,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("compound_finder"),
     )
     parsed = result.parsed if result.parsed else _CompoundResult()
     return {"findings": [finding.model_dump() for finding in parsed.findings]}
@@ -1201,7 +1274,7 @@ async def compound_dedup_phase(
         + "\n\nReturn `keep_indices` as a list of 0-based indices of findings to KEEP. "
         "Include your reasoning.",
         schema=_CompoundDedupResult,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("compound_dedup"),
     )
     parsed = result.parsed if result.parsed else _CompoundDedupResult()
 
@@ -1258,7 +1331,7 @@ async def verify_single_finding(
         + finding_narrative,
         schema=_VerifiedFinding,
         cwd=repo_path or None,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("verify_single"),
     )
     parsed = result.parsed if result.parsed else _VerifiedFinding()
     vf_dict = parsed.model_dump()
@@ -1351,7 +1424,7 @@ async def evidence_verifier(
         + findings_ref,
         schema=_VerificationResult,
         cwd=repo_path or None,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("verify_single"),
     )
     parsed = result.parsed if result.parsed else _VerificationResult()
 
@@ -1473,7 +1546,7 @@ async def adversary_phase(
         + findings_ref,
         schema=_AdversaryPhaseResult,
         cwd=repo_path or None,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("adversary"),
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
 
@@ -1525,6 +1598,66 @@ async def coverage_gate(
         f"If gaps exist, return concise gap_descriptions.\n\n{context}",
         system="Analyze the coverage state and return the structured result.",
         schema=CoverageGate,
+        **get_ai_kwargs(),
+    )
+    return gate.model_dump()
+
+
+@router.reasoner()
+async def anatomy_skip_gate(pr_type: str, complexity: str, files_changed: int, languages: list[str]) -> dict:
+    """Fast .ai() gate to skip anatomy semantic analysis for trivial PRs."""
+    import json as _json
+    from ..schemas.gates import AnatomySkipGate
+
+    context = _json.dumps({
+        "pr_type": pr_type,
+        "complexity": complexity,
+        "files_changed": files_changed,
+        "languages": languages,
+    })
+
+    gate = await router.app.ai(
+        f"Should this PR undergo deep semantic analysis (narrative, risk surfaces, intent gaps)?\n\n"
+        f"Skip semantic analysis ONLY for truly trivial PRs: docs-only, config-only, "
+        f"single-file renames, dependency bumps with no code changes. "
+        f"When in doubt, say needs_semantic_analysis=true.\n\n{context}",
+        system="Determine if semantic analysis is needed. Err on the side of analyzing.",
+        schema=AnatomySkipGate,
+        **get_ai_kwargs(),
+    )
+    return gate.model_dump()
+
+
+@router.reasoner()
+async def lens_skip_gate(
+    lens: str,
+    pr_type: str,
+    complexity: str,
+    areas_touched: list[str],
+    risk_surfaces: list[str],
+) -> dict:
+    """Fast .ai() gate to skip a meta-selector lens when irrelevant."""
+    import json as _json
+    from ..schemas.gates import LensSkipGate
+
+    context = _json.dumps({
+        "lens": lens,
+        "pr_type": pr_type,
+        "complexity": complexity,
+        "areas_touched": areas_touched,
+        "risk_surfaces": risk_surfaces,
+    })
+
+    gate = await router.app.ai(
+        f"Is the {lens} review lens relevant for this PR?\n\n"
+        f"Lens descriptions:\n"
+        f"- semantic: behavioral/logical changes (logic bugs, API contract changes)\n"
+        f"- mechanical: structural correctness (type errors, signature mismatches)\n"
+        f"- systemic: architectural risks (cross-module consistency, transaction safety)\n\n"
+        f"Skip ONLY if the lens is clearly irrelevant. "
+        f"When in doubt, say lens_relevant=true.\n\n{context}",
+        system="Determine if this lens is relevant. Err on the side of reviewing.",
+        schema=LensSkipGate,
         **get_ai_kwargs(),
     )
     return gate.model_dump()
@@ -1626,7 +1759,7 @@ async def output_calibration_gate(findings: list[dict]) -> dict:
         "in a particular file indicates a systemic issue worth calling out separately.\n\n"
         + f"Findings:\n{findings_json}",
         schema=OutputCalibrationGate,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("compound_dedup"),
     )
     parsed = result.parsed if result.parsed else OutputCalibrationGate(
         keep_indices=list(range(len(findings))), reasoning="fallback: keep all"
@@ -1672,7 +1805,7 @@ async def batch_semantic_dedup(findings: list[dict]) -> list[int]:
         f"Return the indices of findings to KEEP (not the ones to drop).\n\n"
         f"Findings:\n{findings_json}",
         schema=_SemanticDedupResult,
-        **get_harness_kwargs(),
+        **get_harness_kwargs_for("compound_dedup"),
     )
 
     parsed = result.parsed if result.parsed else _SemanticDedupResult()

@@ -21,6 +21,7 @@ import contextvars
 _provider: contextvars.ContextVar[str | None] = contextvars.ContextVar("pr_af_provider", default=None)
 _harness_model: contextvars.ContextVar[str | None] = contextvars.ContextVar("pr_af_harness_model", default=None)
 _ai_model: contextvars.ContextVar[str | None] = contextvars.ContextVar("pr_af_ai_model", default=None)
+_phase_routing: contextvars.ContextVar[dict | None] = contextvars.ContextVar("pr_af_phase_routing", default=None)
 
 
 def set_runtime_overrides(
@@ -34,11 +35,17 @@ def set_runtime_overrides(
     _ai_model.set(ai_model)
 
 
+def set_phase_routing(routing: dict) -> None:
+    """Set per-phase provider+model routing. Called once after intake."""
+    _phase_routing.set(routing)
+
+
 def clear_runtime_overrides() -> None:
     """Reset overrides to defaults. Called at the end of review()."""
     _provider.set(None)
     _harness_model.set(None)
     _ai_model.set(None)
+    _phase_routing.set(None)
 
 
 def get_harness_kwargs() -> dict[str, str]:
@@ -54,6 +61,27 @@ def get_harness_kwargs() -> dict[str, str]:
     if m is not None:
         kwargs["model"] = m
     return kwargs
+
+
+def get_harness_kwargs_for(phase: str) -> dict[str, str]:
+    """Returns provider+model kwargs for a specific phase.
+
+    Priority: user's global override > phase routing > env defaults.
+    """
+    base = get_harness_kwargs()  # User's global override (if set)
+    if "model" in base:
+        return base  # User explicitly set model, respect it
+    routing = _phase_routing.get()
+    if routing and phase in routing:
+        phase_cfg = routing[phase]
+        # phase_cfg is a PhaseProviderConfig object
+        provider = getattr(phase_cfg, "provider", None)
+        model = getattr(phase_cfg, "model", None)
+        if provider:
+            base["provider"] = provider
+        if model:
+            base["model"] = model
+    return base
 
 
 def get_ai_kwargs() -> dict[str, object]:

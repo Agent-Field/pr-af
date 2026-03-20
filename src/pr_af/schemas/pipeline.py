@@ -226,6 +226,20 @@ class MetaDimensionResult(BaseModel):
     rationale: str = ""  # Brief explanation of dimension choices
 
 
+class ClusterScoutReport(BaseModel):
+    """Scout output for a single cluster investigation.
+
+    Per archei rules:
+    - cluster_id: structured (code uses for grouping)
+    - investigation: STRING (only strategist LLM consumes it)
+    - confident: structured (code uses for fallback decision)
+    """
+
+    cluster_id: str  # Structured — code groups by this
+    investigation: str  # String — full narrative report for strategist LLM
+    confident: bool = True  # Structured — code uses for fallback decision
+
+
 class MetaSelectorConfig(BaseModel):
     """Configuration for meta-dimension selectors. Passed per-call via API."""
 

@@ -64,3 +64,39 @@ class OutputCalibrationGate(BaseModel):
     reasoning: str = Field(
         description="Brief explanation of what was dropped and why"
     )
+
+
+class ClusterTriageGate(BaseModel):
+    """Fast .ai() gate to skip irrelevant clusters before scouting.
+
+    Flat, 2 fields — textbook .ai() gate per CLAUDE.md decision tree.
+    """
+
+    worth_scouting: bool = Field(
+        description="Whether this cluster is worth sending a scout to investigate"
+    )
+    confident: bool = Field(
+        description="Whether the triage decision is confident"
+    )
+
+
+class AnatomySkipGate(BaseModel):
+    """Gate to skip anatomy semantic analysis for trivial PRs."""
+
+    needs_semantic_analysis: bool = Field(
+        description="Whether this PR needs semantic analysis (narrative, risk surfaces)"
+    )
+    confident: bool = Field(
+        description="Whether the classification is confident"
+    )
+
+
+class LensSkipGate(BaseModel):
+    """Gate to skip a meta-selector lens when irrelevant for this PR."""
+
+    lens_relevant: bool = Field(
+        description="Whether this lens is relevant for this PR"
+    )
+    confident: bool = Field(
+        description="Whether the classification is confident"
+    )

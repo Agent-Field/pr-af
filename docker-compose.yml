@@ -27,6 +27,7 @@ services:
       # per-call via the provider/harness_model API parameters.
       - HARNESS_PROVIDER=${HARNESS_PROVIDER:-opencode}
       - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/minimax/minimax-m2.5}
+      - PR_AF_AI_MODEL=${PR_AF_AI_MODEL:-openrouter/google/gemini-3.1-flash-lite-preview}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}

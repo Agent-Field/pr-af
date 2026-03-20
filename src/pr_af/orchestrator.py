@@ -18,25 +18,26 @@ from uuid import uuid4
 
 import httpx
 
-from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
+from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig, resolve_all_phase_routing
 from .diff_engine import parse_unified_diff
+from .runtime_config import set_phase_routing
 from .evidence import EvidencePackage, extract_evidence_for_findings
 from .github.client import GitHubClient
 from .reasoners.harnesses import (
     adversary_phase,
     anatomy_phase,
+    anatomy_skip_gate,
     batch_semantic_dedup,
     compound_dedup_phase,
     compound_finder_phase,
     coverage_gate,
     finding_relevance_gate,
+    lens_skip_gate,
     verify_single_finding,
     intake_phase,
-    meta_mechanical,
-    meta_semantic,
-    meta_systemic,
+    meta_lens_with_scouts,
     output_calibration_gate,
-    planning_phase,  # Keep for backward compat
+    planning_phase,
     review_dimension,
 )
 from .schemas.input import ChangedFile, GitHubPRData, ReviewInput
@@ -129,6 +130,11 @@ class ReviewOrchestrator:
         intake = await self._run_intake()
         self.intake_result = intake
         review_depth = self._resolve_depth(intake)
+
+        # Phase 1b: Resolve per-phase model routing
+        phase_routing = resolve_all_phase_routing(intake, self.config)
+        set_phase_routing(phase_routing)
+
         print(
             f"[PR-AF] Intake complete: type={intake.pr_type}, complexity={intake.complexity}, depth={review_depth}",
             flush=True,
@@ -169,14 +175,25 @@ class ReviewOrchestrator:
 
         all_findings, adversary_results = layer_result
 
+        if not all_dimensions:
+            print("[PR-AF] No review dimensions generated — early exit with APPROVE", flush=True)
+            return self._build_clean_result(intake, anatomy, "No review dimensions generated")
+
         print(
             f"[PR-AF] Streaming pipeline done: {len(plan.dimensions)} dimensions, "
             f"{len(all_findings)} findings, {len(adversary_results)} adversary results",
             flush=True,
         )
 
-        print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
-        all_findings, adversary_results = await self._run_coverage_loop(plan, anatomy, all_findings, adversary_results)
+        elapsed_ratio = (time.monotonic() - self.started_at) / max(self.config.budget.max_duration_seconds, 1)
+        cost_ratio = self.total_cost_usd / max(self.config.budget.max_cost_usd, 0.01)
+        budget_soft_cap = elapsed_ratio > 0.8 or cost_ratio > 0.8
+
+        if not budget_soft_cap:
+            print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
+            all_findings, adversary_results = await self._run_coverage_loop(plan, anatomy, all_findings, adversary_results)
+        else:
+            print(f"[PR-AF] Budget soft cap ({elapsed_ratio:.0%} time, {cost_ratio:.0%} cost) — skipping coverage", flush=True)
         self.adversary_challenged_count = sum(1 for result in adversary_results if result.verdict == "challenged")
         self.adversary_confirmed_count = sum(1 for result in adversary_results if result.verdict == "confirmed")
 
@@ -247,6 +264,34 @@ class ReviewOrchestrator:
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
+        # Gate: skip semantic analysis for trivial PRs
+        if intake.complexity == "trivial":
+            gate_raw = await anatomy_skip_gate(
+                pr_type=intake.pr_type,
+                complexity=intake.complexity,
+                files_changed=len(self.pr_data.changed_files),
+                languages=intake.languages,
+            )
+            gate = gate_raw if isinstance(gate_raw, dict) else {}
+            if not gate.get("needs_semantic_analysis", True) and gate.get("confident", False):
+                print("[PR-AF] Anatomy skip gate: trivial PR, skipping semantic analysis", flush=True)
+                files = parse_unified_diff(self.pr_data.diff) if self.pr_data.diff else []
+                if not files:
+                    from .reasoners.harnesses import _file_changes_from_metadata
+                    files = _file_changes_from_metadata(self.pr_data)
+                from .diff_engine import cluster_changes, compute_diff_stats
+                from .blast_radius import compute_blast_radius
+                stats = compute_diff_stats(files)
+                clusters = cluster_changes(files)
+                changed_paths = [f.path for f in files]
+                blast_radius = compute_blast_radius(changed_paths, self.input.repo_path or "")
+                return AnatomyResult(
+                    files=files, clusters=clusters, blast_radius=blast_radius,
+                    dependency_graph={}, stats=stats,
+                    pr_narrative="", risk_surfaces=[], unrelated_changes=[],
+                    intent_gaps=[], context_notes="",
+                )
+
         result_raw = await anatomy_phase(
             pr_data=self.pr_data.model_dump(),
             intake=intake.model_dump(),
@@ -277,59 +322,6 @@ class ReviewOrchestrator:
 
         return plan
 
-    async def _run_meta_selectors(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
-        if self._budget_or_timeout_exhausted("meta_selectors"):
-            raise BudgetExhaustedError("Budget exhausted before meta-selectors")
-
-        lenses = self.meta_config.enabled_lenses
-        lens_map = {
-            "semantic": meta_semantic,
-            "mechanical": meta_mechanical,
-            "systemic": meta_systemic,
-        }
-
-        async def run_lens(lens_name: str) -> MetaDimensionResult:
-            fn = lens_map[lens_name]
-            result_raw = await fn(
-                intake=intake.model_dump(),
-                anatomy=anatomy.model_dump(),
-                depth=review_depth,
-                repo_path=self.input.repo_path or "",
-                diff_patches=self._build_file_patches(),
-            )
-            self.agent_invocations += 1
-            self._register_cost("meta_selectors", self._extract_cost(result_raw))
-            return MetaDimensionResult.model_validate(result_raw)
-
-        tasks = [run_lens(lens) for lens in lenses if lens in lens_map]
-        meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
-        self.meta_selector_results = meta_results
-        self.effective_depth = self._escalate_depth(review_depth)
-
-        all_dimensions: list[ReviewDimension] = []
-        cross_ref_hints: list[str] = []
-        for meta in meta_results:
-            for dim in meta.dimensions:
-                dim = dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
-                all_dimensions.append(dim)
-
-        all_dimensions = self._dedup_cross_meta(all_dimensions)
-
-        depth_profile = DEPTH_PROFILES.get(review_depth)
-        if depth_profile and len(all_dimensions) > depth_profile.max_dimensions:
-            all_dimensions.sort(key=lambda d: d.priority, reverse=True)
-            all_dimensions = all_dimensions[: depth_profile.max_dimensions]
-
-        print(
-            f"[PR-AF] Meta-selectors: "
-            f"{' + '.join(f'{m.lens}({len(m.dimensions)})' for m in meta_results)} "
-            f"= {sum(len(m.dimensions) for m in meta_results)} total "
-            f"→ {len(all_dimensions)} after dedup",
-            flush=True,
-        )
-
-        return ReviewPlan(dimensions=all_dimensions, cross_ref_hints=cross_ref_hints)
-
     async def _run_meta_selectors_streaming(
         self,
         intake: IntakeResult,
@@ -339,21 +331,17 @@ class ReviewOrchestrator:
     ) -> list[MetaDimensionResult]:
         """Stream dimensions to queue as each lens completes.
 
-        Instead of blocking until all 3 lenses finish, each lens emits its
-        dimensions immediately upon completion. The streaming reviewer
-        (consuming dims_queue) can start reviewing those dimensions while
-        slower lenses are still running.
+        Each lens uses scout/strategist split: N parallel scouts (one per cluster)
+        browse the repo, then one strategist synthesizes their reports into
+        review dimensions. Lenses run in parallel; each emits dimensions to the
+        queue as soon as it finishes, so reviewers can start immediately.
         """
         if self._budget_or_timeout_exhausted("meta_selectors"):
             await dims_queue.put(None)
             return []
 
         lenses = self.meta_config.enabled_lenses
-        lens_map = {
-            "semantic": meta_semantic,
-            "mechanical": meta_mechanical,
-            "systemic": meta_systemic,
-        }
+        valid_lenses = {"semantic", "mechanical", "systemic"}
 
         # Track all launched dimensions for incremental cross-meta dedup
         launched_dims: list[ReviewDimension] = []
@@ -362,15 +350,34 @@ class ReviewOrchestrator:
         max_dims = depth_profile.max_dimensions if depth_profile else 999
 
         async def run_lens_and_emit(lens_name: str) -> MetaDimensionResult:
-            fn = lens_map[lens_name]
-            result_raw = await fn(
+            # Gate: skip irrelevant lenses
+            skip_raw = await lens_skip_gate(
+                lens=lens_name,
+                pr_type=intake.pr_type,
+                complexity=intake.complexity,
+                areas_touched=intake.areas_touched,
+                risk_surfaces=anatomy.risk_surfaces,
+            )
+            skip_gate = skip_raw if isinstance(skip_raw, dict) else {}
+            if not skip_gate.get("lens_relevant", True) and skip_gate.get("confident", False):
+                print(f"[PR-AF] Lens skip gate: {lens_name} lens skipped (irrelevant)", flush=True)
+                return MetaDimensionResult(
+                    lens=lens_name, dimensions=[], confidence=0.9,
+                    rationale=f"{lens_name} lens skipped — not relevant for this PR type.",
+                )
+
+            result_raw = await meta_lens_with_scouts(
+                lens=lens_name,
                 intake=intake.model_dump(),
                 anatomy=anatomy.model_dump(),
                 depth=review_depth,
                 repo_path=self.input.repo_path or "",
                 diff_patches=self._build_file_patches(),
+                max_scouts=self.config.budget.max_scouts_per_lens,
             )
-            self.agent_invocations += 1
+            # Count agent invocations: triage (N) + scouts (N) + strategist (1)
+            n_clusters = len(anatomy.clusters)
+            self.agent_invocations += n_clusters + n_clusters + 1
             self._register_cost("meta_selectors", self._extract_cost(result_raw))
             meta = MetaDimensionResult.model_validate(result_raw)
 
@@ -397,21 +404,21 @@ class ReviewOrchestrator:
 
             if new_dims:
                 print(
-                    f"[PR-AF] {meta.lens} lens complete: {len(meta.dimensions)} dims → "
+                    f"[PR-AF] {meta.lens} lens (scouts) complete: {len(meta.dimensions)} dims → "
                     f"{len(new_dims)} after dedup → streaming to reviewers",
                     flush=True,
                 )
                 await dims_queue.put(new_dims)
             else:
                 print(
-                    f"[PR-AF] {meta.lens} lens complete: {len(meta.dimensions)} dims "
+                    f"[PR-AF] {meta.lens} lens (scouts) complete: {len(meta.dimensions)} dims "
                     f"(all deduped or at cap)",
                     flush=True,
                 )
 
             return meta
 
-        tasks = [run_lens_and_emit(lens) for lens in lenses if lens in lens_map]
+        tasks = [run_lens_and_emit(lens) for lens in lenses if lens in valid_lenses]
         meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
 
         # Signal that no more dimensions will arrive
@@ -419,13 +426,33 @@ class ReviewOrchestrator:
 
         total_dims = sum(len(m.dimensions) for m in meta_results)
         print(
-            f"[PR-AF] All meta-selectors done: "
+            f"[PR-AF] All meta-selectors done (scout/strategist): "
             f"{' + '.join(f'{m.lens}({len(m.dimensions)})' for m in meta_results)} "
             f"= {total_dims} total → {len(launched_dims)} launched",
             flush=True,
         )
 
         return meta_results
+
+    async def _filter_findings(self, findings: list[ReviewFinding]) -> list[ReviewFinding]:
+        """Pre-filter findings via .ai() relevance gate to drop noise before verification."""
+        if not findings or self._budget_or_timeout_exhausted("review"):
+            return findings
+
+        async def check_one(f: ReviewFinding) -> tuple[ReviewFinding, bool]:
+            gate = await finding_relevance_gate(f.model_dump())
+            gate_dict = gate if isinstance(gate, dict) else {}
+            category = gate_dict.get("category", "real_bug")
+            confident = gate_dict.get("confident", False)
+            keep = category == "real_bug" or not confident
+            return f, keep
+
+        results = await asyncio.gather(*[check_one(f) for f in findings])
+        kept = [f for f, keep in results if keep]
+        dropped = len(findings) - len(kept)
+        if dropped > 0:
+            print(f"[PR-AF] Finding relevance gate: dropped {dropped}/{len(findings)} noise findings", flush=True)
+        return kept
 
     async def _run_streaming_review(
         self,
@@ -467,6 +494,7 @@ class ReviewOrchestrator:
                 self.agent_invocations += 1
                 self._register_cost("review", self._extract_cost(result_raw))
                 findings = self._extract_findings(result_raw, dim)
+                findings = await self._filter_findings(findings)
                 await findings_queue.put(findings)
 
                 sub_reviews = self._extract_sub_reviews(result_raw, dim)
@@ -515,6 +543,15 @@ class ReviewOrchestrator:
 
         return deduped
 
+    @staticmethod
+    def _needs_verification(f: ReviewFinding) -> bool:
+        """Filter which findings actually need verification."""
+        if f.severity in ("critical", "important"):
+            return True
+        if f.confidence >= 0.85 and len(f.evidence) > 200:
+            return False  # Well-evidenced low-severity — skip
+        return True
+
     async def _run_evidence_verification(
         self,
         findings: list[ReviewFinding],
@@ -523,14 +560,20 @@ class ReviewOrchestrator:
         if not findings:
             return findings, {}
 
+        needs_verify = [f for f in findings if self._needs_verification(f)]
+        skip_verify = [f for f in findings if not self._needs_verification(f)]
+        if not needs_verify:
+            return findings, {}
+
         print(
-            f"[PR-AF] Evidence Verification: verifying {len(findings)} findings in parallel",
+            f"[PR-AF] Evidence Verification: verifying {len(needs_verify)} findings in parallel"
+            f" ({len(skip_verify)} skipped as well-evidenced low-severity)",
             flush=True,
         )
 
         from .reasoners.harnesses import _format_findings_for_llm
 
-        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in findings if f.title in evidence_map}
+        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in needs_verify if f.title in evidence_map}
         pr_context = self._build_pr_context_string()
         repo_path = self.input.repo_path or ""
 
@@ -555,13 +598,13 @@ class ReviewOrchestrator:
             return result if isinstance(result, dict) else {}
 
         verification_results = await asyncio.gather(
-            *[verify_one(idx, f) for idx, f in enumerate(findings)]
+            *[verify_one(idx, f) for idx, f in enumerate(needs_verify)]
         )
 
         # Build verification map from parallel results
         verification_map: dict[str, dict] = {}
         ref_key_to_title: dict[str, str] = {
-            f"[F{idx + 1}]": f.title for idx, f in enumerate(findings)
+            f"[F{idx + 1}]": f.title for idx, f in enumerate(needs_verify)
         }
 
         for vf in verification_results:
@@ -575,10 +618,10 @@ class ReviewOrchestrator:
                 continue
             verification_map[title] = vf
 
-        # Apply verification results to findings
-        updated_findings: list[ReviewFinding] = []
+        # Apply verification results to findings (skip_verify pass through unchanged)
+        updated_findings: list[ReviewFinding] = list(skip_verify)
         falsified_count = 0
-        for f in findings:
+        for f in needs_verify:
             vf = verification_map.get(f.title)
             if vf and not vf.get("verified", True):
                 falsified_count += 1
@@ -621,16 +664,29 @@ class ReviewOrchestrator:
         if not findings or self._budget_or_timeout_exhausted("adversary"):
             return []
 
+        # Skip adversary entirely if all findings are low-severity
+        if all(f.severity in ("suggestion", "nitpick") for f in findings):
+            print("[PR-AF] Adversary skip: all findings are low-severity", flush=True)
+            return []
+
         batch_size = self.meta_config.adversary_batch_size
         max_batches = self.meta_config.max_adversary_batches
         ai_confidence = self.intake_result.ai_generated if self.intake_result else 0.0
         ev_map = evidence_map or {}
         ver_map = verification_map or {}
 
+        # Exclude already-falsified findings from adversary batches
+        findings_for_adversary = [
+            f for f in findings
+            if ver_map.get(f.title, {}).get("verified", True)
+        ]
+        if not findings_for_adversary:
+            return []
+
         # Dynamic batching: cover ALL findings, no silent truncation
         batches: list[list[ReviewFinding]] = []
-        for i in range(0, len(findings), batch_size):
-            batches.append(findings[i : i + batch_size])
+        for i in range(0, len(findings_for_adversary), batch_size):
+            batches.append(findings_for_adversary[i : i + batch_size])
         # Apply hard cap only if explicitly set (>0)
         if max_batches > 0 and len(batches) > max_batches:
             batches = batches[:max_batches]
@@ -762,6 +818,10 @@ class ReviewOrchestrator:
                 break
             all_findings.extend(batch)
 
+        if not all_findings:
+            print("[PR-AF] No findings from review — skipping verification/adversary/compound", flush=True)
+            return all_findings, []
+
         evidence_map: dict[str, EvidencePackage] = {}
         if all_findings and self.input.repo_path:
             print(
@@ -811,6 +871,19 @@ class ReviewOrchestrator:
     ) -> tuple[list[ReviewFinding], list[AdversaryResult]]:
         for _ in range(self.config.budget.max_coverage_iterations):
             if self._budget_or_timeout_exhausted("coverage"):
+                break
+
+            # Programmatic pre-check: skip LLM call if coverage is obviously complete
+            if not findings:
+                break
+            cluster_ids = {c.id for c in anatomy.clusters}
+            finding_paths = {f.file_path for f in findings if f.file_path}
+            covered_clusters = {
+                c.id for c in anatomy.clusters
+                if any(p in finding_paths for p in c.files)
+            }
+            if covered_clusters >= cluster_ids:
+                print("[PR-AF] Coverage pre-check: all clusters have findings, skipping LLM gate", flush=True)
                 break
 
             reviewed_clusters = self._reviewed_clusters(anatomy, findings)
@@ -873,6 +946,14 @@ class ReviewOrchestrator:
         adversary_results: list[AdversaryResult],
     ) -> list[ScoredFinding]:
         deduped = deduplicate_exact(findings)
+        if len(deduped) > 3:
+            try:
+                keep_indices = await batch_semantic_dedup([f.model_dump() for f in deduped])
+                if keep_indices:
+                    deduped = [deduped[i] for i in keep_indices if 0 <= i < len(deduped)]
+                    self.agent_invocations += 1
+            except Exception:
+                pass  # Fallback: keep all
         scored = score_findings(
             findings=deduped,
             adversary_results=adversary_results,
@@ -880,6 +961,16 @@ class ReviewOrchestrator:
             ai_generated=self.intake_result.ai_generated if self.intake_result else 0.0,
             blast_radius_size=len(self.anatomy_result.blast_radius) if self.anatomy_result else 0,
         )
+        if scored:
+            try:
+                calibrated = await output_calibration_gate([f.model_dump() for f in scored])
+                cal_dict = calibrated if isinstance(calibrated, dict) else {}
+                keep_indices = cal_dict.get("keep_indices")
+                if keep_indices and isinstance(keep_indices, list):
+                    scored = [scored[i] for i in keep_indices if 0 <= i < len(scored)]
+                    self.agent_invocations += 1
+            except Exception:
+                pass  # Fallback: keep all
         return scored[: self.config.comments.max_comments]
 
     def _normalize_path(self, path: str) -> str:
@@ -1144,6 +1235,39 @@ class ReviewOrchestrator:
             metadata=metadata,
         )
 
+    def _build_clean_result(self, intake: IntakeResult, anatomy: AnatomyResult, reason: str) -> ReviewResult:
+        """Produce an APPROVE result for early exits (no findings)."""
+        plan = ReviewPlan(dimensions=[])
+        review = GitHubReview(body=f"## 🟢 PR-AF Review — **Looks Good**\n\n{reason}\n\nNo findings.", event="APPROVE", comments=[])
+        summary = ReviewSummary(
+            total_findings=0,
+            by_severity={},
+            dimensions_run=0,
+            cross_ref_interactions=0,
+            adversary_challenged=0,
+            adversary_confirmed=0,
+            coverage_iterations=0,
+            ai_generated_confidence=intake.ai_generated,
+            cost_usd=round(self.total_cost_usd, 4),
+            duration_seconds=round(time.monotonic() - self.started_at, 3),
+            budget_exhausted=False,
+        )
+        metadata = ReviewMetadata(
+            intake=intake.model_dump(),
+            anatomy=anatomy.model_dump(),
+            plan=plan.model_dump(),
+            budget={"total_cost_usd": self.total_cost_usd, "cost_breakdown": self.cost_breakdown,
+                    "budget_exhausted": False, "max_cost_usd": self.config.budget.max_cost_usd,
+                    "max_duration_seconds": self.config.budget.max_duration_seconds},
+            agent_invocations=self.agent_invocations,
+            phases_completed=["intake", "anatomy", "meta_selectors"],
+        )
+        self._cleanup_context_dir()
+        return ReviewResult(
+            review_id=self.review_id, pr_url=self.input.pr_url or "",
+            review=review, findings=[], summary=summary, metadata=metadata,
+        )
+
     def _budget_or_timeout_exhausted(self, phase: str) -> bool:
         elapsed = time.monotonic() - self.started_at
         if elapsed > self.config.budget.max_duration_seconds:
@@ -1283,6 +1407,9 @@ class ReviewOrchestrator:
         confirmed_findings: list[ReviewFinding],
         evidence_map: dict[str, EvidencePackage] | None,
     ) -> list[ReviewFinding]:
+        if len(confirmed_findings) < 3 or self._budget_or_timeout_exhausted("cross_ref"):
+            return []
+
         clusters = self._select_compound_clusters(confirmed_findings, evidence_map)
         if not clusters or self._budget_or_timeout_exhausted("cross_ref"):
             return []

@@ -166,6 +166,8 @@ async def review(
     provider: str | None = None,
     harness_model: str | None = None,
     ai_model: str | None = None,
+    phase_config: dict[str, dict[str, str] | str] | None = None,
+    tier_config: dict[str, dict[str, str | None]] | None = None,
 ) -> dict[str, object]:
     # Runtime provider/model override via contextvars — concurrent-safe.
     # harness_model: model ID for the harness provider (e.g., "claude-sonnet-4-6" for claude-code)
@@ -210,11 +212,23 @@ async def review(
         dry_run=dry_run,
         post_pr_number=post_pr_number,
         suggestion_mode=suggestion_mode,
+        phase_config=phase_config,
     )
     resolved_repo_path = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
     config = ReviewConfig.from_input(review_input)
+    # Apply tier_config if provided via API
+    if tier_config:
+        from .config import ModelTierConfig, PhaseProviderConfig
+        for tier_name in ("budget", "mid", "premium"):
+            if tier_name in tier_config:
+                tc = tier_config[tier_name]
+                if isinstance(tc, dict):
+                    setattr(config.tier_config, tier_name, PhaseProviderConfig(
+                        provider=tc.get("provider"),
+                        model=tc.get("model"),
+                    ))
     orchestrator = ReviewOrchestrator(app=app, input=review_input, config=config)
     try:
         result = await orchestrator.run()
