@@ -568,6 +568,74 @@ async def planning_phase(intake: dict, anatomy: dict, depth: str = "standard", h
 
 
 # ---------------------------------------------------------------------------
+# Phase 2.5: Deep-Read Research Brief
+#
+# A senior-engineer-level .harness() that reads the entire PR deeply before
+# the pipeline fragments into per-cluster scouts. Identifies danger zones
+# where runtime behavior may differ from surface reading.
+# ---------------------------------------------------------------------------
+
+
+@router.reasoner()
+async def research_brief_phase(
+    diff_patches: dict[str, str],
+    pr_context: str,
+    repo_path: str = "",
+) -> dict:
+    """Deep-read .harness() that identifies danger zones before scout fragmentation.
+
+    Anatomy answers "WHAT changed and WHERE." The research brief answers
+    "what could go WRONG and WHY." Output flows as context strings to scouts,
+    strategists, and the gap finder.
+    """
+    from ..schemas.pipeline import ResearchBrief
+
+    # Build full diff text for the harness to read
+    patches_text = "\n\n".join(
+        f"### {path}\n```diff\n{patch}\n```"
+        for path, patch in diff_patches.items()
+        if patch
+    )
+
+    if repo_path and len(patches_text) > 8000:
+        patch_file = _write_context_file(
+            patches_text, "research_brief_diff.md", repo_path
+        )
+        diff_section = (
+            f"## Full Diff\n\n"
+            f"Complete diff written to: {patch_file}\n"
+            f"Read this file for all changed code."
+        )
+    else:
+        diff_section = f"## Full Diff\n\n{patches_text}"
+
+    result = await router.app.harness(
+        "You are a senior engineer performing a deep first-read of a pull request "
+        "before a review team begins work. Read every changed file thoroughly.\n\n"
+        "Your job is NOT to find bugs. Your job is to identify areas where the "
+        "code's RUNTIME BEHAVIOR might differ from what a surface reading suggests.\n\n"
+        "Think about:\n"
+        "- What does this code actually DO when it executes? Follow the data through.\n"
+        "- Where do types flow in ways that might surprise? What comparisons involve "
+        "different types? What containers hold what element types?\n"
+        "- Which functions have contracts (signatures, return types, exception types) "
+        "that callers depend on? Did those contracts change?\n"
+        "- Where do names resolve ambiguously? Imports vs local definitions?\n"
+        "- Where does shared state get accessed from multiple paths?\n\n"
+        "For each danger zone, write a specific investigation question that a "
+        "downstream reviewer should answer by reading the actual code.\n\n"
+        f"## PR Context\n\n{pr_context}\n\n"
+        f"{diff_section}",
+        schema=ResearchBrief,
+        cwd=repo_path or None,
+        **get_harness_kwargs_for("research_brief"),
+    )
+
+    parsed = result.parsed if result.parsed else ResearchBrief()
+    return parsed.model_dump()
+
+
+# ---------------------------------------------------------------------------
 # Scout/Strategist Meta-Selectors
 #
 # Instead of one harness per lens browsing the entire repo serially,
@@ -687,6 +755,8 @@ async def cluster_scout(
     cross_cluster_edges: str,
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
+    cross_cluster_patches: dict[str, str] | None = None,
+    research_directives: str = "",
 ) -> dict:
     """Scout .harness() that investigates one cluster through one lens.
 
@@ -720,6 +790,36 @@ async def cluster_scout(
             else:
                 diff_section = f"\n\n## Diff Patches\n\n{patches_text}"
 
+    # Build cross-cluster code context section (Improvement 2)
+    cross_cluster_section = ""
+    if cross_cluster_patches:
+        cc_patches_text = "\n\n".join(
+            f"### {path}\n```diff\n{patch}\n```"
+            for path, patch in cross_cluster_patches.items()
+            if patch
+        )
+        if cc_patches_text:
+            # Cap at ~3000 tokens (~12000 chars) to avoid overwhelming the scout
+            if len(cc_patches_text) > 12000:
+                cc_patches_text = cc_patches_text[:12000] + "\n\n... (truncated)"
+            cross_cluster_section = (
+                f"\n\n## Cross-Cluster Changes\n\n"
+                f"These are actual code changes from files in OTHER clusters that have "
+                f"import/dependency relationships with YOUR cluster's files. Bugs often "
+                f"hide at these boundaries — where one file's changes affect another "
+                f"file's assumptions.\n\n{cc_patches_text}"
+            )
+
+    # Research brief directives section (Improvement 1 context injection)
+    research_section = ""
+    if research_directives:
+        research_section = (
+            f"\n\n## Research Brief — Investigation Directives\n\n"
+            f"A senior engineer performed a deep first-read of the entire PR and "
+            f"identified these areas requiring careful investigation. Pay special "
+            f"attention to any that overlap with your cluster:\n\n{research_directives}"
+        )
+
     result = await router.app.harness(
         f"You are a code scout investigating a specific cluster of changed files "
         f"through a specific analytical lens.\n\n"
@@ -745,7 +845,7 @@ async def cluster_scout(
         f"(e.g., couldn't read files, input was too large).\n\n"
         f"Write your investigation as natural language — the strategist who reads "
         f"this is an LLM that reasons over narrative text, not structured JSON."
-        f"{diff_section}",
+        f"{diff_section}{cross_cluster_section}{research_section}",
         schema=ClusterScoutReport,
         cwd=repo_path or None,
         **get_harness_kwargs_for("cluster_scout"),
@@ -838,6 +938,7 @@ async def meta_lens_with_scouts(
     repo_path: str = "",
     diff_patches: dict[str, str] | None = None,
     max_scouts: int = 5,
+    research_brief: dict | None = None,
 ) -> dict:
     """Orchestrate scouts + strategist for a single lens.
 
@@ -919,11 +1020,52 @@ async def meta_lens_with_scouts(
     # --- Parallel scouts (one per cluster, capped) ---
     scout_clusters = scoutable[:max_scouts]
 
+    # Build research directives string from research brief (Imp 1 → scouts)
+    research_directives = ""
+    if research_brief:
+        rb_directives = research_brief.get("investigation_directives", [])
+        rb_danger = research_brief.get("danger_zones", [])
+        rb_cross = research_brief.get("cross_file_dependencies", [])
+        directive_parts: list[str] = []
+        if rb_danger:
+            directive_parts.append("Danger zones:\n" + "\n".join(f"- {d}" for d in rb_danger))
+        if rb_cross:
+            directive_parts.append("Cross-file dependencies:\n" + "\n".join(f"- {d}" for d in rb_cross))
+        if rb_directives:
+            directive_parts.append("Investigation questions:\n" + "\n".join(f"- {d}" for d in rb_directives))
+        research_directives = "\n\n".join(directive_parts)
+
     async def run_scout(cluster: ChangeCluster) -> dict:
         cluster_patches = {
             f: diff_patches[f] for f in cluster.files
             if diff_patches and f in diff_patches
         } if diff_patches else None
+
+        # Compute cross-cluster patches: actual diff hunks from dependent files
+        # in OTHER clusters (Improvement 2)
+        cc_patches: dict[str, str] | None = None
+        if diff_patches:
+            cluster_file_set = set(cluster.files)
+            dependent_files: set[str] = set()
+            for file_path in cluster.files:
+                # Files that import from this cluster's files
+                for importer in dep_graph.get(file_path, []):
+                    if importer not in cluster_file_set:
+                        dependent_files.add(importer)
+            # Files that this cluster's files import from
+            for other_file, importers in dep_graph.items():
+                if other_file not in cluster_file_set:
+                    for imp in importers:
+                        if imp in cluster_file_set:
+                            dependent_files.add(other_file)
+            if dependent_files:
+                cc_patches = {
+                    f: diff_patches[f]
+                    for f in dependent_files
+                    if f in diff_patches and diff_patches[f]
+                }
+                if not cc_patches:
+                    cc_patches = None
 
         return await cluster_scout(
             cluster_id=cluster.id,
@@ -933,6 +1075,8 @@ async def meta_lens_with_scouts(
             cross_cluster_edges=cross_cluster_edges,
             repo_path=repo_path,
             diff_patches=cluster_patches,
+            cross_cluster_patches=cc_patches,
+            research_directives=research_directives,
         )
 
     scout_results = await asyncio.gather(
@@ -958,11 +1102,31 @@ async def meta_lens_with_scouts(
     )
 
     # --- Strategist: synthesize scout reports into dimensions ---
+    # Inject research brief context for strategist (Improvement 4)
+    strategist_pr_context = pr_context
+    if research_brief:
+        rb_danger = research_brief.get("danger_zones", [])
+        rb_cross = research_brief.get("cross_file_dependencies", [])
+        if rb_danger or rb_cross:
+            brief_section = "\n\n## Research Brief\n\n"
+            brief_section += (
+                "The pre-investigation research identified these areas requiring investigation:\n"
+            )
+            if rb_danger:
+                brief_section += "\nDanger zones:\n" + "\n".join(f"- {d}" for d in rb_danger)
+            if rb_cross:
+                brief_section += "\nCross-file dependencies:\n" + "\n".join(f"- {d}" for d in rb_cross)
+            brief_section += (
+                "\n\nEnsure your dimensions cover these areas. If no scout reported on a "
+                "danger zone, create a dimension that addresses it."
+            )
+            strategist_pr_context += brief_section
+
     return await meta_strategist(
         lens=lens,
         scout_reports_narrative=scout_reports_narrative,
         cross_cluster_edges=cross_cluster_edges,
-        pr_context=pr_context,
+        pr_context=strategist_pr_context,
         depth=depth,
     )
 
@@ -1444,6 +1608,99 @@ async def evidence_verifier(
 
 
 @router.reasoner()
+async def adversarial_gap_finder(
+    diff_patches: dict[str, str],
+    research_brief: dict,
+    existing_finding_titles: list[str],
+    pr_context: str = "",
+    repo_path: str = "",
+) -> dict:
+    """Adversarial .harness() that hunts for bugs missed by the review team.
+
+    Runs in parallel with the adversary in _run_review_layer(). Receives the
+    full diff, research brief danger zones, and a summary of what WAS found —
+    then investigates what was MISSED.
+    """
+    # Build diff text
+    patches_text = "\n\n".join(
+        f"### {path}\n```diff\n{patch}\n```"
+        for path, patch in diff_patches.items()
+        if patch
+    )
+
+    if repo_path and len(patches_text) > 8000:
+        patch_file = _write_context_file(
+            patches_text, "gap_finder_diff.md", repo_path
+        )
+        diff_section = (
+            f"## The Full Diff\n\n"
+            f"Complete diff written to: {patch_file}\n"
+            f"Read this file to see all changed code."
+        )
+    else:
+        diff_section = f"## The Full Diff\n\n{patches_text}"
+
+    # Identify unaddressed danger zones
+    danger_zones = research_brief.get("danger_zones", [])
+    cross_deps = research_brief.get("cross_file_dependencies", [])
+    directives = research_brief.get("investigation_directives", [])
+
+    existing_titles_lower = {t.lower() for t in existing_finding_titles}
+
+    unaddressed: list[str] = []
+    for zone in danger_zones:
+        # Simple heuristic: if no finding title contains key words from the danger zone
+        zone_words = {w.lower() for w in zone.split() if len(w) > 4}
+        if not any(any(w in title for w in zone_words) for title in existing_titles_lower):
+            unaddressed.append(zone)
+
+    unaddressed_section = ""
+    if unaddressed:
+        unaddressed_section = (
+            "\n\n## Research Brief Danger Zones NOT Addressed by Findings\n\n"
+            + "\n".join(f"- {z}" for z in unaddressed)
+        )
+
+    existing_section = (
+        "## What Was Already Found\n\n"
+        + "\n".join(f"- {t}" for t in existing_finding_titles)
+        if existing_finding_titles
+        else "## What Was Already Found\n\nNo findings were produced by the review team."
+    )
+
+    all_directives = directives + [d for d in cross_deps if d not in directives]
+    directives_section = ""
+    if all_directives:
+        directives_section = (
+            "\n\n## Investigation Directives from Research Brief\n\n"
+            + "\n".join(f"- {d}" for d in all_directives)
+        )
+
+    result = await router.app.harness(
+        "You are a gap finder. The review team has already produced findings "
+        "(listed below). Your job is to find important bugs they MISSED.\n\n"
+        f"{existing_section}\n"
+        f"{unaddressed_section}\n"
+        f"{directives_section}\n\n"
+        f"{diff_section}\n\n"
+        f"## PR Context\n\n{pr_context}\n\n"
+        "Read the diff with fresh eyes. For each danger zone that has no "
+        "matching finding, investigate: is there actually a bug here? Read "
+        "the code, trace the runtime behavior, and determine what happens.\n\n"
+        "Don't re-report things that were already found. Only report genuinely "
+        "NEW bugs that the review team missed. Verify each finding by reading "
+        "the actual repository code.\n\n"
+        "Return your findings in the standard ReviewFinding format.",
+        schema=_ReviewFindingsResult,
+        cwd=repo_path or None,
+        **get_harness_kwargs_for("gap_finder"),
+    )
+
+    parsed = result.parsed if result.parsed else _ReviewFindingsResult()
+    return {"findings": [f.model_dump() for f in parsed.findings]}
+
+
+@router.reasoner()
 async def adversary_phase(
     findings: list[dict],
     ai_generated_confidence: float = 0.0,
@@ -1568,6 +1825,7 @@ async def coverage_gate(
     anatomy: dict,
     reviewed_clusters: list[str],
     dimension_names_reviewed: list[str] | None = None,
+    research_brief: dict | None = None,
 ) -> dict:
     import json as _json
 
@@ -1591,11 +1849,30 @@ async def coverage_gate(
         },
         default=str,
     )
+
+    # Inject research brief danger zones as coverage requirements (Improvement 4)
+    research_brief_section = ""
+    if research_brief:
+        rb_danger = research_brief.get("danger_zones", [])
+        rb_cross = research_brief.get("cross_file_dependencies", [])
+        if rb_danger or rb_cross:
+            items: list[str] = []
+            if rb_danger:
+                items.extend(rb_danger)
+            if rb_cross:
+                items.extend(rb_cross)
+            research_brief_section = (
+                "\n\nBeyond cluster coverage, check whether these research brief danger zones "
+                "have been addressed by any finding or dimension:\n"
+                + "\n".join(f"- {item}" for item in items)
+            )
+
     gate = await router.app.ai(
         f"Determine whether review coverage is complete. "
         f"Compare reviewed cluster identifiers against all change clusters. "
         f"Dimensions already reviewed: {', '.join(dimension_names_reviewed or [])}. "
-        f"If gaps exist, return concise gap_descriptions.\n\n{context}",
+        f"If gaps exist, return concise gap_descriptions.\n\n{context}"
+        f"{research_brief_section}",
         system="Analyze the coverage state and return the structured result.",
         schema=CoverageGate,
         **get_ai_kwargs(),

@@ -24,6 +24,7 @@ from .runtime_config import set_phase_routing
 from .evidence import EvidencePackage, extract_evidence_for_findings
 from .github.client import GitHubClient
 from .reasoners.harnesses import (
+    adversarial_gap_finder,
     adversary_phase,
     anatomy_phase,
     anatomy_skip_gate,
@@ -33,6 +34,7 @@ from .reasoners.harnesses import (
     coverage_gate,
     finding_relevance_gate,
     lens_skip_gate,
+    research_brief_phase,
     verify_single_finding,
     intake_phase,
     meta_lens_with_scouts,
@@ -55,6 +57,7 @@ from .schemas.pipeline import (
     IntakeResult,
     MetaDimensionResult,
     MetaSelectorConfig,
+    ResearchBrief,
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
@@ -116,6 +119,7 @@ class ReviewOrchestrator:
         self.pr_data: GitHubPRData | None = None
         self.intake_result: IntakeResult | None = None
         self.anatomy_result: AnatomyResult | None = None
+        self.research_brief_result: dict | None = None
         self.meta_selector_results: list[MetaDimensionResult] = []
         self.coverage_iterations = 0
         self.cross_ref_count = 0
@@ -145,6 +149,18 @@ class ReviewOrchestrator:
         self.anatomy_result = anatomy
         print(f"[PR-AF] Anatomy complete: {len(anatomy.files)} files, {len(anatomy.clusters)} clusters", flush=True)
 
+        # Phase 2.5: Deep-Read Research Brief
+        print("[PR-AF] Phase 2.5: RESEARCH BRIEF", flush=True)
+        research_brief = await self._run_research_brief(intake, anatomy)
+        self.research_brief_result = research_brief
+        if research_brief:
+            n_danger = len(research_brief.get("danger_zones", []))
+            n_directives = len(research_brief.get("investigation_directives", []))
+            print(
+                f"[PR-AF] Research brief complete: {n_danger} danger zones, {n_directives} directives",
+                flush=True,
+            )
+
         print("[PR-AF] Phase 3+4+5: META-SELECTORS (streaming) → REVIEW → LAYER", flush=True)
         dims_queue: asyncio.Queue[list[ReviewDimension] | None] = asyncio.Queue()
         findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
@@ -153,7 +169,7 @@ class ReviewOrchestrator:
         # Streaming review consumes dims and launches reviewers immediately.
         # Layer collects findings from the findings_queue.
         meta_task = asyncio.create_task(
-            self._run_meta_selectors_streaming(intake, anatomy, review_depth, dims_queue)
+            self._run_meta_selectors_streaming(intake, anatomy, review_depth, dims_queue, research_brief)
         )
         review_task = asyncio.create_task(
             self._run_streaming_review(dims_queue, findings_queue)
@@ -302,6 +318,27 @@ class ReviewOrchestrator:
         anatomy = AnatomyResult.model_validate(result_raw)
         return anatomy
 
+    async def _run_research_brief(self, intake: IntakeResult, anatomy: AnatomyResult) -> dict | None:
+        """Phase 2.5: Deep-read research brief identifying danger zones."""
+        if self._budget_or_timeout_exhausted("research_brief"):
+            return None
+        if intake.complexity == "trivial":
+            return None
+
+        diff_patches = self._build_file_patches()
+        if not diff_patches:
+            return None
+
+        pr_context = self._build_pr_context_string()
+        result_raw = await research_brief_phase(
+            diff_patches=diff_patches,
+            pr_context=pr_context,
+            repo_path=self.input.repo_path or "",
+        )
+        self.agent_invocations += 1
+        self._register_cost("research_brief", self._extract_cost(result_raw))
+        return result_raw
+
     async def _run_planning(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("planning"):
             raise BudgetExhaustedError("Budget exhausted before planning")
@@ -328,6 +365,7 @@ class ReviewOrchestrator:
         anatomy: AnatomyResult,
         review_depth: str,
         dims_queue: asyncio.Queue[list[ReviewDimension] | None],
+        research_brief: dict | None = None,
     ) -> list[MetaDimensionResult]:
         """Stream dimensions to queue as each lens completes.
 
@@ -374,6 +412,7 @@ class ReviewOrchestrator:
                 repo_path=self.input.repo_path or "",
                 diff_patches=self._build_file_patches(),
                 max_scouts=self.config.budget.max_scouts_per_lens,
+                research_brief=research_brief,
             )
             # Count agent invocations: triage (N) + scouts (N) + strategist (1)
             n_clusters = len(anatomy.clusters)
@@ -578,24 +617,28 @@ class ReviewOrchestrator:
         repo_path = self.input.repo_path or ""
 
         # Build per-finding narratives and launch parallel verification
+        # Use semaphore to cap concurrency — 31 parallel claude-code processes will OOM
+        semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
+
         async def verify_one(idx: int, finding: ReviewFinding) -> dict:
             if self._budget_or_timeout_exhausted("adversary"):
                 return {}
-            ref_key = f"[F{idx + 1}]"
-            ev = ev_packages.get(finding.title)
-            finding_ev = {finding.title: ev} if ev else None
-            narrative = _format_findings_for_llm(
-                [finding.model_dump()], finding_ev
-            )
-            result = await verify_single_finding(
-                finding_narrative=narrative,
-                reference_key=ref_key,
-                pr_context=pr_context,
-                repo_path=repo_path,
-            )
-            self.agent_invocations += 1
-            self._register_cost("adversary", self._extract_cost(result))
-            return result if isinstance(result, dict) else {}
+            async with semaphore:
+                ref_key = f"[F{idx + 1}]"
+                ev = ev_packages.get(finding.title)
+                finding_ev = {finding.title: ev} if ev else None
+                narrative = _format_findings_for_llm(
+                    [finding.model_dump()], finding_ev
+                )
+                result = await verify_single_finding(
+                    finding_narrative=narrative,
+                    reference_key=ref_key,
+                    pr_context=pr_context,
+                    repo_path=repo_path,
+                )
+                self.agent_invocations += 1
+                self._register_cost("adversary", self._extract_cost(result))
+                return result if isinstance(result, dict) else {}
 
         verification_results = await asyncio.gather(
             *[verify_one(idx, f) for idx, f in enumerate(needs_verify)]
@@ -846,13 +889,35 @@ class ReviewOrchestrator:
                 evidence_map,
             )
 
+        # Run adversary and gap finder in parallel (Improvement 3)
+        adversary_coro = self._run_parallel_adversary(
+            all_findings, evidence_map, verification_map,
+        ) if all_findings and not self._budget_or_timeout_exhausted("adversary") else None
+
+        gap_finder_coro = self._run_gap_finder(all_findings) if (
+            self.research_brief_result
+            and not self._budget_or_timeout_exhausted("gap_finder")
+        ) else None
+
         adversary_results: list[AdversaryResult] = []
-        if all_findings and not self._budget_or_timeout_exhausted("adversary"):
-            adversary_results = await self._run_parallel_adversary(
-                all_findings,
-                evidence_map,
-                verification_map,
+        gap_findings: list[ReviewFinding] = []
+
+        if adversary_coro and gap_finder_coro:
+            adversary_results, gap_findings = await asyncio.gather(
+                adversary_coro, gap_finder_coro
             )
+        elif adversary_coro:
+            adversary_results = await adversary_coro
+        elif gap_finder_coro:
+            gap_findings = await gap_finder_coro
+
+        # Merge gap findings into all_findings before challenge filtering
+        if gap_findings:
+            print(
+                f"[PR-AF] Gap finder: {len(gap_findings)} new findings from missed areas",
+                flush=True,
+            )
+            all_findings.extend(gap_findings)
 
         challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
         confirmed_findings = [f for f in all_findings if f.title not in challenged_titles]
@@ -861,6 +926,40 @@ class ReviewOrchestrator:
         confirmed_findings.extend(compound_findings)
 
         return confirmed_findings, adversary_results
+
+    async def _run_gap_finder(self, existing_findings: list[ReviewFinding]) -> list[ReviewFinding]:
+        """Run adversarial gap finder to catch bugs the review team missed (Improvement 3)."""
+        if not self.research_brief_result:
+            return []
+
+        diff_patches = self._build_file_patches()
+        if not diff_patches:
+            return []
+
+        existing_titles = [f.title for f in existing_findings]
+        pr_context = self._build_pr_context_string()
+
+        result_raw = await adversarial_gap_finder(
+            diff_patches=diff_patches,
+            research_brief=self.research_brief_result,
+            existing_finding_titles=existing_titles,
+            pr_context=pr_context,
+            repo_path=self.input.repo_path or "",
+        )
+        self.agent_invocations += 1
+        self._register_cost("gap_finder", self._extract_cost(result_raw))
+
+        raw_findings = result_raw.get("findings", []) if isinstance(result_raw, dict) else []
+        findings: list[ReviewFinding] = []
+        for rf in raw_findings:
+            if isinstance(rf, dict):
+                rf.setdefault("dimension_id", "gap_finder")
+                rf.setdefault("dimension_name", "Gap Finder")
+                try:
+                    findings.append(ReviewFinding.model_validate(rf))
+                except Exception:
+                    continue
+        return findings
 
     async def _run_coverage_loop(
         self,
@@ -892,6 +991,7 @@ class ReviewOrchestrator:
                 anatomy=anatomy.model_dump(),
                 reviewed_clusters=reviewed_clusters,
                 dimension_names_reviewed=dimension_names,
+                research_brief=self.research_brief_result,
             )
             self.agent_invocations += 1
             self._register_cost("coverage", self._extract_cost(gate_raw))

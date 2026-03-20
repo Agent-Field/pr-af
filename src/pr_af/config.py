@@ -45,9 +45,11 @@ class BudgetConfig(BaseModel):
         default_factory=lambda: {
             "intake": 0.05,
             "anatomy": 0.15,
+            "research_brief": 0.15,  # Deep-read phase (one .harness() call)
             "meta_selectors": 0.45,  # 3 lenses × (N scouts + 1 strategist)
             "review": 0.90,  # Most budget goes here
             "adversary": 0.40,  # Parallel batches
+            "gap_finder": 0.20,  # Adversarial gap finder (one .harness() call)
             "cross_ref": 0.30,
             "coverage": 0.10,
             "synthesis": 0.00,  # Code, no LLM cost
@@ -327,6 +329,8 @@ _PHASE_TIER_MAP: dict[str, dict[str, str]] = {
     "compound_finder": {"trivial": "mid", "standard": "mid", "complex": "premium", "massive": "premium"},
     "compound_dedup": {"trivial": "budget", "standard": "budget", "complex": "budget", "massive": "budget"},
     "anatomy": {"trivial": "budget", "standard": "mid", "complex": "premium", "massive": "premium"},
+    "research_brief": {"trivial": "budget", "standard": "mid", "complex": "premium", "massive": "premium"},
+    "gap_finder": {"trivial": "mid", "standard": "premium", "complex": "premium", "massive": "premium"},
 }
 
 

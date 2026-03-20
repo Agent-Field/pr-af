@@ -213,6 +213,21 @@ class AdversaryResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ResearchBrief(BaseModel):
+    """Deep-read analysis identifying areas requiring careful investigation.
+
+    Produced by a senior-engineer-level .harness() that reads the entire PR
+    before the pipeline fragments into per-cluster scouts. Anatomy answers
+    "WHAT changed and WHERE"; the research brief answers "what could go WRONG
+    and WHY."
+    """
+
+    danger_zones: list[str] = Field(default_factory=list)  # Areas where runtime behavior may surprise
+    cross_file_dependencies: list[str] = Field(default_factory=list)  # Functions/contracts spanning file boundaries
+    investigation_directives: list[str] = Field(default_factory=list)  # Specific questions for downstream agents
+    confidence: float = 0.7
+
+
 class MetaDimensionResult(BaseModel):
     """Output of a meta-dimension selector (Semantic, Mechanical, or Systemic).
 
