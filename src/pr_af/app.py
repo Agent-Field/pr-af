@@ -159,6 +159,43 @@ if _ai_config.provider == "claude-code":
 NODE_ID = os.getenv("PR_AF", "pr-af")
 HarnessConfig = _agentfield.HarnessConfig
 
+
+def _env_bool(key: str, default: bool) -> bool:
+    val = os.getenv(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(key: str, default: float) -> float:
+    val = os.getenv(key)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
+
+
+def _env_int(key: str, default: int) -> int:
+    val = os.getenv(key)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
+# Budget defaults for the `review` reasoner. Hard-coded fallbacks preserve
+# prior behavior; env vars let a deployment lift caps (or disable budgets
+# entirely with PR_AF_NO_BUDGET=true) without code changes. github-buddy
+# does NOT thread budget overrides through `app.call`, so these env vars
+# are the only way to retune budgets in production.
+_DEFAULT_MAX_COST_USD = _env_float("PR_AF_MAX_COST_USD", 2.0)
+_DEFAULT_MAX_DURATION_SECONDS = _env_int("PR_AF_MAX_DURATION_SECONDS", 300)
+_DEFAULT_NO_BUDGET = _env_bool("PR_AF_NO_BUDGET", False)
+
 app = Agent(
     node_id=NODE_ID,
     version="0.1.0",
@@ -289,8 +326,8 @@ async def review(
     base_ref: str | None = None,
     head_ref: str | None = None,
     depth: str = "auto",
-    max_cost_usd: float = 2.0,
-    max_duration_seconds: int = 300,
+    max_cost_usd: float = _DEFAULT_MAX_COST_USD,
+    max_duration_seconds: int = _DEFAULT_MAX_DURATION_SECONDS,
     focus: str = "auto",
     ignore_paths: list[str] | None = None,
     hints: list[str] | None = None,
@@ -303,7 +340,7 @@ async def review(
     dry_run: bool = False,
     post_pr_number: int | None = None,
     suggestion_mode: str = "comment",
-    no_budget: bool = False,
+    no_budget: bool = _DEFAULT_NO_BUDGET,
 ) -> dict[str, object]:
     effective_provider = provider or _ai_config.provider
     print(
