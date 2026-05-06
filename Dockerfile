@@ -31,8 +31,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AGENTFIELD_SERVER=http://agentfield:8080 \
     HARNESS_PROVIDER=opencode \
-    HARNESS_MODEL=openrouter/moonshotai/kimi-k2.5 \
-    AI_MODEL=openrouter/moonshotai/kimi-k2.5 \
+    HARNESS_MODEL=openrouter/moonshotai/kimi-k2.6 \
+    AI_MODEL=openrouter/moonshotai/kimi-k2.6 \
     PORT=8004 \
     HOME=/home/praf \
     PYTHONPATH=/app/src \
@@ -59,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /home/praf/.config/opencode && \
-    echo '{"$schema":"https://opencode.ai/config.json","model":"openrouter/moonshotai/kimi-k2.5","small_model":"openrouter/moonshotai/kimi-k2.5","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"},"models":{"moonshotai/kimi-k2.5":{}}}}}' \
+    echo '{"$schema":"https://opencode.ai/config.json","model":"openrouter/moonshotai/kimi-k2.6","small_model":"openrouter/moonshotai/kimi-k2.6","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"},"models":{"moonshotai/kimi-k2.6":{}}}}}' \
     > /home/praf/.config/opencode/opencode.json && \
     chown -R praf:praf /home/praf/.config
 
