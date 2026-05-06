@@ -45,9 +45,17 @@ class BudgetConfig(BaseModel):
         }
     )
 
-    # Concurrency — kept low to avoid cascading rate-limit backoff
-    # when using OpenRouter or other rate-limited providers.
-    max_concurrent_reviewers: int = 3
+    # Concurrency for review_dimension fan-out.
+    #
+    # Production data showed 8 review_dimensions throttled by this semaphore at
+    # the previous default of 3, turning per-dimension cost (~25 min) into a
+    # 3× wall-clock multiplier (≥75 min for the review phase alone). Bumped to
+    # 10 — well within OpenRouter's per-key rate limits on Kimi K2.5 and the
+    # other models we run through opencode. Override via PR_AF_MAX_CONCURRENT_REVIEWERS
+    # if a deployment needs to dial it back for a stricter rate-limit ceiling.
+    max_concurrent_reviewers: int = Field(
+        default_factory=lambda: int(os.getenv("PR_AF_MAX_CONCURRENT_REVIEWERS", "10"))
+    )
 
     # Stagger delay (seconds) between launching parallel tasks to avoid
     # burst rate-limit hits.  Set to 0 to disable staggering.
