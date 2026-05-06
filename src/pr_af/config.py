@@ -90,7 +90,7 @@ def _default_tier_map(provider: str = "opencode") -> dict[str, str]:
     # opencode / default — OpenRouter model IDs
     ai_model = os.getenv(
         "PR_AF_AI_MODEL",
-        os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "openrouter/moonshotai/kimi-k2.5")),
+        os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "openrouter/moonshotai/kimi-k2.6")),
     )
     return {
         "budget": os.getenv("PR_AF_MODEL_BUDGET", ai_model),
@@ -337,12 +337,12 @@ class AIIntegrationConfig(BaseModel):
         default_factory=lambda: os.getenv("PR_AF_PROVIDER", os.getenv("HARNESS_PROVIDER", "opencode"))
     )
     harness_model: str = Field(
-        default_factory=lambda: os.getenv("PR_AF_MODEL", os.getenv("HARNESS_MODEL", "openrouter/moonshotai/kimi-k2.5"))
+        default_factory=lambda: os.getenv("PR_AF_MODEL", os.getenv("HARNESS_MODEL", "openrouter/moonshotai/kimi-k2.6"))
     )
     ai_model: str = Field(
         default_factory=lambda: os.getenv(
             "PR_AF_AI_MODEL",
-            os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "openrouter/moonshotai/kimi-k2.5")),
+            os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", "openrouter/moonshotai/kimi-k2.6")),
         )
     )
     max_turns: int = Field(default_factory=lambda: int(os.getenv("PR_AF_MAX_TURNS", "50")))
