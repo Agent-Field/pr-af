@@ -90,7 +90,21 @@ async def test_staggered_gather_propagates_exception():
 
 
 def test_budget_config_defaults():
-    """Verify the updated concurrency and stagger defaults."""
-    config = BudgetConfig()
-    assert config.max_concurrent_reviewers == 3
-    assert config.stagger_delay_seconds == 2.0
+    """Verify the updated concurrency and stagger defaults.
+
+    Concurrency was raised from 3 → 10 after production data showed 8
+    review_dimensions throttled by the old semaphore, turning ~25-min
+    per-dimension cost into a 3× wall-clock multiplier. The default is
+    overridable via PR_AF_MAX_CONCURRENT_REVIEWERS — clear that env var
+    so the test pins the in-code default rather than the runtime override.
+    """
+    import os
+
+    prior = os.environ.pop("PR_AF_MAX_CONCURRENT_REVIEWERS", None)
+    try:
+        config = BudgetConfig()
+        assert config.max_concurrent_reviewers == 10
+        assert config.stagger_delay_seconds == 2.0
+    finally:
+        if prior is not None:
+            os.environ["PR_AF_MAX_CONCURRENT_REVIEWERS"] = prior
