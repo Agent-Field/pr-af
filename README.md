@@ -176,6 +176,17 @@ Poll for results:
 curl http://localhost:8080/api/v1/executions/<execution_id>
 ```
 
+### Optional: web search
+
+Review reasoners can look up external context — verify API contracts, check CVE/deprecation status, confirm library version behavior — by enabling opencode's built-in `websearch` and `webfetch` tools. Two env vars on the deployment:
+
+```
+OPENCODE_ENABLE_EXA=1
+EXA_API_KEY=...
+```
+
+When set, the model decides per-task whether the lookup is worth the latency. No PR-AF wiring is needed; the env vars propagate naturally into the opencode subprocess through agentfield's CLI harness. Get a key at [exa.ai](https://exa.ai/).
+
 ## GitHub Actions Integration
 
 The easiest way to use PR-AF is to drop it into your GitHub Actions. It requires **zero configuration** and runs securely using GitHub's built-in `GITHUB_TOKEN`.
