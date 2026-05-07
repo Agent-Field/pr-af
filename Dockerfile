@@ -59,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /home/praf/.config/opencode && \
-    echo '{"$schema":"https://opencode.ai/config.json","model":"openrouter/moonshotai/kimi-k2.5","small_model":"openrouter/moonshotai/kimi-k2.5","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"},"models":{"moonshotai/kimi-k2.5":{}}}}}' \
+    echo '{"$schema":"https://opencode.ai/config.json","model":"{env:HARNESS_MODEL}","small_model":"{env:HARNESS_MODEL}","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"}}}}' \
     > /home/praf/.config/opencode/opencode.json && \
     chown -R praf:praf /home/praf/.config
 
