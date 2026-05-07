@@ -720,6 +720,7 @@ class ReviewOrchestrator:
                     pr_narrative=self.anatomy_result.pr_narrative if self.anatomy_result else "",
                     risk_surfaces=self.anatomy_result.risk_surfaces if self.anatomy_result else [],
                     intake_summary=self.intake_result.pr_summary if self.intake_result else "",
+                    pr_description=self.pr_data.description if self.pr_data else "",
                     diff_patches=dim_patches if dim_patches else None,
                     all_dimension_names=[d.name for d in plan.dimensions if d.id != dim.id],
                     reviewer_feedback=reviewer_feedback,
