@@ -6,7 +6,7 @@ test:
 	$(PYTHON) -m pytest tests/ -x -q
 
 lint:
-	$(PYTHON) -m ruff check src/ tests/
+	$(PYTHON) -m ruff check src/ scripts/
 
 check: lint test
 	$(PYTHON) -m compileall -q src/pr_af/

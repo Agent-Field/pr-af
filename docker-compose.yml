@@ -23,13 +23,23 @@ services:
       - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
       - AGENT_CALLBACK_URL=http://pr-af:8004
       - HARNESS_PROVIDER=opencode
-      - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/moonshotai/kimi-k2.5}
-      - AI_MODEL=${AI_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/moonshotai/kimi-k2.6}
+      - AI_MODEL=${AI_MODEL:-openrouter/moonshotai/kimi-k2.6}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - GH_TOKEN=${GH_TOKEN:-}
+      - GITHUB_APP_ID=${GITHUB_APP_ID:-}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY:-}
       - XDG_DATA_HOME=/home/praf/.local/share
       - PR_AF_WORKDIR=/workspaces
+      # Default budget (300s wall-clock, $2 cost) is for smoke tests, not
+      # real reviews; real reviews need 35-50min and routinely exceed $2.
+      # Set PR_AF_NO_BUDGET=true (or raise the caps individually) for any
+      # deployment that should run reviews to completion.
+      - PR_AF_NO_BUDGET=${PR_AF_NO_BUDGET:-}
+      - PR_AF_MAX_DURATION_SECONDS=${PR_AF_MAX_DURATION_SECONDS:-}
+      - PR_AF_MAX_COST_USD=${PR_AF_MAX_COST_USD:-}
+      - PR_AF_MAX_CONCURRENT_REVIEWERS=${PR_AF_MAX_CONCURRENT_REVIEWERS:-}
     volumes:
       - pr-af-workspaces:/workspaces
       - opencode-data:/home/praf/.local/share

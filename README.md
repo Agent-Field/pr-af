@@ -10,10 +10,11 @@
 [![More from Agent-Field](https://img.shields.io/badge/More_from-Agent--Field-111827?style=for-the-badge&logo=github)](https://github.com/Agent-Field)
 
 <p>
-  <a href="#what-you-get-back">Output</a> •
+  <a href="#one-call-dx">Output</a> •
   <a href="#how-it-works">How It Works</a> •
-  <a href="#comparison">Comparison</a> •
+  <a href="#ecosystem-comparison">Comparison</a> •
   <a href="#quick-start">Quick Start</a> •
+  <a href="#configuration">Configuration</a> •
   <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
