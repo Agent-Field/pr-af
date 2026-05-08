@@ -1,8 +1,40 @@
+# Python
 __pycache__/
 *.pyc
-.plandb.db
-_worktrees/
+*.pyo
 *.egg-info/
+.eggs/
+build/
+dist/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local working directories
+_worktrees/
 .docker-sdk/
 agentfield-sdk/
+.plandb.db
+
+# Benchmark scratch
+benchmark/agentfield-*/
+benchmark/truenas-*/
