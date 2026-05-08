@@ -14,8 +14,11 @@ cd pr-af
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
+# Install the af CLI (control plane) once if you don't have it:
+curl -fsSL https://agentfield.ai/install.sh | bash
+
 cp .env.example .env       # set OPENROUTER_API_KEY and GH_TOKEN at minimum
-af                         # start the AgentField control plane in another terminal
+af server                  # start the AgentField control plane in another terminal
 python main.py             # start PR-AF
 ```
 
@@ -28,6 +31,8 @@ make clean         # remove caches and build artifacts
 ```
 
 CI runs ruff against `src/` and `scripts/` and validates the Docker build on every push. The test suite runs locally via `make test` (not in CI yet — see the issue tracker if you want to help wire it up). PRs that fail CI will not be merged until green.
+
+> **Known pre-existing test failure:** `tests/test_cost_tracker.py::TestCostTracker::test_async_log_success` currently fails on `main` (the cost tracker doesn't observe a stub response payload). Skip it locally with `make test` followed by `--deselect tests/test_cost_tracker.py::TestCostTracker::test_async_log_success` until it's fixed; CI is unaffected because pytest doesn't run there.
 
 ## What makes a good PR
 
