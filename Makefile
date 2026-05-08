@@ -2,8 +2,9 @@ PYTHON ?= python3
 
 .PHONY: test check lint clean
 
+# PYTHONPATH=src so `from pr_af import ...` works without pip install -e .
 test:
-	$(PYTHON) -m pytest tests/ -x -q
+	PYTHONPATH=src $(PYTHON) -m pytest tests/ -x -q
 
 lint:
 	$(PYTHON) -m ruff check src/ scripts/

@@ -186,11 +186,11 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
 cp .env.example .env          # OPENROUTER_API_KEY, GH_TOKEN at minimum
-af                            # start AgentField control plane (terminal 1)
+af server                     # start AgentField control plane (terminal 1)
 python main.py                # start PR-AF on port 8004 (terminal 2)
 ```
 
-`af` ships with the `agentfield` package; if you don't have it on `PATH`, `python -m agentfield server` does the same thing. See [CONTRIBUTING.md](CONTRIBUTING.md) for the test/lint workflow.
+The `af` CLI is the AgentField control plane and ships separately from the Python SDK — install it once with `curl -fsSL https://agentfield.ai/install.sh | bash` if you don't have it on `PATH`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the test/lint workflow.
 
 ## Configuration
 
@@ -276,7 +276,7 @@ jobs:
 
 **Review hits the cost or duration cap.** The defaults (300s, $2) are tuned for smoke tests, not real reviews. Set `PR_AF_NO_BUDGET=true` (or raise `PR_AF_MAX_DURATION_SECONDS` to 1800+ and `PR_AF_MAX_COST_USD` to a real ceiling). The early termination is intentional — PR-AF posts whatever findings it has and notes the partial coverage in the summary.
 
-**`agent registered` never appears.** Check that the AgentField control plane is reachable (`curl http://localhost:8080/health` or `http://control-plane:8080/health` from inside the compose network) and that `AGENTFIELD_SERVER` matches. With `dev_mode=True` (the default), PR-AF retries registration on a 30s loop.
+**`Agent pr-af registered with DID system` never appears.** Check that the AgentField control plane is reachable (`curl http://localhost:8080/health` from the host, or `curl http://agentfield:8080/health` from inside the compose network) and that `AGENTFIELD_SERVER` matches the address PR-AF can actually reach. The agent doesn't poll on its own — if the first registration attempt fails, restart the PR-AF service after the control plane is up.
 
 **GitHub returns 403 / rate limit.** The default `GH_TOKEN` flow uses a fine-grained PAT. For higher rate limits and per-repo install scopes, switch to the GitHub App auth path with `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`.
 
