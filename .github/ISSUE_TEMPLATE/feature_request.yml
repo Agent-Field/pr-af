@@ -1,0 +1,41 @@
+name: Feature Request
+description: Propose an improvement to PR-AF
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals with concrete use-cases and acceptance criteria are easier to prioritize.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user problem does this solve?
+      placeholder: Describe the pain point.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe your preferred approach.
+      placeholder: Explain behavior, API, and expected outcomes.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternatives you evaluated.
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: Clear criteria to mark this as done.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
