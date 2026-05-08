@@ -27,7 +27,7 @@ make check         # tests + bytecode compile + ruff
 make clean         # remove caches and build artifacts
 ```
 
-CI runs ruff and pytest on every push. PRs that fail CI will not be merged until green.
+CI runs ruff against `src/` and `scripts/` and validates the Docker build on every push. The test suite runs locally via `make test` (not in CI yet — see the issue tracker if you want to help wire it up). PRs that fail CI will not be merged until green.
 
 ## What makes a good PR
 
