@@ -158,11 +158,11 @@ There are excellent AI code review tools on the market. PR-AF is not designed to
 
 ```bash
 git clone https://github.com/Agent-Field/pr-af.git && cd pr-af
-cp .env.example .env          # Add OPENROUTER_API_KEY, GITHUB_TOKEN
+cp .env.example .env          # Add OPENROUTER_API_KEY, GH_TOKEN
 docker compose up --build
 ```
 
-Starts AgentField control plane (`http://localhost:8080`) + PR-AF agent.
+Starts the AgentField control plane (`http://localhost:8080`) + PR-AF agent.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
@@ -176,6 +176,39 @@ Poll for results:
 curl http://localhost:8080/api/v1/executions/<execution_id>
 ```
 
+### From source (development)
+
+If you want to hack on the code directly:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+cp .env.example .env          # OPENROUTER_API_KEY, GH_TOKEN at minimum
+af                            # start AgentField control plane (terminal 1)
+python main.py                # start PR-AF on port 8004 (terminal 2)
+```
+
+`af` ships with the `agentfield` package; if you don't have it on `PATH`, `python -m agentfield server` does the same thing. See [CONTRIBUTING.md](CONTRIBUTING.md) for the test/lint workflow.
+
+## Configuration
+
+PR-AF is configured entirely through environment variables. See [`.env.example`](.env.example) for the canonical list with comments. The most common knobs:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `OPENROUTER_API_KEY` | ✓ | LLM provider key (used for all phases). |
+| `GH_TOKEN` (or `GITHUB_TOKEN`) | ✓ | GitHub API access — fetch PRs, post review comments. |
+| `AGENTFIELD_SERVER` | | Control-plane URL. Default `http://localhost:8080`. |
+| `AGENTFIELD_API_KEY` | | Required only if your control plane is configured with an API key. |
+| `PR_AF_MODEL` | | LiteLLM-style model string. Default `openrouter/moonshotai/kimi-k2.6`. Overridable per tier via `PR_AF_MODEL_BUDGET` / `PR_AF_MODEL_MID` / `PR_AF_MODEL_PREMIUM`. |
+| `PR_AF_NO_BUDGET` | | Set `true` for production — disables the cost/duration caps. The defaults (300s, $2) are tuned for local smoke tests, not real reviews. |
+| `PR_AF_MAX_DURATION_SECONDS` | | Wall-clock cap. Default 300; real reviews need 1800+. |
+| `PR_AF_MAX_COST_USD` | | Per-review cost cap. Default $2. |
+| `PR_AF_MAX_CONCURRENT_REVIEWERS` | | Fan-out for the parallel review phase. Default 10. |
+| `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` | | Use a GitHub App installation instead of a PAT. Either auth path works. |
+| `GITHUB_WEBHOOK_SECRET` | | Enables `@pr-af`-mention triggers via the `/webhook` endpoint. |
+
 ### Optional: web search
 
 Review reasoners can look up external context — verify API contracts, check CVE/deprecation status, confirm library version behavior — by enabling opencode's built-in `websearch` and `webfetch` tools. Two env vars on the deployment:
@@ -185,7 +218,7 @@ OPENCODE_ENABLE_EXA=1
 EXA_API_KEY=...
 ```
 
-When set, the model decides per-task whether the lookup is worth the latency. No PR-AF wiring is needed; the env vars propagate naturally into the opencode subprocess through agentfield's CLI harness. Get a key at [exa.ai](https://exa.ai/).
+When set, the model decides per-task whether the lookup is worth the latency. No PR-AF wiring needed; the env vars propagate naturally into the opencode subprocess through agentfield's CLI harness. Get a key at [exa.ai](https://exa.ai/).
 
 ## GitHub Actions Integration
 
@@ -235,3 +268,23 @@ jobs:
 ```
 
 *Note: PR-AF runs a comprehensive parallel pipeline. Reviews typically take 35-50 minutes depending on PR complexity.*
+
+## Troubleshooting
+
+**`opencode: command not found` in container logs.** The Dockerfile installs opencode at runtime; if the install failed (network glitch, blocked outbound), `docker compose build --no-cache` to retry. For source installs, run `curl -fsSL https://opencode.ai/install | bash`.
+
+**Review hits the cost or duration cap.** The defaults (300s, $2) are tuned for smoke tests, not real reviews. Set `PR_AF_NO_BUDGET=true` (or raise `PR_AF_MAX_DURATION_SECONDS` to 1800+ and `PR_AF_MAX_COST_USD` to a real ceiling). The early termination is intentional — PR-AF posts whatever findings it has and notes the partial coverage in the summary.
+
+**`agent registered` never appears.** Check that the AgentField control plane is reachable (`curl http://localhost:8080/health` or `http://control-plane:8080/health` from inside the compose network) and that `AGENTFIELD_SERVER` matches. With `dev_mode=True` (the default), PR-AF retries registration on a 30s loop.
+
+**GitHub returns 403 / rate limit.** The default `GH_TOKEN` flow uses a fine-grained PAT. For higher rate limits and per-repo install scopes, switch to the GitHub App auth path with `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`.
+
+**Findings look generic / not grounded in the code.** This usually means the diff fetched correctly but the repo clone failed. PR-AF clones into `PR_AF_WORKDIR` (default `/workspaces`); make sure that path is writable and has space. Logs will show the clone command and exit code.
+
+## Contributing
+
+PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup, test/lint commands, and what makes a reviewable PR. Architecture context lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). All contributors agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+[Apache 2.0](LICENSE) © AgentField Contributors.
