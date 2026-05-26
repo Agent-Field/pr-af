@@ -1237,6 +1237,11 @@ class ReviewOrchestrator:
         comments = comments[: self.config.comments.max_comments]
         review_event = determine_review_event(filtered_for_comments)
 
+        if self.config.comments.polish_enabled and comments:
+            from .polish import polish_comments
+
+            comments = await polish_comments(self.app, comments)
+
         summary_body = self._format_summary(
             findings=filtered_for_comments,
             review_event=review_event,

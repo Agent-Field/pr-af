@@ -142,6 +142,11 @@ class CommentConfig(BaseModel):
     include_confidence: bool = True  # Show confidence score
     suggestion_mode: str = "comment"  # comment | code
 
+    # Parallel `.ai()` polish pass: rewrites each comment body to be more
+    # concise and developer-focused right before posting. On any per-call
+    # failure, the original body is kept.
+    polish_enabled: bool = True
+
     severity_emojis: dict[str, str] = Field(
         default_factory=lambda: {
             "critical": "🔴",
