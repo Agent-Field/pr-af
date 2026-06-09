@@ -27,8 +27,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from .runtime_config import get_ai_kwargs
-
 if TYPE_CHECKING:
     from .schemas.output import ScoredFinding
 
@@ -134,7 +132,6 @@ async def _gate_one(app: Any, finding: ScoredFinding) -> MergeGateVerdict:
             _build_user_prompt(finding),
             system=_MERGE_GATE_SYSTEM,
             response_format="json",
-            **get_ai_kwargs(),
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[PR-AF] Merge-gate skipped for {finding.id}: {exc.__class__.__name__}", flush=True)

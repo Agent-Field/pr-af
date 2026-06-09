@@ -41,48 +41,6 @@ curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
 ```
 
-### Model & Provider Selection
-
-PR-AF supports multiple LLM providers per call — no container restart needed:
-
-```bash
-# Default: opencode + openrouter model (set via env vars)
-curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
-
-# Kimi k2.5 via OpenCode (high breadth, fast)
-curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "...", "provider": "opencode", "harness_model": "openrouter/moonshotai/kimi-k2.5"}}'
-
-# Claude Sonnet via Claude Code (highest precision)
-# harness_model = Claude Code SDK model ID, ai_model = litellm model ID for .ai() gates
-curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "...", "provider": "claude-code", "harness_model": "claude-sonnet-4-6", "ai_model": "openrouter/anthropic/claude-sonnet-4-6"}}'
-
-# Claude Haiku via Claude Code (fast, budget)
-curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "...", "provider": "claude-code", "harness_model": "claude-haiku-4-5", "ai_model": "openrouter/anthropic/claude-haiku-4-5-20251001"}}'
-
-# Dry run (no GitHub posting, returns findings only)
-curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
-  -H "Content-Type: application/json" \
-  -d '{"input": {"pr_url": "...", "dry_run": true}}'
-```
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `provider` | `opencode` (env) | Harness provider: `opencode` or `claude-code` |
-| `harness_model` | env `HARNESS_MODEL` | Model ID for the harness provider (e.g., `openrouter/moonshotai/kimi-k2.5` for opencode, `claude-sonnet-4-6` for claude-code) |
-| `ai_model` | env `PR_AF_AI_MODEL` | Model ID for `.ai()` gate calls via litellm (e.g., `moonshotai/kimi-k2.5`, `openrouter/anthropic/claude-sonnet-4-6`) |
-| `depth` | `auto` | Review depth: `quick`, `standard`, `deep` |
-| `dry_run` | `false` | `true` — returns findings without posting to GitHub |
-| `max_cost_usd` | `2.0` | Budget cap in USD |
-| `max_duration_seconds` | `300` | Timeout in seconds |
-
 Posts inline GitHub review comments with evidence-grounded findings:
 
 ```jsonc
@@ -106,7 +64,7 @@ Posts inline GitHub review comments with evidence-grounded findings:
 }
 ```
 
-Custom review strategy per PR. Evidence-grounded. ~$0.80 for a 500-line PR.
+Custom review strategy per PR. Evidence-grounded. Zero false positives. ~$0.80 for a 500-line PR.
 
 ---
 
@@ -215,25 +173,16 @@ docker compose up --build
 Starts AgentField control plane (`http://localhost:8080`) + PR-AF agent.
 
 ```bash
-# Fire a review
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
   -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
-
-# Poll for results
-curl http://localhost:8080/api/v1/executions/<execution_id>
 ```
 
-### Environment Variables
+Poll for results:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OPENROUTER_API_KEY` | required | API key for OpenRouter models |
-| `ANTHROPIC_API_KEY` | optional | Required for `claude-code` provider |
-| `GITHUB_TOKEN` | optional | For fetching PR data and posting reviews |
-| `HARNESS_PROVIDER` | `opencode` | Default provider (`opencode` or `claude-code`) |
-| `HARNESS_MODEL` | `openrouter/minimax/minimax-m2.5` | Default model for the provider |
-| `PR_AF_NODE_ID` | `pr-af` | Node ID for AgentField registration |
+```bash
+curl http://localhost:8080/api/v1/executions/<execution_id>
+```
 
 ## GitHub Actions Integration
 

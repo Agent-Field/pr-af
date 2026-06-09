@@ -202,7 +202,6 @@ class AdversaryResult(BaseModel):
     """Adversary reviewer's assessment of a finding."""
 
     finding_title: str
-    reference_key: str = ""  # e.g. "[F1]" — archei-compliant reference key
     verdict: str  # confirmed | challenged | missed_trap
     reason: str
     severity_adjustment: str = "none"  # boost | discount | none
@@ -213,21 +212,6 @@ class AdversaryResult(BaseModel):
 # Phase 6 → Phase 7: Meta-Dimension Selection Results
 # Format: Structured JSON (consumed by meta-selector orchestration)
 # ---------------------------------------------------------------------------
-
-
-class ResearchBrief(BaseModel):
-    """Deep-read analysis identifying areas requiring careful investigation.
-
-    Produced by a senior-engineer-level .harness() that reads the entire PR
-    before the pipeline fragments into per-cluster scouts. Anatomy answers
-    "WHAT changed and WHERE"; the research brief answers "what could go WRONG
-    and WHY."
-    """
-
-    danger_zones: list[str] = Field(default_factory=list)  # Areas where runtime behavior may surprise
-    cross_file_dependencies: list[str] = Field(default_factory=list)  # Functions/contracts spanning file boundaries
-    investigation_directives: list[str] = Field(default_factory=list)  # Specific questions for downstream agents
-    confidence: float = 0.7
 
 
 class MetaDimensionResult(BaseModel):
@@ -243,24 +227,10 @@ class MetaDimensionResult(BaseModel):
     rationale: str = ""  # Brief explanation of dimension choices
 
 
-class ClusterScoutReport(BaseModel):
-    """Scout output for a single cluster investigation.
-
-    Per archei rules:
-    - cluster_id: structured (code uses for grouping)
-    - investigation: STRING (only strategist LLM consumes it)
-    - confident: structured (code uses for fallback decision)
-    """
-
-    cluster_id: str  # Structured — code groups by this
-    investigation: str  # String — full narrative report for strategist LLM
-    confident: bool = True  # Structured — code uses for fallback decision
-
-
 class MetaSelectorConfig(BaseModel):
     """Configuration for meta-dimension selectors. Passed per-call via API."""
 
     enabled_lenses: list[str] = Field(default_factory=lambda: ["semantic", "mechanical", "systemic"])
     confidence_threshold: float = 0.6  # Minimum confidence for a finding to pass Level 2 filter
-    adversary_batch_size: int = 10  # How many findings per parallel adversary batch
-    max_adversary_batches: int = 0  # 0 = dynamic (covers ALL findings)
+    adversary_batch_size: int = 5  # How many findings per parallel adversary batch
+    max_adversary_batches: int = 4  # Hard cap on parallel adversary instances

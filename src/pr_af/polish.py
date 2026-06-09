@@ -10,8 +10,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any
 
-from .runtime_config import get_ai_kwargs
-
 if TYPE_CHECKING:
     from .schemas.output import GitHubComment
 
@@ -33,7 +31,6 @@ async def _polish_one(app: Any, body: str) -> str:
         out = await app.ai(
             f"Rewrite this PR review comment to be concise and developer-focused.\n\n{body}",
             system=_POLISH_SYSTEM,
-            **get_ai_kwargs(),
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[PR-AF] Polish skipped: {exc.__class__.__name__}", flush=True)
