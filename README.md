@@ -27,6 +27,14 @@ Other tools run a single LLM pass over the diff with a fixed checklist. PR-AF **
 
 ## One-Call DX
 
+Trigger it with the `af` CLI (requires af ≥ 0.1.87) — it streams live progress and prints the result:
+
+```bash
+af call pr-af.review --in '{"pr_url": "https://github.com/owner/repo/pull/123"}'
+```
+
+Prefer raw HTTP? Hit the API directly with curl:
+
 ```bash
 curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -H "Content-Type: application/json" \
@@ -200,7 +208,7 @@ There are excellent AI code review tools on the market. PR-AF is not designed to
 
 ```bash
 git clone https://github.com/Agent-Field/pr-af.git && cd pr-af
-cp .env.example .env          # Add OPENROUTER_API_KEY, GITHUB_TOKEN
+cp .env.example .env          # Add OPENROUTER_API_KEY, GH_TOKEN
 docker compose up --build
 ```
 
@@ -275,3 +283,19 @@ jobs:
 ```
 
 *Note: PR-AF runs a comprehensive parallel pipeline. Reviews typically take 35-50 minutes depending on PR complexity.*
+
+---
+
+## From the AgentField Blog
+
+### [How an AI-Native Engineering Team Does Code Review](https://www.agentfield.ai/blog/ai-native-code-review?utm_source=github-readme&utm_campaign=pr-af-readme&utm_id=pr-af-readme-blog-ai-native-code-review)
+
+When the writer and the reviewer are the same intelligence, the pull request gate stops doing what it was designed to do.
+
+<p align="center">
+  <a href="https://www.agentfield.ai/blog/ai-native-code-review?utm_source=github-readme&utm_campaign=pr-af-readme&utm_id=pr-af-readme-blog-ai-native-code-review">
+    <img src="assets/blog-ai-native-code-review.webp" alt="An engineer reading a pull request through a telescope of risk dimensions." width="100%" />
+  </a>
+</p>
+
+[Read the post →](https://www.agentfield.ai/blog/ai-native-code-review?utm_source=github-readme&utm_campaign=pr-af-readme&utm_id=pr-af-readme-blog-ai-native-code-review)

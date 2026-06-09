@@ -18,28 +18,28 @@ from uuid import uuid4
 
 import httpx
 
-from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig, resolve_all_phase_routing
+from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
 from .diff_engine import parse_unified_diff
-from .runtime_config import set_phase_routing
 from .evidence import EvidencePackage, extract_evidence_for_findings
 from .github.client import GitHubClient
+from .hitl import (
+    approval_webhook_url,
+    build_hax_client_from_env,
+    request_review_approval,
+)
+from .merge_gate import classify_findings
 from .reasoners.harnesses import (
-    adversarial_gap_finder,
     adversary_phase,
     anatomy_phase,
-    anatomy_skip_gate,
-    batch_semantic_dedup,
     compound_dedup_phase,
     compound_finder_phase,
     coverage_gate,
-    finding_relevance_gate,
-    lens_skip_gate,
-    research_brief_phase,
-    verify_single_finding,
+    evidence_verifier,
     intake_phase,
-    meta_lens_with_scouts,
-    output_calibration_gate,
-    planning_phase,
+    meta_mechanical,
+    meta_semantic,
+    meta_systemic,
+    planning_phase,  # Keep for backward compat
     review_dimension,
 )
 from .schemas.input import ChangedFile, GitHubPRData, ReviewInput
@@ -57,11 +57,11 @@ from .schemas.pipeline import (
     IntakeResult,
     MetaDimensionResult,
     MetaSelectorConfig,
-    ResearchBrief,
     ReviewDimension,
     ReviewFinding,
     ReviewPlan,
 )
+from .schemas.severity import normalize_severity
 from .scoring import deduplicate_exact, determine_review_event, score_findings
 
 
@@ -119,7 +119,6 @@ class ReviewOrchestrator:
         self.pr_data: GitHubPRData | None = None
         self.intake_result: IntakeResult | None = None
         self.anatomy_result: AnatomyResult | None = None
-        self.research_brief_result: dict | None = None
         self.meta_selector_results: list[MetaDimensionResult] = []
         self.coverage_iterations = 0
         self.cross_ref_count = 0
@@ -134,11 +133,6 @@ class ReviewOrchestrator:
         intake = await self._run_intake()
         self.intake_result = intake
         review_depth = self._resolve_depth(intake)
-
-        # Phase 1b: Resolve per-phase model routing
-        phase_routing = resolve_all_phase_routing(intake, self.config)
-        set_phase_routing(phase_routing)
-
         print(
             f"[PR-AF] Intake complete: type={intake.pr_type}, complexity={intake.complexity}, depth={review_depth}",
             flush=True,
@@ -149,84 +143,200 @@ class ReviewOrchestrator:
         self.anatomy_result = anatomy
         print(f"[PR-AF] Anatomy complete: {len(anatomy.files)} files, {len(anatomy.clusters)} clusters", flush=True)
 
-        # Phase 2.5: Deep-Read Research Brief
-        print("[PR-AF] Phase 2.5: RESEARCH BRIEF", flush=True)
-        research_brief = await self._run_research_brief(intake, anatomy)
-        self.research_brief_result = research_brief
-        if research_brief:
-            n_danger = len(research_brief.get("danger_zones", []))
-            n_directives = len(research_brief.get("investigation_directives", []))
-            print(
-                f"[PR-AF] Research brief complete: {n_danger} danger zones, {n_directives} directives",
-                flush=True,
+        # Human-in-the-loop review gate (mirrors SWE-AF's plan-phase approval).
+        # Active only when HAX_API_KEY is set AND we have a real PR to post to;
+        # otherwise hax_client is None and we post directly, exactly as before.
+        hax_client = None
+        if self.input.pr_url and not self.input.dry_run:
+            hax_client = build_hax_client_from_env()
+
+        max_revisions = self.config.hitl.max_review_revisions if hax_client else 0
+        revision_history: list[str] = []
+        reviewer_feedback = ""
+
+        for revision_iter in range(max_revisions + 1):
+            plan, scored_findings = await self._run_review_phases(
+                intake, anatomy, review_depth, reviewer_feedback
             )
 
-        print("[PR-AF] Phase 3+4+5: META-SELECTORS (streaming) → REVIEW → LAYER", flush=True)
-        dims_queue: asyncio.Queue[list[ReviewDimension] | None] = asyncio.Queue()
+            if hax_client is None:
+                print("[PR-AF] Phase 8: OUTPUT (direct post)", flush=True)
+                return await self._finish(scored_findings, intake, anatomy, plan, post=True)
+
+            # Nothing to triage: don't bother a human (and don't auto-post an
+            # empty "approved" review to a public repo). Complete silently.
+            if not scored_findings:
+                self.app.note(
+                    "hitl: no findings — skipping review gate, posting nothing",
+                    tags=["hitl", "no-post", "no-findings"],
+                )
+                print("[PR-AF] HITL: no findings — skipping gate, not posting", flush=True)
+                return await self._finish(scored_findings, intake, anatomy, plan, post=False)
+
+            decision = await request_review_approval(
+                app=self.app,
+                hax_client=hax_client,
+                pr_intent=intake.pr_summary,
+                findings=scored_findings,
+                pr_label=self._pr_label(),
+                pr_meta=self._pr_meta(),
+                webhook_url=approval_webhook_url(self.app),
+                user_id=self.config.hitl.approval_user_id,
+                expires_in_hours=self.config.hitl.approval_expires_in_hours,
+                revision_iter=revision_iter,
+                revision_history=revision_history,
+                metadata=self._hitl_metadata(),
+            )
+
+            if decision.is_post:
+                approved = [f for f in scored_findings if f.id in decision.selected_finding_ids]
+                print(
+                    f"[PR-AF] HITL approved {len(approved)}/{len(scored_findings)} findings — posting",
+                    flush=True,
+                )
+                return await self._finish(approved, intake, anatomy, plan, post=True)
+
+            if decision.is_rerun and revision_iter < max_revisions:
+                revision_history.append(decision.instructions)
+                reviewer_feedback = self._merge_feedback(revision_history)
+                print(
+                    f"[PR-AF] HITL re-review requested (round {revision_iter + 1}/{max_revisions}): "
+                    f"{decision.instructions!r}",
+                    flush=True,
+                )
+                continue
+
+            # reject, expire/error, or a re-review past the revision cap → no post.
+            reason = "revision cap reached" if decision.is_rerun else decision.action
+            # Surface the underlying cause loudly: a create_request/pause failure
+            # carries its exception text in `instructions`, and dropping a whole
+            # computed review on a transient hax hiccup must not look silent.
+            detail = (decision.instructions or "").strip()
+            detail_suffix = f": {detail}" if detail else ""
+            self.app.note(
+                f"hitl: not posting review ({reason}; raw={decision.decision_raw}){detail_suffix}",
+                tags=["hitl", "no-post", decision.action],
+            )
+            print(
+                f"[PR-AF] HITL: NOT posting {len(scored_findings)} finding(s) "
+                f"({reason}{detail_suffix})",
+                flush=True,
+            )
+            return await self._finish(scored_findings, intake, anatomy, plan, post=False)
+
+        # The loop always returns; this guards against a future edit slipping by.
+        raise RuntimeError("review loop exited without producing a result")
+
+    async def _run_review_phases(
+        self,
+        intake: IntakeResult,
+        anatomy: AnatomyResult,
+        review_depth: str,
+        reviewer_feedback: str = "",
+    ) -> tuple[ReviewPlan, list[ScoredFinding]]:
+        """Run the finding-producing phases (meta-selectors → synthesis).
+
+        Intake and anatomy are computed once by the caller; this is the part
+        re-run when a reviewer requests a re-review. ``reviewer_feedback`` is the
+        accumulated human guidance threaded into dimension selection and the
+        reviewer prompts so a re-run actually respects "tone it down" etc.
+        """
+        print("[PR-AF] Phase 3: META-SELECTORS (3 parallel lenses)", flush=True)
+        plan = await self._run_meta_selectors(intake, anatomy, review_depth, reviewer_feedback)
+        print(f"[PR-AF] Meta-selectors complete: {len(plan.dimensions)} dimensions", flush=True)
+
+        print("[PR-AF] Phase 4+5: REVIEW (parallel) + LAYER", flush=True)
         findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
 
-        # Meta-selectors emit dimensions to dims_queue as each lens completes.
-        # Streaming review consumes dims and launches reviewers immediately.
-        # Layer collects findings from the findings_queue.
-        meta_task = asyncio.create_task(
-            self._run_meta_selectors_streaming(intake, anatomy, review_depth, dims_queue, research_brief)
-        )
         review_task = asyncio.create_task(
-            self._run_streaming_review(dims_queue, findings_queue)
+            self._run_parallel_review(plan, findings_queue, reviewer_feedback=reviewer_feedback)
         )
-        layer_task = asyncio.create_task(
-            self._run_review_layer(findings_queue, anatomy)
-        )
+        layer_task = asyncio.create_task(self._run_review_layer(plan, findings_queue, anatomy))
 
-        meta_results, _, layer_result = await asyncio.gather(meta_task, review_task, layer_task)
-
-        # Collect the final plan from meta results for reporting
-        all_dimensions: list[ReviewDimension] = []
-        for meta in meta_results:
-            for dim in meta.dimensions:
-                all_dimensions.append(dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"}))
-        plan = ReviewPlan(dimensions=all_dimensions)
-        self.meta_selector_results = meta_results
-        self.effective_depth = self._escalate_depth(review_depth)
-
+        _, layer_result = await asyncio.gather(review_task, layer_task)
         all_findings, adversary_results = layer_result
 
-        if not all_dimensions:
-            print("[PR-AF] No review dimensions generated — early exit with APPROVE", flush=True)
-            return self._build_clean_result(intake, anatomy, "No review dimensions generated")
-
         print(
-            f"[PR-AF] Streaming pipeline done: {len(plan.dimensions)} dimensions, "
-            f"{len(all_findings)} findings, {len(adversary_results)} adversary results",
+            f"[PR-AF] Review+Layer done: {len(all_findings)} findings, {len(adversary_results)} adversary results",
             flush=True,
         )
 
-        elapsed_ratio = (time.monotonic() - self.started_at) / max(self.config.budget.max_duration_seconds, 1)
-        cost_ratio = self.total_cost_usd / max(self.config.budget.max_cost_usd, 0.01)
-        budget_soft_cap = elapsed_ratio > 0.8 or cost_ratio > 0.8
-
-        if not budget_soft_cap:
-            print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
-            all_findings, adversary_results = await self._run_coverage_loop(plan, anatomy, all_findings, adversary_results)
-        else:
-            print(f"[PR-AF] Budget soft cap ({elapsed_ratio:.0%} time, {cost_ratio:.0%} cost) — skipping coverage", flush=True)
+        print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
+        all_findings, adversary_results = await self._run_coverage_loop(plan, anatomy, all_findings, adversary_results)
         self.adversary_challenged_count = sum(1 for result in adversary_results if result.verdict == "challenged")
         self.adversary_confirmed_count = sum(1 for result in adversary_results if result.verdict == "confirmed")
 
         print("[PR-AF] Phase 7: SYNTHESIS", flush=True)
-        scored_findings = await self._synthesize(all_findings, adversary_results)
+        scored_findings = self._synthesize(all_findings, adversary_results)
         print(f"[PR-AF] Synthesis complete: {len(scored_findings)} scored findings", flush=True)
+        if self.config.comments.merge_gate_enabled:
+            scored_findings = await classify_findings(self.app, scored_findings)
+        return plan, scored_findings
 
-        print("[PR-AF] Phase 8: OUTPUT", flush=True)
-        result = await self._generate_output(scored_findings, intake, anatomy, plan)
+    async def _finish(
+        self,
+        scored_findings: list[ScoredFinding],
+        intake: IntakeResult,
+        anatomy: AnatomyResult,
+        plan: ReviewPlan,
+        *,
+        post: bool,
+    ) -> ReviewResult:
+        """Generate output (optionally posting) and clean up the context dir."""
+        result = await self._generate_output(scored_findings, intake, anatomy, plan, post_to_github=post)
         print(
-            f"[PR-AF] Pipeline complete! {result.summary.total_findings} findings, cost=${result.summary.cost_usd}",
+            f"[PR-AF] Pipeline complete! {result.summary.total_findings} findings, "
+            f"cost=${result.summary.cost_usd}, posted={post}",
             flush=True,
         )
-
         self._cleanup_context_dir()
-
         return result
+
+    def _pr_label(self) -> str:
+        if self.pr_data and self.pr_data.owner and self.pr_data.repo:
+            return f"{self.pr_data.owner}/{self.pr_data.repo}#{self.pr_data.number}"
+        return ""
+
+    def _pr_meta(self) -> dict[str, Any]:
+        """PR metadata block for the hax review template (camelCase keys)."""
+        pr = self.pr_data
+        if not pr:
+            return {}
+        url = self.input.pr_url or ""
+        if not url and pr.owner and pr.repo and pr.number:
+            url = f"https://github.com/{pr.owner}/{pr.repo}/pull/{pr.number}"
+        repo = f"{pr.owner}/{pr.repo}" if pr.owner and pr.repo else (pr.repo or "")
+        meta: dict[str, Any] = {
+            "title": pr.title or "",
+            "number": pr.number or None,
+            "url": url,
+            "repo": repo,
+            "author": pr.author or "",
+        }
+        if pr.changed_files:
+            meta["filesChangedCount"] = len(pr.changed_files)
+            meta["additionsCount"] = sum(f.additions for f in pr.changed_files)
+            meta["deletionsCount"] = sum(f.deletions for f in pr.changed_files)
+        return meta
+
+    def _merge_feedback(self, revision_history: list[str]) -> str:
+        """Collapse accumulated reviewer instructions into one guidance string."""
+        items = [instr.strip() for instr in revision_history if instr and instr.strip()]
+        if not items:
+            return ""
+        return " | ".join(items)
+
+    def _hitl_metadata(self) -> dict[str, Any]:
+        execution_id = ""
+        ctx = getattr(self.app, "ctx", None)
+        if ctx is not None:
+            execution_id = getattr(ctx, "execution_id", "") or ""
+        return {
+            "prLabel": self._pr_label(),
+            "prUrl": self.input.pr_url or "",
+            "reviewId": self.review_id,
+            "executionId": execution_id,
+        }
 
     async def _run_intake(self) -> IntakeResult:
         if self._budget_or_timeout_exhausted("intake"):
@@ -280,34 +390,6 @@ class ReviewOrchestrator:
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
-        # Gate: skip semantic analysis for trivial PRs
-        if intake.complexity == "trivial":
-            gate_raw = await anatomy_skip_gate(
-                pr_type=intake.pr_type,
-                complexity=intake.complexity,
-                files_changed=len(self.pr_data.changed_files),
-                languages=intake.languages,
-            )
-            gate = gate_raw if isinstance(gate_raw, dict) else {}
-            if not gate.get("needs_semantic_analysis", True) and gate.get("confident", False):
-                print("[PR-AF] Anatomy skip gate: trivial PR, skipping semantic analysis", flush=True)
-                files = parse_unified_diff(self.pr_data.diff) if self.pr_data.diff else []
-                if not files:
-                    from .reasoners.harnesses import _file_changes_from_metadata
-                    files = _file_changes_from_metadata(self.pr_data)
-                from .diff_engine import cluster_changes, compute_diff_stats
-                from .blast_radius import compute_blast_radius
-                stats = compute_diff_stats(files)
-                clusters = cluster_changes(files)
-                changed_paths = [f.path for f in files]
-                blast_radius = compute_blast_radius(changed_paths, self.input.repo_path or "")
-                return AnatomyResult(
-                    files=files, clusters=clusters, blast_radius=blast_radius,
-                    dependency_graph={}, stats=stats,
-                    pr_narrative="", risk_surfaces=[], unrelated_changes=[],
-                    intent_gaps=[], context_notes="",
-                )
-
         result_raw = await anatomy_phase(
             pr_data=self.pr_data.model_dump(),
             intake=intake.model_dump(),
@@ -317,27 +399,6 @@ class ReviewOrchestrator:
         self._register_cost("anatomy", self._extract_cost(result_raw))
         anatomy = AnatomyResult.model_validate(result_raw)
         return anatomy
-
-    async def _run_research_brief(self, intake: IntakeResult, anatomy: AnatomyResult) -> dict | None:
-        """Phase 2.5: Deep-read research brief identifying danger zones."""
-        if self._budget_or_timeout_exhausted("research_brief"):
-            return None
-        if intake.complexity == "trivial":
-            return None
-
-        diff_patches = self._build_file_patches()
-        if not diff_patches:
-            return None
-
-        pr_context = self._build_pr_context_string()
-        result_raw = await research_brief_phase(
-            diff_patches=diff_patches,
-            pr_context=pr_context,
-            repo_path=self.input.repo_path or "",
-        )
-        self.agent_invocations += 1
-        self._register_cost("research_brief", self._extract_cost(result_raw))
-        return result_raw
 
     async def _run_planning(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("planning"):
@@ -359,209 +420,65 @@ class ReviewOrchestrator:
 
         return plan
 
-    async def _run_meta_selectors_streaming(
+    async def _run_meta_selectors(
         self,
         intake: IntakeResult,
         anatomy: AnatomyResult,
         review_depth: str,
-        dims_queue: asyncio.Queue[list[ReviewDimension] | None],
-        research_brief: dict | None = None,
-    ) -> list[MetaDimensionResult]:
-        """Stream dimensions to queue as each lens completes.
-
-        Each lens uses scout/strategist split: N parallel scouts (one per cluster)
-        browse the repo, then one strategist synthesizes their reports into
-        review dimensions. Lenses run in parallel; each emits dimensions to the
-        queue as soon as it finishes, so reviewers can start immediately.
-        """
+        reviewer_feedback: str = "",
+    ) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("meta_selectors"):
-            await dims_queue.put(None)
-            return []
+            raise BudgetExhaustedError("Budget exhausted before meta-selectors")
 
         lenses = self.meta_config.enabled_lenses
-        valid_lenses = {"semantic", "mechanical", "systemic"}
+        lens_map = {
+            "semantic": meta_semantic,
+            "mechanical": meta_mechanical,
+            "systemic": meta_systemic,
+        }
 
-        # Track all launched dimensions for incremental cross-meta dedup
-        launched_dims: list[ReviewDimension] = []
-        launched_lock = asyncio.Lock()
-        depth_profile = DEPTH_PROFILES.get(review_depth)
-        max_dims = depth_profile.max_dimensions if depth_profile else 999
-
-        async def run_lens_and_emit(lens_name: str) -> MetaDimensionResult:
-            # Gate: skip irrelevant lenses
-            skip_raw = await lens_skip_gate(
-                lens=lens_name,
-                pr_type=intake.pr_type,
-                complexity=intake.complexity,
-                areas_touched=intake.areas_touched,
-                risk_surfaces=anatomy.risk_surfaces,
-            )
-            skip_gate = skip_raw if isinstance(skip_raw, dict) else {}
-            if not skip_gate.get("lens_relevant", True) and skip_gate.get("confident", False):
-                print(f"[PR-AF] Lens skip gate: {lens_name} lens skipped (irrelevant)", flush=True)
-                return MetaDimensionResult(
-                    lens=lens_name, dimensions=[], confidence=0.9,
-                    rationale=f"{lens_name} lens skipped — not relevant for this PR type.",
-                )
-
-            result_raw = await meta_lens_with_scouts(
-                lens=lens_name,
+        async def run_lens(lens_name: str) -> MetaDimensionResult:
+            fn = lens_map[lens_name]
+            result_raw = await fn(
                 intake=intake.model_dump(),
                 anatomy=anatomy.model_dump(),
                 depth=review_depth,
                 repo_path=self.input.repo_path or "",
                 diff_patches=self._build_file_patches(),
-                max_scouts=self.config.budget.max_scouts_per_lens,
-                research_brief=research_brief,
+                reviewer_feedback=reviewer_feedback,
             )
-            # Count agent invocations: triage (N) + scouts (N) + strategist (1)
-            n_clusters = len(anatomy.clusters)
-            self.agent_invocations += n_clusters + n_clusters + 1
+            self.agent_invocations += 1
             self._register_cost("meta_selectors", self._extract_cost(result_raw))
-            meta = MetaDimensionResult.model_validate(result_raw)
+            return MetaDimensionResult.model_validate(result_raw)
 
-            # Prefix dimension IDs with lens name
-            dims = [
-                dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
-                for dim in meta.dimensions
-            ]
-
-            # Incremental cross-meta dedup: check new dims against already-launched
-            async with launched_lock:
-                new_dims: list[ReviewDimension] = []
-                for dim in dims:
-                    key = "|".join(sorted(dim.target_files))
-                    duplicate = False
-                    for existing in launched_dims:
-                        existing_key = "|".join(sorted(existing.target_files))
-                        if key == existing_key and dim.priority <= existing.priority:
-                            duplicate = True
-                            break
-                    if not duplicate and len(launched_dims) + len(new_dims) < max_dims:
-                        new_dims.append(dim)
-                launched_dims.extend(new_dims)
-
-            if new_dims:
-                print(
-                    f"[PR-AF] {meta.lens} lens (scouts) complete: {len(meta.dimensions)} dims → "
-                    f"{len(new_dims)} after dedup → streaming to reviewers",
-                    flush=True,
-                )
-                await dims_queue.put(new_dims)
-            else:
-                print(
-                    f"[PR-AF] {meta.lens} lens (scouts) complete: {len(meta.dimensions)} dims "
-                    f"(all deduped or at cap)",
-                    flush=True,
-                )
-
-            return meta
-
-        tasks = [run_lens_and_emit(lens) for lens in lenses if lens in valid_lenses]
+        tasks = [run_lens(lens) for lens in lenses if lens in lens_map]
         meta_results: list[MetaDimensionResult] = await asyncio.gather(*tasks)
+        self.meta_selector_results = meta_results
+        self.effective_depth = self._escalate_depth(review_depth)
 
-        # Signal that no more dimensions will arrive
-        await dims_queue.put(None)
+        all_dimensions: list[ReviewDimension] = []
+        cross_ref_hints: list[str] = []
+        for meta in meta_results:
+            for dim in meta.dimensions:
+                dim = dim.model_copy(update={"id": f"{meta.lens}_{dim.id}"})
+                all_dimensions.append(dim)
 
-        total_dims = sum(len(m.dimensions) for m in meta_results)
+        all_dimensions = self._dedup_cross_meta(all_dimensions)
+
+        depth_profile = DEPTH_PROFILES.get(review_depth)
+        if depth_profile and len(all_dimensions) > depth_profile.max_dimensions:
+            all_dimensions.sort(key=lambda d: d.priority, reverse=True)
+            all_dimensions = all_dimensions[: depth_profile.max_dimensions]
+
         print(
-            f"[PR-AF] All meta-selectors done (scout/strategist): "
+            f"[PR-AF] Meta-selectors: "
             f"{' + '.join(f'{m.lens}({len(m.dimensions)})' for m in meta_results)} "
-            f"= {total_dims} total → {len(launched_dims)} launched",
+            f"= {sum(len(m.dimensions) for m in meta_results)} total "
+            f"→ {len(all_dimensions)} after dedup",
             flush=True,
         )
 
-        return meta_results
-
-    async def _filter_findings(self, findings: list[ReviewFinding]) -> list[ReviewFinding]:
-        """Pre-filter findings via .ai() relevance gate to drop noise before verification."""
-        if not findings or self._budget_or_timeout_exhausted("review"):
-            return findings
-
-        async def check_one(f: ReviewFinding) -> tuple[ReviewFinding, bool]:
-            gate = await finding_relevance_gate(f.model_dump())
-            gate_dict = gate if isinstance(gate, dict) else {}
-            category = gate_dict.get("category", "real_bug")
-            confident = gate_dict.get("confident", False)
-            keep = category == "real_bug" or not confident
-            return f, keep
-
-        results = await asyncio.gather(*[check_one(f) for f in findings])
-        kept = [f for f, keep in results if keep]
-        dropped = len(findings) - len(kept)
-        if dropped > 0:
-            print(f"[PR-AF] Finding relevance gate: dropped {dropped}/{len(findings)} noise findings", flush=True)
-        return kept
-
-    async def _run_streaming_review(
-        self,
-        dims_queue: asyncio.Queue[list[ReviewDimension] | None],
-        findings_queue: asyncio.Queue[list[ReviewFinding] | None],
-    ) -> None:
-        """Consume dimensions from queue and launch reviewers as they arrive.
-
-        Dimensions stream in as each meta-selector lens completes. This allows
-        early lenses' dimensions to be reviewed concurrently with slower lenses
-        still running. When all dimensions are reviewed, sends None sentinel
-        to findings_queue.
-        """
-        max_depth = self.config.budget.max_review_depth
-        semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
-        all_dim_names: list[str] = []
-        review_tasks: list[asyncio.Task] = []
-
-        async def run_dimension(dim: ReviewDimension, depth: int) -> None:
-            if self._budget_or_timeout_exhausted("review"):
-                return
-            async with semaphore:
-                all_patches = self._build_file_patches()
-                dim_patches = {f: p for f, p in all_patches.items() if f in dim.target_files}
-
-                result_raw = await review_dimension(
-                    review_prompt=dim.review_prompt,
-                    target_files=dim.target_files,
-                    context_files=dim.context_files,
-                    repo_path=self.input.repo_path or "",
-                    current_depth=depth,
-                    max_depth=max_depth,
-                    pr_narrative=self.anatomy_result.pr_narrative if self.anatomy_result else "",
-                    risk_surfaces=self.anatomy_result.risk_surfaces if self.anatomy_result else [],
-                    intake_summary=self.intake_result.pr_summary if self.intake_result else "",
-                    diff_patches=dim_patches if dim_patches else None,
-                    all_dimension_names=[n for n in all_dim_names if n != dim.name],
-                )
-                self.agent_invocations += 1
-                self._register_cost("review", self._extract_cost(result_raw))
-                findings = self._extract_findings(result_raw, dim)
-                findings = await self._filter_findings(findings)
-                await findings_queue.put(findings)
-
-                sub_reviews = self._extract_sub_reviews(result_raw, dim)
-                if sub_reviews and depth < max_depth and not self._budget_or_timeout_exhausted("review"):
-                    print(
-                        f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} "
-                        f"sub-review(s) at depth {depth + 1}/{max_depth}",
-                        flush=True,
-                    )
-                    sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
-                    await asyncio.gather(*sub_tasks)
-
-        try:
-            # Consume dimension batches as they arrive from meta-selectors
-            while True:
-                batch = await dims_queue.get()
-                if batch is None:
-                    break
-                all_dim_names.extend(dim.name for dim in batch)
-                for dim in batch:
-                    task = asyncio.create_task(run_dimension(dim, 0))
-                    review_tasks.append(task)
-
-            # Wait for all launched reviewers to complete
-            if review_tasks:
-                await asyncio.gather(*review_tasks)
-        finally:
-            await findings_queue.put(None)
+        return ReviewPlan(dimensions=all_dimensions, cross_ref_hints=cross_ref_hints)
 
     def _dedup_cross_meta(self, dimensions: list[ReviewDimension]) -> list[ReviewDimension]:
         seen_targets: dict[str, ReviewDimension] = {}
@@ -582,96 +499,56 @@ class ReviewOrchestrator:
 
         return deduped
 
-    @staticmethod
-    def _needs_verification(f: ReviewFinding) -> bool:
-        """Filter which findings actually need verification."""
-        if f.severity in ("critical", "important"):
-            return True
-        if f.confidence >= 0.85 and len(f.evidence) > 200:
-            return False  # Well-evidenced low-severity — skip
-        return True
-
     async def _run_evidence_verification(
         self,
         findings: list[ReviewFinding],
         evidence_map: dict[str, EvidencePackage],
     ) -> tuple[list[ReviewFinding], dict[str, dict]]:
-        if not findings:
-            return findings, {}
+        high_priority = [f for f in findings if f.severity in ("critical", "important")]
+        low_priority = [f for f in findings if f.severity not in ("critical", "important")]
 
-        needs_verify = [f for f in findings if self._needs_verification(f)]
-        skip_verify = [f for f in findings if not self._needs_verification(f)]
-        if not needs_verify:
+        if not high_priority:
             return findings, {}
 
         print(
-            f"[PR-AF] Evidence Verification: verifying {len(needs_verify)} findings in parallel"
-            f" ({len(skip_verify)} skipped as well-evidenced low-severity)",
+            f"[PR-AF] Evidence Verification: verifying {len(high_priority)} "
+            f"critical/important findings (skipping {len(low_priority)} lower-severity)",
             flush=True,
         )
 
-        from .reasoners.harnesses import _format_findings_for_llm
+        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in high_priority if f.title in evidence_map}
 
-        ev_packages = {f.title: evidence_map[f.title].model_dump() for f in needs_verify if f.title in evidence_map}
-        pr_context = self._build_pr_context_string()
-        repo_path = self.input.repo_path or ""
-
-        # Build per-finding narratives and launch parallel verification
-        # Use semaphore to cap concurrency — 31 parallel claude-code processes will OOM
-        semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
-
-        async def verify_one(idx: int, finding: ReviewFinding) -> dict:
-            if self._budget_or_timeout_exhausted("adversary"):
-                return {}
-            async with semaphore:
-                ref_key = f"[F{idx + 1}]"
-                ev = ev_packages.get(finding.title)
-                finding_ev = {finding.title: ev} if ev else None
-                narrative = _format_findings_for_llm(
-                    [finding.model_dump()], finding_ev
-                )
-                result = await verify_single_finding(
-                    finding_narrative=narrative,
-                    reference_key=ref_key,
-                    pr_context=pr_context,
-                    repo_path=repo_path,
-                )
-                self.agent_invocations += 1
-                self._register_cost("adversary", self._extract_cost(result))
-                return result if isinstance(result, dict) else {}
-
-        verification_results = await asyncio.gather(
-            *[verify_one(idx, f) for idx, f in enumerate(needs_verify)]
+        verifier_raw = await evidence_verifier(
+            findings=[f.model_dump() for f in high_priority],
+            evidence_packages=ev_packages if ev_packages else None,
+            pr_context=self._build_pr_context_string(),
+            repo_path=self.input.repo_path or "",
         )
+        self.agent_invocations += 1
+        self._register_cost("adversary", self._extract_cost(verifier_raw))
 
-        # Build verification map from parallel results
         verification_map: dict[str, dict] = {}
-        ref_key_to_title: dict[str, str] = {
-            f"[F{idx + 1}]": f.title for idx, f in enumerate(needs_verify)
-        }
+        raw_verified = verifier_raw.get("verified_findings", []) if isinstance(verifier_raw, dict) else []
 
-        for vf in verification_results:
-            if not vf:
+        for vf in raw_verified:
+            if not isinstance(vf, dict):
                 continue
             title = vf.get("title", "")
-            ref_key = vf.get("reference_key", "")
-            if not title and ref_key:
-                title = ref_key_to_title.get(ref_key, "")
             if not title:
                 continue
             verification_map[title] = vf
 
-        # Apply verification results to findings (skip_verify pass through unchanged)
-        updated_findings: list[ReviewFinding] = list(skip_verify)
+        updated_findings: list[ReviewFinding] = []
         falsified_count = 0
-        for f in needs_verify:
+        for f in findings:
             vf = verification_map.get(f.title)
             if vf and not vf.get("verified", True):
                 falsified_count += 1
                 updated = f.model_copy(
                     update={
                         "confidence": max(0.1, vf.get("revised_confidence", 0.3)),
-                        "severity": vf.get("revised_severity", "suggestion") or "suggestion",
+                        # model_copy bypasses validators, so normalize explicitly.
+                        "severity": normalize_severity(vf.get("revised_severity")),
                     }
                 )
                 updated_findings.append(updated)
@@ -681,8 +558,9 @@ class ReviewOrchestrator:
                 if revised_conf is not None and isinstance(revised_conf, (int, float)):
                     updates["confidence"] = float(revised_conf)
                 revised_sev = vf.get("revised_severity")
-                if revised_sev and revised_sev in ("critical", "important", "suggestion", "nitpick"):
-                    updates["severity"] = revised_sev
+                if revised_sev:
+                    # model_copy bypasses validators, so normalize explicitly.
+                    updates["severity"] = normalize_severity(revised_sev)
                 if updates:
                     updated_findings.append(f.model_copy(update=updates))
                 else:
@@ -707,32 +585,17 @@ class ReviewOrchestrator:
         if not findings or self._budget_or_timeout_exhausted("adversary"):
             return []
 
-        # Skip adversary entirely if all findings are low-severity
-        if all(f.severity in ("suggestion", "nitpick") for f in findings):
-            print("[PR-AF] Adversary skip: all findings are low-severity", flush=True)
-            return []
-
         batch_size = self.meta_config.adversary_batch_size
         max_batches = self.meta_config.max_adversary_batches
         ai_confidence = self.intake_result.ai_generated if self.intake_result else 0.0
         ev_map = evidence_map or {}
         ver_map = verification_map or {}
 
-        # Exclude already-falsified findings from adversary batches
-        findings_for_adversary = [
-            f for f in findings
-            if ver_map.get(f.title, {}).get("verified", True)
-        ]
-        if not findings_for_adversary:
-            return []
-
-        # Dynamic batching: cover ALL findings, no silent truncation
         batches: list[list[ReviewFinding]] = []
-        for i in range(0, len(findings_for_adversary), batch_size):
-            batches.append(findings_for_adversary[i : i + batch_size])
-        # Apply hard cap only if explicitly set (>0)
-        if max_batches > 0 and len(batches) > max_batches:
-            batches = batches[:max_batches]
+        for i in range(0, len(findings), batch_size):
+            batches.append(findings[i : i + batch_size])
+            if len(batches) >= max_batches:
+                break
 
         async def run_batch(batch: list[ReviewFinding]) -> list[AdversaryResult]:
             if self._budget_or_timeout_exhausted("adversary"):
@@ -771,11 +634,12 @@ class ReviewOrchestrator:
 
         return all_results
 
-    async def _run_gap_review(
+    async def _run_parallel_review(
         self,
         plan: ReviewPlan,
         findings_queue: asyncio.Queue[list[ReviewFinding] | None],
         current_depth: int = 0,
+        reviewer_feedback: str = "",
     ) -> None:
         max_depth = self.config.budget.max_review_depth
         semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
@@ -799,6 +663,7 @@ class ReviewOrchestrator:
                     intake_summary=self.intake_result.pr_summary if self.intake_result else "",
                     diff_patches=dim_patches if dim_patches else None,
                     all_dimension_names=[d.name for d in plan.dimensions if d.id != dim.id],
+                    reviewer_feedback=reviewer_feedback,
                 )
                 self.agent_invocations += 1
                 self._register_cost("review", self._extract_cost(result_raw))
@@ -851,6 +716,7 @@ class ReviewOrchestrator:
 
     async def _run_review_layer(
         self,
+        plan: ReviewPlan,
         findings_queue: asyncio.Queue[list[ReviewFinding] | None],
         anatomy: AnatomyResult,
     ) -> tuple[list[ReviewFinding], list[AdversaryResult]]:
@@ -860,10 +726,6 @@ class ReviewOrchestrator:
             if batch is None:
                 break
             all_findings.extend(batch)
-
-        if not all_findings:
-            print("[PR-AF] No findings from review — skipping verification/adversary/compound", flush=True)
-            return all_findings, []
 
         evidence_map: dict[str, EvidencePackage] = {}
         if all_findings and self.input.repo_path:
@@ -883,83 +745,28 @@ class ReviewOrchestrator:
             )
 
         verification_map: dict[str, dict] = {}
-        if all_findings and evidence_map and not self._budget_or_timeout_exhausted("adversary"):
+        high_priority = [f for f in all_findings if f.severity in ("critical", "important")]
+        if high_priority and evidence_map and not self._budget_or_timeout_exhausted("adversary"):
             all_findings, verification_map = await self._run_evidence_verification(
                 all_findings,
                 evidence_map,
             )
 
-        # Run adversary and gap finder in parallel (Improvement 3)
-        adversary_coro = self._run_parallel_adversary(
-            all_findings, evidence_map, verification_map,
-        ) if all_findings and not self._budget_or_timeout_exhausted("adversary") else None
-
-        gap_finder_coro = self._run_gap_finder(all_findings) if (
-            self.research_brief_result
-            and not self._budget_or_timeout_exhausted("gap_finder")
-        ) else None
-
         adversary_results: list[AdversaryResult] = []
-        gap_findings: list[ReviewFinding] = []
-
-        if adversary_coro and gap_finder_coro:
-            adversary_results, gap_findings = await asyncio.gather(
-                adversary_coro, gap_finder_coro
+        if all_findings and not self._budget_or_timeout_exhausted("adversary"):
+            adversary_results = await self._run_parallel_adversary(
+                all_findings,
+                evidence_map,
+                verification_map,
             )
-        elif adversary_coro:
-            adversary_results = await adversary_coro
-        elif gap_finder_coro:
-            gap_findings = await gap_finder_coro
-
-        # Merge gap findings into all_findings before challenge filtering
-        if gap_findings:
-            print(
-                f"[PR-AF] Gap finder: {len(gap_findings)} new findings from missed areas",
-                flush=True,
-            )
-            all_findings.extend(gap_findings)
 
         challenged_titles = {ar.finding_title for ar in adversary_results if ar.verdict == "challenged"}
         confirmed_findings = [f for f in all_findings if f.title not in challenged_titles]
 
         compound_findings = await self._run_compound_analysis(confirmed_findings, evidence_map)
-        confirmed_findings.extend(compound_findings)
+        all_findings.extend(compound_findings)
 
-        return confirmed_findings, adversary_results
-
-    async def _run_gap_finder(self, existing_findings: list[ReviewFinding]) -> list[ReviewFinding]:
-        """Run adversarial gap finder to catch bugs the review team missed (Improvement 3)."""
-        if not self.research_brief_result:
-            return []
-
-        diff_patches = self._build_file_patches()
-        if not diff_patches:
-            return []
-
-        existing_titles = [f.title for f in existing_findings]
-        pr_context = self._build_pr_context_string()
-
-        result_raw = await adversarial_gap_finder(
-            diff_patches=diff_patches,
-            research_brief=self.research_brief_result,
-            existing_finding_titles=existing_titles,
-            pr_context=pr_context,
-            repo_path=self.input.repo_path or "",
-        )
-        self.agent_invocations += 1
-        self._register_cost("gap_finder", self._extract_cost(result_raw))
-
-        raw_findings = result_raw.get("findings", []) if isinstance(result_raw, dict) else []
-        findings: list[ReviewFinding] = []
-        for rf in raw_findings:
-            if isinstance(rf, dict):
-                rf.setdefault("dimension_id", "gap_finder")
-                rf.setdefault("dimension_name", "Gap Finder")
-                try:
-                    findings.append(ReviewFinding.model_validate(rf))
-                except Exception:
-                    continue
-        return findings
+        return all_findings, adversary_results
 
     async def _run_coverage_loop(
         self,
@@ -972,26 +779,12 @@ class ReviewOrchestrator:
             if self._budget_or_timeout_exhausted("coverage"):
                 break
 
-            # Programmatic pre-check: skip LLM call if coverage is obviously complete
-            if not findings:
-                break
-            cluster_ids = {c.id for c in anatomy.clusters}
-            finding_paths = {f.file_path for f in findings if f.file_path}
-            covered_clusters = {
-                c.id for c in anatomy.clusters
-                if any(p in finding_paths for p in c.files)
-            }
-            if covered_clusters >= cluster_ids:
-                print("[PR-AF] Coverage pre-check: all clusters have findings, skipping LLM gate", flush=True)
-                break
-
             reviewed_clusters = self._reviewed_clusters(anatomy, findings)
             dimension_names = [d.name for d in plan.dimensions]
             gate_raw = await coverage_gate(
                 anatomy=anatomy.model_dump(),
                 reviewed_clusters=reviewed_clusters,
                 dimension_names_reviewed=dimension_names,
-                research_brief=self.research_brief_result,
             )
             self.agent_invocations += 1
             self._register_cost("coverage", self._extract_cost(gate_raw))
@@ -1013,7 +806,7 @@ class ReviewOrchestrator:
                 break
 
             gap_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
-            await self._run_gap_review(
+            await self._run_parallel_review(
                 plan=ReviewPlan(dimensions=gap_dims, cross_ref_hints=plan.cross_ref_hints),
                 findings_queue=gap_queue,
             )
@@ -1040,20 +833,12 @@ class ReviewOrchestrator:
 
         return findings, adversary_results
 
-    async def _synthesize(
+    def _synthesize(
         self,
         findings: list[ReviewFinding],
         adversary_results: list[AdversaryResult],
     ) -> list[ScoredFinding]:
         deduped = deduplicate_exact(findings)
-        if len(deduped) > 3:
-            try:
-                keep_indices = await batch_semantic_dedup([f.model_dump() for f in deduped])
-                if keep_indices:
-                    deduped = [deduped[i] for i in keep_indices if 0 <= i < len(deduped)]
-                    self.agent_invocations += 1
-            except Exception:
-                pass  # Fallback: keep all
         scored = score_findings(
             findings=deduped,
             adversary_results=adversary_results,
@@ -1061,16 +846,6 @@ class ReviewOrchestrator:
             ai_generated=self.intake_result.ai_generated if self.intake_result else 0.0,
             blast_radius_size=len(self.anatomy_result.blast_radius) if self.anatomy_result else 0,
         )
-        if scored:
-            try:
-                calibrated = await output_calibration_gate([f.model_dump() for f in scored])
-                cal_dict = calibrated if isinstance(calibrated, dict) else {}
-                keep_indices = cal_dict.get("keep_indices")
-                if keep_indices and isinstance(keep_indices, list):
-                    scored = [scored[i] for i in keep_indices if 0 <= i < len(scored)]
-                    self.agent_invocations += 1
-            except Exception:
-                pass  # Fallback: keep all
         return scored[: self.config.comments.max_comments]
 
     def _normalize_path(self, path: str) -> str:
@@ -1110,13 +885,13 @@ class ReviewOrchestrator:
         return ranges
 
     def _build_file_patches(self) -> dict[str, str]:
-        if not hasattr(self, "_cached_file_patches"):
-            if not self.pr_data:
-                return {}
-            self._cached_file_patches: dict[str, str] = {
-                cf.path: cf.patch for cf in self.pr_data.changed_files if cf.patch
-            }
-        return self._cached_file_patches
+        if not self.pr_data:
+            return {}
+        patches: dict[str, str] = {}
+        for cf in self.pr_data.changed_files:
+            if cf.patch:
+                patches[cf.path] = cf.patch
+        return patches
 
     def _build_pr_context_string(self) -> str:
         parts = []
@@ -1188,6 +963,8 @@ class ReviewOrchestrator:
         intake: IntakeResult,
         anatomy: AnatomyResult,
         plan: ReviewPlan,
+        *,
+        post_to_github: bool = True,
     ) -> ReviewResult:
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
@@ -1198,10 +975,8 @@ class ReviewOrchestrator:
         severity_rank = {"nitpick": 0, "suggestion": 1, "important": 2, "critical": 3}
         min_rank = severity_rank.get(self.config.comments.min_severity, 1)
 
+        comments: list[GitHubComment] = []
         filtered_for_comments: list[ScoredFinding] = []
-        # Parallel arrays: comment_findings[i] is the finding for comment_pairs[i].
-        comment_findings: list[ScoredFinding] = []
-        comment_pairs: list[GitHubComment] = []
         skipped_severity = 0
         skipped_path = 0
         skipped_range = 0
@@ -1219,66 +994,48 @@ class ReviewOrchestrator:
             if not in_range:
                 skipped_range += 1
                 continue
-            comment_findings.append(finding)
-            comment_pairs.append(
+            comments.append(
                 GitHubComment(
                     path=norm_path,
                     line=finding.line_start,
                     side=finding.diff_side,
-                    body="",  # populated after polish + gate
+                    body=self._format_comment_body(finding),
                 )
             )
         print(
             f"[PR-AF] Comment filtering: {len(scored_findings)} scored → "
             f"{len(filtered_for_comments)} pass severity (skipped {skipped_severity}) → "
-            f"{len(comment_pairs)} in-diff "
-            f"(skipped {skipped_path} path, {skipped_range} range)",
+            f"{len(filtered_for_comments) - skipped_path - skipped_range} in-diff "
+            f"(skipped {skipped_path} path, {skipped_range} range) → "
+            f"{len(comments)} inline comments",
             flush=True,
         )
 
-        # Cap inline-comment count BEFORE merge-gate to keep gate cost bounded.
-        # The summary still references the full filtered_for_comments list.
-        max_comments = self.config.comments.max_comments
-        if len(comment_pairs) > max_comments:
-            comment_findings = comment_findings[:max_comments]
-            comment_pairs = comment_pairs[:max_comments]
-
-        # Phase 1: parallel pass — merge-gate (over ALL filtered findings) and
-        # polish (over the in-diff inline-comment bodies). Independent of each
-        # other, fired concurrently so the slower one bounds the wall-clock.
-        gate_task: asyncio.Task[list[ScoredFinding]] | None = None
-        polish_task: asyncio.Task[list[GitHubComment]] | None = None
-
-        # Pre-fill comment bodies with the unpolished format so a polish failure
-        # still produces a valid review.
-        for f, c in zip(comment_findings, comment_pairs, strict=True):
-            c.body = self._format_comment_body(f)
-
-        if self.config.comments.merge_gate_enabled and filtered_for_comments:
-            from .merge_gate import classify_findings
-
-            gate_task = asyncio.create_task(classify_findings(self.app, filtered_for_comments))
-
-        if self.config.comments.polish_enabled and comment_pairs:
+        comments = comments[: self.config.comments.max_comments]
+        if self.config.comments.polish_enabled and comments:
             from .polish import polish_comments
 
-            polish_task = asyncio.create_task(polish_comments(self.app, comment_pairs))
+            comments = await polish_comments(self.app, comments)
 
-        if gate_task is not None:
-            filtered_for_comments = await gate_task
-        if polish_task is not None:
-            comment_pairs = await polish_task
-
-        # Phase 2: re-decorate comment bodies with the non-blocking badge using
-        # the gate verdict. Look up each comment-finding by id in the gated list
-        # so we don't depend on list ordering being preserved by gather.
-        gated_by_id: dict[str, ScoredFinding] = {f.id: f for f in filtered_for_comments}
-        decorated: list[GitHubComment] = []
-        for f, c in zip(comment_findings, comment_pairs, strict=True):
-            gated = gated_by_id.get(f.id, f)
-            decorated.append(c.model_copy(update={"body": self._decorate_with_blocking(gated, c.body)}))
-        comments = decorated
-
+        findings_by_location = {
+            (
+                self._normalize_path(f.file_path),
+                f.line_start,
+                f.diff_side,
+            ): f
+            for f in filtered_for_comments
+        }
+        comments = [
+            comment.model_copy(
+                update={
+                    "body": self._decorate_with_blocking(
+                        findings_by_location.get((comment.path, comment.line, comment.side)),
+                        comment.body,
+                    )
+                }
+            )
+            for comment in comments
+        ]
         review_event = determine_review_event(filtered_for_comments)
 
         summary_body = self._format_summary(
@@ -1294,7 +1051,7 @@ class ReviewOrchestrator:
             comments=comments,
         )
 
-        if not self.input.dry_run and self.input.pr_url:
+        if post_to_github and not self.input.dry_run and self.input.pr_url:
             client = GitHubClient()
             try:
                 await client.post_review(
@@ -1337,24 +1094,15 @@ class ReviewOrchestrator:
             except Exception as exc:
                 print(f"[PR-AF] Failed to post review: {exc}", flush=True)
 
-        # Propagate gate verdict back onto the canonical scored_findings list so
-        # downstream consumers (JSON/SARIF/UI) see `blocking` populated.
-        gated_by_id_full: dict[str, ScoredFinding] = {f.id: f for f in filtered_for_comments}
-        scored_findings = [
-            (gated_by_id_full[f.id] if f.id in gated_by_id_full else f) for f in scored_findings
-        ]
-
         by_severity: dict[str, int] = {}
         for finding in scored_findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
-        blocking_total = sum(1 for f in scored_findings if f.blocking)
-        advisory_total = len(scored_findings) - blocking_total
 
         summary = ReviewSummary(
             total_findings=len(scored_findings),
             by_severity=by_severity,
-            blocking_count=blocking_total,
-            advisory_count=advisory_total,
+            blocking_count=sum(1 for finding in scored_findings if finding.blocking),
+            advisory_count=sum(1 for finding in scored_findings if not finding.blocking),
             dimensions_run=len(plan.dimensions),
             cross_ref_interactions=self.cross_ref_count,
             adversary_challenged=self.adversary_challenged_count,
@@ -1388,39 +1136,6 @@ class ReviewOrchestrator:
             findings=scored_findings,
             summary=summary,
             metadata=metadata,
-        )
-
-    def _build_clean_result(self, intake: IntakeResult, anatomy: AnatomyResult, reason: str) -> ReviewResult:
-        """Produce an APPROVE result for early exits (no findings)."""
-        plan = ReviewPlan(dimensions=[])
-        review = GitHubReview(body=f"## 🟢 PR-AF Review — **Looks Good**\n\n{reason}\n\nNo findings.", event="APPROVE", comments=[])
-        summary = ReviewSummary(
-            total_findings=0,
-            by_severity={},
-            dimensions_run=0,
-            cross_ref_interactions=0,
-            adversary_challenged=0,
-            adversary_confirmed=0,
-            coverage_iterations=0,
-            ai_generated_confidence=intake.ai_generated,
-            cost_usd=round(self.total_cost_usd, 4),
-            duration_seconds=round(time.monotonic() - self.started_at, 3),
-            budget_exhausted=False,
-        )
-        metadata = ReviewMetadata(
-            intake=intake.model_dump(),
-            anatomy=anatomy.model_dump(),
-            plan=plan.model_dump(),
-            budget={"total_cost_usd": self.total_cost_usd, "cost_breakdown": self.cost_breakdown,
-                    "budget_exhausted": False, "max_cost_usd": self.config.budget.max_cost_usd,
-                    "max_duration_seconds": self.config.budget.max_duration_seconds},
-            agent_invocations=self.agent_invocations,
-            phases_completed=["intake", "anatomy", "meta_selectors"],
-        )
-        self._cleanup_context_dir()
-        return ReviewResult(
-            review_id=self.review_id, pr_url=self.input.pr_url or "",
-            review=review, findings=[], summary=summary, metadata=metadata,
         )
 
     def _budget_or_timeout_exhausted(self, phase: str) -> bool:
@@ -1472,49 +1187,34 @@ class ReviewOrchestrator:
                     return float(inner_cost)
         return None
 
-    def _extract_raw_list(self, result_raw: object) -> list[dict[str, Any]]:
-        """Extract a list of dicts from a reasoner result, checking common keys."""
+    def _extract_findings(self, result_raw: object, dim: ReviewDimension) -> list[ReviewFinding]:
         payload = _unwrap(result_raw)
+        findings_raw: list[dict[str, Any]]
         if isinstance(payload, dict):
-            for key in ("findings", "results"):
-                value = payload.get(key)
-                if isinstance(value, list):
-                    return cast("list[dict[str, Any]]", value)
-            return []
-        if isinstance(payload, list):
-            return cast("list[dict[str, Any]]", payload)
-        return []
-
-    def _extract_findings(
-        self,
-        result_raw: object,
-        dim: ReviewDimension | None = None,
-        defaults: dict[str, str] | None = None,
-    ) -> list[ReviewFinding]:
-        """Extract ReviewFinding objects from a reasoner result.
-
-        Uses dim for dimension_id/name defaults, or explicit defaults dict
-        for compound/gap findings.
-        """
-        raw_list = self._extract_raw_list(result_raw)
-        dim_id = (dim.id if dim else defaults.get("dimension_id", "unknown")) if defaults or dim else "unknown"
-        dim_name = (dim.name if dim else defaults.get("dimension_name", "Unknown")) if defaults or dim else "Unknown"
-        default_severity = defaults.get("severity", "suggestion") if defaults else "suggestion"
-        default_title = defaults.get("title", "Untitled finding") if defaults else "Untitled finding"
+            if isinstance(payload.get("findings"), list):
+                findings_raw = cast("list[dict[str, Any]]", payload["findings"])
+            elif isinstance(payload.get("results"), list):
+                findings_raw = cast("list[dict[str, Any]]", payload["results"])
+            else:
+                findings_raw = []
+        elif isinstance(payload, list):
+            findings_raw = cast("list[dict[str, Any]]", payload)
+        else:
+            findings_raw = []
 
         findings: list[ReviewFinding] = []
-        for item in raw_list:
+        for item in findings_raw:
             if not isinstance(item, dict):
                 continue
             normalized = {
-                "dimension_id": item.get("dimension_id", dim_id),
-                "dimension_name": item.get("dimension_name", dim_name),
+                "dimension_id": item.get("dimension_id", dim.id),
+                "dimension_name": item.get("dimension_name", dim.name),
                 "file_path": item.get("file_path", ""),
                 "line_start": int(item.get("line_start", 0) or 0),
-                "line_end": int(item.get("line_end", item.get("line_start", 0)) or 0),
+                "line_end": int(item.get("line_end", 0) or 0),
                 "hunk_context": item.get("hunk_context", ""),
-                "severity": item.get("severity", default_severity),
-                "title": item.get("title", default_title),
+                "severity": item.get("severity", "suggestion"),
+                "title": item.get("title", "Untitled finding"),
                 "body": item.get("body", ""),
                 "suggestion": item.get("suggestion"),
                 "evidence": item.get("evidence", ""),
@@ -1523,6 +1223,39 @@ class ReviewOrchestrator:
             }
             findings.append(ReviewFinding.model_validate(normalized))
 
+        return findings
+
+    def _extract_compound_findings(self, result_raw: object) -> list[ReviewFinding]:
+        payload = _unwrap(result_raw)
+        raw_list: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            for key in ("findings", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    raw_list = cast("list[dict[str, Any]]", value)
+                    break
+        elif isinstance(payload, list):
+            raw_list = cast("list[dict[str, Any]]", payload)
+        findings: list[ReviewFinding] = []
+        for item in raw_list:
+            if not isinstance(item, dict):
+                continue
+            normalized = {
+                "dimension_id": "compound",
+                "dimension_name": "Compound Analysis",
+                "file_path": item.get("file_path", ""),
+                "line_start": int(item.get("line_start", 0) or 0),
+                "line_end": int(item.get("line_end", item.get("line_start", 0)) or 0),
+                "hunk_context": "",
+                "severity": item.get("severity", "important"),
+                "title": item.get("title", "Untitled compound finding"),
+                "body": item.get("body", ""),
+                "suggestion": item.get("suggestion"),
+                "evidence": item.get("evidence", ""),
+                "confidence": float(item.get("confidence", 0.5) or 0.5),
+                "tags": item.get("tags", []),
+            }
+            findings.append(ReviewFinding.model_validate(normalized))
         return findings
 
     async def _dedup_compound_findings(
@@ -1562,9 +1295,6 @@ class ReviewOrchestrator:
         confirmed_findings: list[ReviewFinding],
         evidence_map: dict[str, EvidencePackage] | None,
     ) -> list[ReviewFinding]:
-        if len(confirmed_findings) < 3 or self._budget_or_timeout_exhausted("cross_ref"):
-            return []
-
         clusters = self._select_compound_clusters(confirmed_findings, evidence_map)
         if not clusters or self._budget_or_timeout_exhausted("cross_ref"):
             return []
@@ -1592,15 +1322,7 @@ class ReviewOrchestrator:
                 continue
             self.agent_invocations += 1
             self._register_cost("cross_ref", self._extract_cost(raw_result))
-            new_findings = self._extract_findings(
-                raw_result,
-                defaults={
-                    "dimension_id": "compound",
-                    "dimension_name": "Compound Analysis",
-                    "severity": "important",
-                    "title": "Untitled compound finding",
-                },
-            )
+            new_findings = self._extract_compound_findings(raw_result)
             compound_findings.extend(new_findings)
 
         if len(compound_findings) > 1:
@@ -1761,37 +1483,29 @@ class ReviewOrchestrator:
             )
         return dimensions
 
-    def _decorate_with_blocking(self, finding: ScoredFinding, body: str) -> str:
-        """Wrap the comment in a GitHub-native callout so authors see merge-status at a glance.
+    def _decorate_with_blocking(self, finding: ScoredFinding | None, body: str) -> str:
+        """Wrap a comment in a GitHub-native merge-gate callout."""
 
-        Uses Markdown alerts (`> [!CAUTION]` red bar / `> [!NOTE]` blue bar)
-        which render with strong visual color in GitHub's PR UI. This is more
-        intentional than a custom emoji badge — the alert itself signals
-        "act on this" vs "informational" before any text is read.
-        """
-
-        if finding.blocking:
+        if finding and finding.blocking:
             header = "> [!CAUTION]\n> **Must-fix before merge.**"
             if finding.blocking_reason:
                 header += f" {finding.blocking_reason}"
         else:
             header = "> [!NOTE]\n> **Advisory — non-blocking.** Safe to merge and address in a follow-up."
-            if finding.blocking_reason:
+            if finding and finding.blocking_reason:
                 header += f"\n>\n> _Why non-blocking:_ {finding.blocking_reason}"
         return f"{header}\n\n{body}"
 
     def _format_comment_body(self, finding: ScoredFinding) -> str:
-        """Inline comment body.
-
-        Designed for skim-reading. The callout (added later by
-        `_decorate_with_blocking`) tells the author what to DO. This function
-        renders WHAT the issue is. The title is bold and prominent; severity
-        sits as a small subtitle so it doesn't shout when the gate already
-        said "advisory".
-        """
-
         emoji = self.config.comments.severity_emojis.get(finding.severity, "")
-        lines = [f"**{finding.title}**", "", finding.body.strip()]
+        severity_label = finding.severity.upper()
+        lines = [
+            f"**{finding.title}**",
+            "",
+            f"<sub>{emoji} `{severity_label}` · confidence {int(finding.confidence * 100)}%</sub>",
+            "",
+            finding.body.strip(),
+        ]
 
         if finding.evidence:
             lines.extend(["", "<details><summary>Evidence</summary>", ""])
@@ -1804,16 +1518,25 @@ class ReviewOrchestrator:
             if self.config.comments.suggestion_mode == "code":
                 lines.extend(["", "```suggestion", suggestion_text, "```"])
             else:
-                lines.extend(["", "**Suggested fix.** " + suggestion_text])
+                lines.extend(
+                    [
+                        "",
+                        "**💡 Suggested Fix**",
+                        "",
+                        suggestion_text,
+                    ]
+                )
 
-        # Subtitle line — small grey chips for severity, dimension, confidence.
-        meta_parts: list[str] = [f"{emoji} reviewer: {finding.severity}"]
+        meta_parts: list[str] = []
         if self.config.comments.include_dimension_attribution:
             meta_parts.append(f"`{finding.dimension_name}`")
         if self.config.comments.include_confidence:
-            meta_parts.append(f"confidence {int(finding.confidence * 100)}%")
-        meta_parts.append("[PR-AF](https://github.com/Agent-Field/pr-af)")
-        lines.extend(["", f"<sub>{' · '.join(meta_parts)}</sub>"])
+            pct = int(finding.confidence * 100)
+            meta_parts.append(f"confidence {pct}%")
+        if meta_parts:
+            lines.extend(["", "---", f"*{' · '.join(meta_parts)}*"])
+
+        lines.extend(["", "<sub>🤖 Reviewed by [AgentField PR-AF](https://github.com/Agent-Field/pr-af)</sub>"])
 
         return "\n".join(lines).strip()
 
@@ -1858,14 +1581,13 @@ class ReviewOrchestrator:
         by_severity: dict[str, int] = {"critical": 0, "important": 0, "suggestion": 0, "nitpick": 0}
         for finding in findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
-        blocking_count = sum(1 for f in findings if f.blocking)
-        advisory_count = len(findings) - blocking_count
         emojis = self.config.comments.severity_emojis
         duration = round(time.monotonic() - self.started_at, 1)
 
+        blocking_count = sum(1 for f in findings if f.blocking)
+        advisory_count = len(findings) - blocking_count
         rating = self._compute_rating_v2(blocking_count, advisory_count, len(findings))
 
-        # Headline: lead with the merge verdict so authors see "go/no-go" first.
         if blocking_count == 0 and advisory_count == 0:
             verdict_line = "> ✅ **Safe to merge.** No findings from automated review."
         elif blocking_count == 0:
@@ -1877,14 +1599,25 @@ class ReviewOrchestrator:
         else:
             verdict_line = (
                 f"> 🚫 **Merge blocked.** {blocking_count} must-fix issue"
-                f"{'s' if blocking_count != 1 else ''} found by automated review. "
-                "See must-fix section below."
+                f"{'s' if blocking_count != 1 else ''} found by automated review."
             )
 
         lines: list[str] = [
             f"## {rating['emoji']} PR-AF Review — **{rating['label']}**",
             "",
             verdict_line,
+            "",
+            "*Automated multi-agent code review · "
+            "[PR-AF](https://github.com/Agent-Field/pr-af) built with "
+            "[AgentField](https://github.com/Agent-Field/agentfield)*",
+            "",
+            f"> **{len(findings)} findings** · "
+            f"🚫 {sum(1 for f in findings if f.blocking)} blocking · "
+            f"💬 {sum(1 for f in findings if not f.blocking)} advisory · "
+            f"{emojis.get('critical', '')} {by_severity.get('critical', 0)} critical · "
+            f"{emojis.get('important', '')} {by_severity.get('important', 0)} important · "
+            f"{emojis.get('suggestion', '')} {by_severity.get('suggestion', 0)} suggestions · "
+            f"{emojis.get('nitpick', '')} {by_severity.get('nitpick', 0)} nitpicks",
             "",
         ]
 
@@ -1903,38 +1636,57 @@ class ReviewOrchestrator:
 
         lines.extend(self._build_key_findings(findings))
 
-        # Single combined details block: gate explainer + pipeline internals,
-        # collapsed by default so the merge verdict stays the visual focal point.
-        lines.extend(self._build_collapsible_internals(findings, plan, intake, duration, by_severity, emojis))
+        if findings:
+            lines.extend(
+                [
+                    "<details>",
+                    "<summary><b>All Findings by Severity</b></summary>",
+                    "",
+                ]
+            )
+            for sev in ("critical", "important", "suggestion", "nitpick"):
+                sev_findings = [f for f in findings if f.severity == sev]
+                if not sev_findings:
+                    continue
+                lines.append(f"#### {emojis.get(sev, '')} {sev.title()} ({len(sev_findings)})")
+                lines.append("")
+                for f in sev_findings:
+                    path_ref = f"`{self._normalize_path(f.file_path)}:{f.line_start}`" if f.file_path else ""
+                    lines.append(f"- **{f.title}** {path_ref}")
+                lines.append("")
+            lines.extend(["</details>", ""])
 
-        # Compact one-line footer: severity reference + cost/duration + branding.
-        # Replaces the previous multi-block stats card + review-id line + badge.
-        cost_display = f"${self.total_cost_usd:.4f}" if self.total_cost_usd > 0 else "$0"
-        sev_chips = (
-            f"{emojis.get('critical', '')} {by_severity.get('critical', 0)} crit · "
-            f"{emojis.get('important', '')} {by_severity.get('important', 0)} imp · "
-            f"{emojis.get('suggestion', '')} {by_severity.get('suggestion', 0)} sug · "
-            f"{emojis.get('nitpick', '')} {by_severity.get('nitpick', 0)} nit"
-        )
+        lines.extend(self._build_review_details(findings, plan))
+
+        lines.extend(self._build_pipeline_stats(intake, duration))
+
+        lines.append(f"Review ID: `{self.review_id}`")
+
         lines.extend(
             [
-                "---",
-                f"<sub>By reviewer severity: {sev_chips} · "
-                f"{duration}s · {cost_display} · "
-                f"Review `{self.review_id}` · "
-                "[PR-AF](https://github.com/Agent-Field/pr-af) on "
-                "[AgentField](https://github.com/Agent-Field/agentfield)</sub>",
+                "",
+                "<br>",
+                '<div align="right">',
+                '  <a href="https://github.com/Agent-Field/pr-af">',
+                "    <img"
+                ' src="https://img.shields.io/badge/Powered_by-AgentField-6366f1'
+                '?style=flat-square&logo=github"'
+                ' alt="AgentField PR-AF"/>',
+                "  </a>",
+                "</div>",
             ]
         )
 
         return "\n".join(lines)
 
-    def _compute_rating(self, by_severity: dict[str, int], total: int) -> dict[str, str]:
+    def _compute_rating(self, by_severity: dict[str, int], total: int, blocking_count: int = 0) -> dict[str, str]:
         critical = by_severity.get("critical", 0)
         important = by_severity.get("important", 0)
 
         if total == 0:
             return {"emoji": "🟢", "label": "Looks Good", "grade": "A"}
+        if blocking_count == 0:
+            return {"emoji": "🟢", "label": "Advisory Findings Only", "grade": "A-"}
         if critical >= 3:
             return {"emoji": "🔴", "label": "Needs Major Rework", "grade": "D"}
         if critical >= 1:
@@ -1948,9 +1700,7 @@ class ReviewOrchestrator:
         return {"emoji": "🟢", "label": "Looks Good — Minor Suggestions", "grade": "A-"}
 
     def _compute_rating_v2(self, blocking: int, advisory: int, total: int) -> dict[str, str]:
-        """Blocking-driven rating. The merge gate is the source of truth for
-        whether the PR is safe to ship. Severity drives the secondary breakdown.
-        """
+        """Blocking-driven rating; severity is secondary display context."""
 
         if total == 0:
             return {"emoji": "🟢", "label": "Looks Good", "grade": "A"}
@@ -1966,54 +1716,52 @@ class ReviewOrchestrator:
 
     def _build_key_findings(self, findings: list[ScoredFinding]) -> list[str]:
         if not findings:
-            return []
-
-        blocking = [f for f in findings if f.blocking]
-        advisory = [f for f in findings if not f.blocking]
+            return ["**No issues found.** This PR looks clean across all review dimensions.", ""]
 
         lines: list[str] = []
-        emojis = self.config.comments.severity_emojis
+        by_sev: dict[str, list[ScoredFinding]] = {}
+        for f in findings:
+            by_sev.setdefault(f.severity, []).append(f)
 
-        # Must-fix block: prominent, one bullet per finding with reason + location.
-        # Truncate at 8 to keep the summary scannable.
+        blocking = [f for f in findings if f.blocking]
+        non_blocking = [f for f in findings if not f.blocking]
+
+        lines.append("### Key Findings")
+        lines.append("")
+
         if blocking:
-            lines.append(f"### 🚫 Must-fix before merge ({len(blocking)})")
+            lines.append(f"**{len(blocking)} issue(s) should be addressed before merge:**")
             lines.append("")
             for f in blocking[:8]:
-                sev_emoji = emojis.get(f.severity, "")
-                path_ref = self._loc(f)
-                reason = f.blocking_reason or self._first_sentence(f.body)
-                lines.append(f"- {sev_emoji} **{f.title}** — {path_ref}")
-                lines.append(f"  > {reason}")
+                emoji = self.config.comments.severity_emojis.get(f.severity, "")
+                path_ref = f" (`{self._normalize_path(f.file_path)}:{f.line_start}`)" if f.file_path else ""
+                reason = f" Gate: {f.blocking_reason}" if f.blocking_reason else ""
+                lines.append(f"- {emoji} **{f.title}**{path_ref} — {self._first_sentence(f.body)}{reason}")
             if len(blocking) > 8:
-                lines.append(f"- _…and {len(blocking) - 8} more must-fix issues — see inline comments_")
+                lines.append(f"- … and {len(blocking) - 8} more (see All Findings by Severity)")
             lines.append("")
 
-        # Advisory block: collapsed table by default. Keep visual noise low.
-        if advisory:
-            open_attr = "" if blocking else " open"
-            lines.append("<details" + open_attr + ">")
-            lines.append(
-                f"<summary><b>🟢 Advisory ({len(advisory)})</b> — "
-                "non-blocking, safe to address in a follow-up</summary>"
-            )
+        if non_blocking:
+            lines.append(f"**{len(non_blocking)} advisory finding(s) surfaced as non-blocking:**")
             lines.append("")
-            lines.append("| | Finding | Location |")
-            lines.append("|---|---|---|")
-            for f in advisory[:30]:
-                sev_emoji = emojis.get(f.severity, "")
-                lines.append(f"| {sev_emoji} | {f.title} | {self._loc(f)} |")
-            if len(advisory) > 30:
-                lines.append(f"| | _…and {len(advisory) - 30} more — see inline comments_ | |")
+            for f in non_blocking[:5]:
+                emoji = self.config.comments.severity_emojis.get(f.severity, "")
+                path_ref = f" (`{self._normalize_path(f.file_path)}:{f.line_start}`)" if f.file_path else ""
+                lines.append(f"- {emoji} {f.title}{path_ref}")
+            if len(non_blocking) > 5:
+                lines.append(f"- … and {len(non_blocking) - 5} more (see All Findings by Severity)")
             lines.append("")
-            lines.append("</details>")
+
+        affected_files = sorted({self._normalize_path(f.file_path) for f in findings if f.file_path})
+        if affected_files:
+            lines.append(f"**Files with findings:** {', '.join(f'`{p}`' for p in affected_files[:10])}")
+            if len(affected_files) > 10:
+                lines.append(f" … and {len(affected_files) - 10} more")
             lines.append("")
 
         return lines
 
     def _loc(self, f: ScoredFinding) -> str:
-        """Compact file:line reference, or em-dash if unknown."""
-
         if not f.file_path:
             return "—"
         norm = self._normalize_path(f.file_path)
@@ -2021,76 +1769,105 @@ class ReviewOrchestrator:
             return f"`{norm}:{f.line_start}`"
         return f"`{norm}`"
 
-    def _build_collapsible_internals(
-        self,
-        findings: list[ScoredFinding],
-        plan: ReviewPlan | None,
-        intake: IntakeResult | None,
-        duration: float,
-        by_severity: dict[str, int],
-        emojis: dict[str, str],
-    ) -> list[str]:
-        """One collapsed block holding the gate explainer + pipeline internals.
-
-        Goal: keep the summary visual focus on the merge verdict. Engineers who
-        want to audit the pipeline can expand — everyone else sees clean output.
-        """
-
+    def _build_review_details(self, findings: list[ScoredFinding], plan: ReviewPlan | None) -> list[str]:
         lines: list[str] = []
-        lines.append("<details>")
-        lines.append("<summary><b>About this review</b> — how the merge-gate works · pipeline internals</summary>")
-        lines.append("")
-        lines.append(
-            "**Merge-gate criteria.** A finding is marked **must-fix** only when it would "
-            "break the build, introduce a security vulnerability reachable from production code, "
-            "cause data loss or corruption, break a public API/CLI/schema contract, or regress "
-            "previously-working behavior. Everything else — code quality, test coverage, "
-            "defensive hardening, style, performance suggestions without a measured impact — "
-            "is surfaced as **advisory** and does not block merge."
-        )
-        lines.append("")
+        detail_parts: list[str] = []
 
-        # Pipeline counts — compressed to one paragraph instead of multiple cards.
-        pipeline_bits: list[str] = []
         if plan and plan.dimensions:
-            pipeline_bits.append(f"{len(plan.dimensions)} review dimensions")
+            detail_parts.append(f"**Dimensions Analyzed ({len(plan.dimensions)}):**")
+            detail_parts.append("")
+            for dim in plan.dimensions:
+                detail_parts.append(f"- **{dim.name}** — {len(dim.target_files)} file(s)")
+            detail_parts.append("")
+
         if self.meta_selector_results:
-            pipeline_bits.append(f"{len(self.meta_selector_results)} lenses")
-        if self.cross_ref_count > 0:
-            pipeline_bits.append(f"{self.cross_ref_count} cross-ref compounds")
-        total_adv = self.adversary_confirmed_count + self.adversary_challenged_count
-        if total_adv > 0:
-            pipeline_bits.append(
-                f"{total_adv} adversarial challenges ({self.adversary_confirmed_count} confirmed)"
-            )
-        if self.coverage_iterations > 0:
-            pipeline_bits.append(f"{self.coverage_iterations} coverage iterations")
-        if self.agent_invocations:
-            pipeline_bits.append(f"{self.agent_invocations} agent invocations")
-        if pipeline_bits:
-            lines.append("**Pipeline.** " + " · ".join(pipeline_bits) + ".")
-            lines.append("")
+            detail_parts.append(f"**Meta-Dimension Lenses ({len(self.meta_selector_results)}):**")
+            detail_parts.append("")
+            for meta in self.meta_selector_results:
+                dim_count = len(meta.dimensions)
+                conf_pct = int(meta.confidence * 100)
+                detail_parts.append(
+                    f"- **{meta.lens.title()}** — {dim_count} dimension(s), {conf_pct}% coverage confidence"
+                )
+            detail_parts.append("")
 
-        if intake:
-            lines.append(
-                f"**Routing.** PR type `{intake.pr_type}` · complexity `{intake.complexity}` · "
-                f"AI-generated probability `{intake.ai_generated:.0%}`."
-            )
-            lines.append("")
+        sub_review_dims = {f.dimension_name for f in findings if "→" in f.dimension_name}
+        if sub_review_dims:
+            detail_parts.append(f"**Sub-Reviews Spawned ({len(sub_review_dims)} deep-dives):**")
+            detail_parts.append("")
+            for dim_name in sorted(sub_review_dims):
+                count = sum(1 for f in findings if f.dimension_name == dim_name)
+                detail_parts.append(f"- **{dim_name}** ({count} finding(s))")
+            detail_parts.append("")
 
+        if self.cross_ref_count > 0 or self.adversary_confirmed_count > 0 or self.adversary_challenged_count > 0:
+            detail_parts.append("**Cross-Reference & Adversary Analysis:**")
+            detail_parts.append("")
+            if self.cross_ref_count > 0:
+                detail_parts.append(f"- **{self.cross_ref_count}** compound finding(s) synthesized")
+            total_adv = self.adversary_confirmed_count + self.adversary_challenged_count
+            if total_adv > 0:
+                detail_parts.append(
+                    f"- **{total_adv}** finding(s) adversarially tested: "
+                    f"{self.adversary_confirmed_count} confirmed, "
+                    f"{self.adversary_challenged_count} challenged"
+                )
+            detail_parts.append("")
+
+        if detail_parts:
+            lines.extend(
+                [
+                    "<details>",
+                    "<summary><b>Review Process Details</b></summary>",
+                    "",
+                    *detail_parts,
+                    "</details>",
+                    "",
+                ]
+            )
+
+        return lines
+
+    def _build_pipeline_stats(self, intake: IntakeResult | None, duration: float) -> list[str]:
+        cost_display = (
+            f"${self.total_cost_usd:.4f}" if self.total_cost_usd > 0 else "N/A (provider does not report cost)"
+        )
+        exhaustion_reason = ""
         if self.budget_exhausted:
             elapsed = time.monotonic() - self.started_at
-            why = (
-                f"timeout ({int(elapsed)}s > {self.config.budget.max_duration_seconds}s)"
-                if elapsed > self.config.budget.max_duration_seconds
-                else f"cost (${self.total_cost_usd:.2f} ≥ ${self.config.budget.max_cost_usd:.2f})"
-            )
-            lines.append(f"⚠️ **Budget exhausted** — {why}. Some review depth was capped.")
-            lines.append("")
+            if elapsed > self.config.budget.max_duration_seconds:
+                exhaustion_reason = f" (timeout: {int(elapsed)}s > {self.config.budget.max_duration_seconds}s limit)"
+            elif self.total_cost_usd >= self.config.budget.max_cost_usd:
+                exhaustion_reason = (
+                    f" (cost: ${self.total_cost_usd:.2f} ≥ ${self.config.budget.max_cost_usd:.2f} limit)"
+                )
 
-        lines.append("</details>")
-        lines.append("")
-        return lines
+        stats_rows = [
+            f"| Duration | {duration}s |",
+            f"| Agent invocations | {self.agent_invocations} |",
+            f"| Coverage iterations | {self.coverage_iterations} |",
+            f"| Estimated cost | {cost_display} |",
+            f"| Budget exhausted | {'Yes' + exhaustion_reason if self.budget_exhausted else 'No'} |",
+        ]
+        if intake:
+            stats_rows.extend(
+                [
+                    f"| PR type | {intake.pr_type} |",
+                    f"| Complexity | {intake.complexity} |",
+                ]
+            )
+
+        return [
+            "<details>",
+            "<summary><b>Pipeline Stats</b></summary>",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            *stats_rows,
+            "",
+            "</details>",
+            "",
+        ]
 
     @staticmethod
     def _first_sentence(text: str) -> str:

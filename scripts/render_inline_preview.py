@@ -44,11 +44,17 @@ def main() -> None:
 
     blocking_f = findings[0].model_copy(update={
         "blocking": True,
-        "blocking_reason": "Unauthenticated public route allows config writes that overwrite admin tokens in the default deployment.",
+        "blocking_reason": (
+            "Unauthenticated public route allows config writes that overwrite admin tokens "
+            "in the default deployment."
+        ),
     })
     advisory_f = findings[1 if len(findings) > 1 else 0].model_copy(update={
         "blocking": False,
-        "blocking_reason": "Code quality issue without a demonstrated production code path; safe to address in follow-up.",
+        "blocking_reason": (
+            "Code quality issue without a demonstrated production code path; safe to address "
+            "in follow-up."
+        ),
     })
 
     print("=" * 70)

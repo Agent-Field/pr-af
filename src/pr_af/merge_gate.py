@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from .runtime_config import get_ai_kwargs
-from .schemas.output import ScoredFinding
+
+if TYPE_CHECKING:
+    from .schemas.output import ScoredFinding
 
 
 _MERGE_GATE_SYSTEM = (
@@ -80,7 +82,7 @@ class MergeGateVerdict(BaseModel):
 
 def _build_user_prompt(finding: ScoredFinding) -> str:
     parts = [
-        f"# Finding\n",
+        "# Finding\n",
         f"Severity (reviewer's label): {finding.severity}\n",
         f"Confidence: {finding.confidence:.2f}\n",
         f"File: {finding.file_path}:{finding.line_start}\n",

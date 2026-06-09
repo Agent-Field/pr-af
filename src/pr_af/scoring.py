@@ -42,14 +42,24 @@ def score_findings(
     # Severity normalization — reviewer LLMs sometimes emit uppercase or aliases
     # like "high"/"medium". Map them to the canonical lowercase rubric so downstream
     # code (emoji lookup, by_severity counting, severity_rank gates) doesn't break.
-    _ALIASES = {
-        "critical": "critical", "high": "critical", "blocker": "critical",
-        "important": "important", "medium": "important", "major": "important",
-        "suggestion": "suggestion", "minor": "suggestion", "low": "suggestion",
-        "nitpick": "nitpick", "info": "nitpick", "trivia": "nitpick", "trivial": "nitpick",
+    aliases = {
+        "critical": "critical",
+        "high": "critical",
+        "blocker": "critical",
+        "important": "important",
+        "medium": "important",
+        "major": "important",
+        "suggestion": "suggestion",
+        "minor": "suggestion",
+        "low": "suggestion",
+        "nitpick": "nitpick",
+        "info": "nitpick",
+        "trivia": "nitpick",
+        "trivial": "nitpick",
     }
+
     def _norm_sev(s: str) -> str:
-        return _ALIASES.get((s or "").strip().lower(), "suggestion")
+        return aliases.get((s or "").strip().lower(), "suggestion")
 
     for finding in findings:
         norm_sev = _norm_sev(finding.severity)

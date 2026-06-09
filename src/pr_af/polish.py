@@ -8,10 +8,12 @@ On any per-comment failure, the original body is kept.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .runtime_config import get_ai_kwargs
-from .schemas.output import GitHubComment
+
+if TYPE_CHECKING:
+    from .schemas.output import GitHubComment
 
 
 _POLISH_SYSTEM = (

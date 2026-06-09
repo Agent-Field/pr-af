@@ -18,21 +18,6 @@ if TYPE_CHECKING:
     from .schemas.input import ReviewInput
 
 
-class PhaseProviderConfig(BaseModel):
-    """Provider + model for a single phase. Both optional — omitted fields inherit defaults."""
-
-    provider: str | None = None  # opencode | claude-code | None (inherit global)
-    model: str | None = None  # model ID or None (inherit global)
-
-
-class ModelTierConfig(BaseModel):
-    """Concrete provider+model pairs for each tier."""
-
-    budget: PhaseProviderConfig = Field(default_factory=PhaseProviderConfig)
-    mid: PhaseProviderConfig = Field(default_factory=PhaseProviderConfig)
-    premium: PhaseProviderConfig = Field(default_factory=PhaseProviderConfig)
-
-
 class BudgetConfig(BaseModel):
     """Global and per-phase budget caps."""
 
@@ -45,11 +30,9 @@ class BudgetConfig(BaseModel):
         default_factory=lambda: {
             "intake": 0.05,
             "anatomy": 0.15,
-            "research_brief": 0.15,  # Deep-read phase (one .harness() call)
-            "meta_selectors": 0.45,  # 3 lenses × (N scouts + 1 strategist)
+            "meta_selectors": 0.30,  # 3 parallel lenses
             "review": 0.90,  # Most budget goes here
             "adversary": 0.40,  # Parallel batches
-            "gap_finder": 0.20,  # Adversarial gap finder (one .harness() call)
             "cross_ref": 0.30,
             "coverage": 0.10,
             "synthesis": 0.00,  # Code, no LLM cost
@@ -72,9 +55,6 @@ class BudgetConfig(BaseModel):
 
     # Recursive sub-review depth (1=flat, 2=one sub-level, 3=max)
     max_review_depth: int = 2
-
-    # Scout/strategist parallelism (per-lens)
-    max_scouts_per_lens: int = 5
 
 
 class ModelConfig(BaseModel):
@@ -191,6 +171,35 @@ AUTO_DEPTH_THRESHOLDS = {
 }
 
 
+class HITLConfig(BaseModel):
+    """Human-in-the-loop review gate (mirrors SWE-AF's plan-phase approval).
+
+    When enabled, PR-AF does not post its review directly. Instead it summarizes
+    the findings, sends a hax form request to a workspace member, and pauses
+    until they approve a subset, request a re-review with instructions, or
+    reject. Auto-enables when ``HAX_API_KEY`` is set — same trigger SWE-AF uses
+    (``build_hax_client_from_env`` returns ``None`` when it is unset, which the
+    orchestrator treats as "HITL off, post directly").
+    """
+
+    # Mirrors the on/off switch in build_hax_client_from_env: HITL is active
+    # only when HAX_API_KEY is present. Kept here for observability/overrides.
+    enabled: bool = Field(
+        default_factory=lambda: bool(os.getenv("HAX_API_KEY", "").strip())
+    )
+    # Optional routing: which hax workspace user receives the request.
+    approval_user_id: str | None = Field(
+        default_factory=lambda: os.getenv("AGENTFIELD_APPROVAL_USER_ID") or None
+    )
+    # How long the pause stays open before it expires (treated as a reject).
+    # Plain config default — matches SWE-AF's BuildConfig.approval_expires_in_hours
+    # (not env-driven, to avoid introducing PR-AF-specific env var names).
+    approval_expires_in_hours: int = 72
+    # How many "re-review with instructions" rounds before giving up (no post).
+    # Matches SWE-AF's BuildConfig.max_plan_revision_iterations.
+    max_review_revisions: int = 2
+
+
 class ReviewConfig(BaseModel):
     """Top-level configuration combining all sub-configs."""
 
@@ -198,6 +207,7 @@ class ReviewConfig(BaseModel):
     models: ModelConfig = Field(default_factory=ModelConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     comments: CommentConfig = Field(default_factory=CommentConfig)
+    hitl: HITLConfig = Field(default_factory=HITLConfig)
 
     # File ignore patterns (glob)
     ignore_paths: list[str] = Field(
@@ -222,12 +232,6 @@ class ReviewConfig(BaseModel):
 
     # Depth override rules
     depth_rules: list[dict] = Field(default_factory=list)
-
-    # Tier definitions: what budget/mid/premium mean (provider+model for each)
-    tier_config: ModelTierConfig = Field(default_factory=ModelTierConfig)
-
-    # Explicit per-phase provider+model overrides (bypass tier routing)
-    phase_overrides: dict[str, PhaseProviderConfig] = Field(default_factory=dict)
 
     @classmethod
     def from_input(cls, review_input: ReviewInput) -> ReviewConfig:
@@ -256,17 +260,6 @@ class ReviewConfig(BaseModel):
         if hasattr(review_input, "suggestion_mode") and review_input.suggestion_mode:
             config.comments.suggestion_mode = review_input.suggestion_mode
 
-        # Per-phase provider+model overrides from API (highest priority)
-        if hasattr(review_input, "phase_config") and review_input.phase_config:
-            for phase_name, phase_val in review_input.phase_config.items():
-                if isinstance(phase_val, str):
-                    phase_val = {"model": phase_val}
-                if isinstance(phase_val, dict):
-                    config.phase_overrides[phase_name] = PhaseProviderConfig(
-                        provider=phase_val.get("provider"),
-                        model=phase_val.get("model"),
-                    )
-
         return config
 
     @classmethod
@@ -287,16 +280,14 @@ class ReviewConfig(BaseModel):
 
 
 class AIIntegrationConfig(BaseModel):
-    provider: str = Field(
-        default_factory=lambda: os.getenv("PR_AF_PROVIDER", os.getenv("HARNESS_PROVIDER", "opencode"))
-    )
+    provider: str = Field(default_factory=lambda: os.getenv("PR_AF_PROVIDER", "opencode"))
     harness_model: str = Field(
-        default_factory=lambda: os.getenv("PR_AF_MODEL", os.getenv("HARNESS_MODEL", "minimax/minimax-m2.5"))
+        default_factory=lambda: os.getenv("PR_AF_MODEL", "minimax/minimax-m2.5")
     )
     ai_model: str = Field(
         default_factory=lambda: os.getenv(
             "PR_AF_AI_MODEL",
-            os.getenv("AI_MODEL", os.getenv("PR_AF_MODEL", os.getenv("HARNESS_MODEL", "minimax/minimax-m2.5"))),
+            os.getenv("PR_AF_MODEL", "minimax/minimax-m2.5"),
         )
     )
     max_turns: int = Field(default_factory=lambda: int(os.getenv("PR_AF_MAX_TURNS", "50")))
@@ -306,9 +297,7 @@ class AIIntegrationConfig(BaseModel):
     )
     max_backoff_seconds: float = Field(default_factory=lambda: float(os.getenv("PR_AF_AI_MAX_BACKOFF_SECONDS", "8.0")))
     opencode_bin: str = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_BIN", "opencode"))
-    opencode_server: str | None = Field(
-        default_factory=lambda: os.getenv("PR_AF_OPENCODE_SERVER", os.getenv("OPENCODE_SERVER"))
-    )
+    opencode_server: str | None = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_SERVER"))
 
     @classmethod
     def from_env(cls) -> AIIntegrationConfig:
@@ -321,7 +310,6 @@ class AIIntegrationConfig(BaseModel):
             "CLAUDE_CODE_OAUTH_TOKEN",
             "OPENAI_API_KEY",
             "GOOGLE_API_KEY",
-            "GITHUB_TOKEN",
             "GH_TOKEN",
         )
         env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
@@ -329,66 +317,3 @@ class AIIntegrationConfig(BaseModel):
         os.makedirs(xdg, exist_ok=True)
         env["XDG_DATA_HOME"] = xdg
         return env
-
-
-# Phase → tier mapping based on complexity
-_PHASE_TIER_MAP: dict[str, dict[str, str]] = {
-    "cluster_scout": {"trivial": "budget", "standard": "mid", "complex": "mid", "massive": "mid"},
-    "meta_strategist": {"trivial": "mid", "standard": "premium", "complex": "premium", "massive": "premium"},
-    "reviewer": {"trivial": "mid", "standard": "premium", "complex": "premium", "massive": "premium"},
-    "verify_single": {"trivial": "budget", "standard": "mid", "complex": "mid", "massive": "mid"},
-    "adversary": {"trivial": "mid", "standard": "premium", "complex": "premium", "massive": "premium"},
-    "compound_finder": {"trivial": "mid", "standard": "mid", "complex": "premium", "massive": "premium"},
-    "compound_dedup": {"trivial": "budget", "standard": "budget", "complex": "budget", "massive": "budget"},
-    "anatomy": {"trivial": "budget", "standard": "mid", "complex": "premium", "massive": "premium"},
-    "research_brief": {"trivial": "budget", "standard": "mid", "complex": "premium", "massive": "premium"},
-    "gap_finder": {"trivial": "mid", "standard": "premium", "complex": "premium", "massive": "premium"},
-}
-
-
-def resolve_phase_routing(
-    phase: str,
-    intake: object,  # IntakeResult but avoid circular import — duck-typed
-    tier_config: ModelTierConfig,
-) -> PhaseProviderConfig:
-    """Returns the (provider, model) for a phase based on PR complexity + tier config."""
-    from .schemas.pipeline import IntakeResult  # noqa: PLC0415 — runtime import to avoid circular
-
-    assert isinstance(intake, IntakeResult)
-
-    complexity = intake.complexity
-    tier_map = _PHASE_TIER_MAP.get(phase)
-    if not tier_map:
-        return PhaseProviderConfig()
-
-    tier_name = tier_map.get(complexity, "mid")
-
-    # Contextual upgrades
-    risk_signals = [s.lower() for s in intake.risk_signals]
-    if intake.ai_generated > 0.5 and phase in ("adversary", "reviewer"):
-        tier_name = "premium"
-    if any("security" in s or "auth" in s for s in risk_signals) and phase in ("reviewer", "adversary"):
-        tier_name = "premium"
-
-    # Resolve tier to concrete provider+model
-    tier_cfg = getattr(tier_config, tier_name, PhaseProviderConfig())
-    return tier_cfg
-
-
-def resolve_all_phase_routing(
-    intake: object,  # IntakeResult but avoid circular import — duck-typed
-    config: ReviewConfig,
-) -> dict[str, PhaseProviderConfig]:
-    """Resolve all phase routings from intake + config. Called once after intake.
-
-    Priority: explicit per-phase override > tier-based routing.
-    """
-    phases = list(_PHASE_TIER_MAP.keys())
-    routing: dict[str, PhaseProviderConfig] = {}
-    for phase in phases:
-        # Explicit per-phase override takes priority
-        if phase in config.phase_overrides:
-            routing[phase] = config.phase_overrides[phase]
-        else:
-            routing[phase] = resolve_phase_routing(phase, intake, config.tier_config)
-    return routing

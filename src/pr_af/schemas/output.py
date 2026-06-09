@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .severity import Severity  # noqa: TC001 - runtime-needed pydantic field type
+
 
 class ScoredFinding(BaseModel):
     """A finding after scoring, dedup, and line mapping."""
@@ -19,7 +21,7 @@ class ScoredFinding(BaseModel):
     line_end: int
     diff_line: int | None = None  # Line number in the diff (for GitHub API)
     diff_side: str = "RIGHT"  # LEFT (deletion) or RIGHT (addition)
-    severity: str  # critical | important | suggestion | nitpick
+    severity: Severity  # critical | important | suggestion | nitpick (normalized)
     title: str
     body: str
     suggestion: str | None = None

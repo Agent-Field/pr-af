@@ -19,19 +19,12 @@ services:
     ports:
       - "8004:8004"
     environment:
-      - PR_AF_NODE_ID=${PR_AF_NODE_ID:-pr-af}
-      - AGENTFIELD_SERVER=${AGENTFIELD_SERVER:-http://agentfield:8080}
+      - AGENTFIELD_SERVER=http://agentfield:8080
       - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
-      - AGENT_CALLBACK_URL=${AGENT_CALLBACK_URL:-http://pr-af:8004}
-      # HARNESS_PROVIDER + HARNESS_MODEL are defaults. Can be overridden
-      # per-call via the provider/harness_model API parameters.
-      - HARNESS_PROVIDER=${HARNESS_PROVIDER:-opencode}
-      - HARNESS_MODEL=${HARNESS_MODEL:-openrouter/minimax/minimax-m2.5}
-      - PR_AF_AI_MODEL=${PR_AF_AI_MODEL:-openrouter/google/gemini-3.1-flash-lite-preview}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
-      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - AGENT_CALLBACK_URL=http://pr-af:8004
+      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-opencode}
+      - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GH_TOKEN=${GH_TOKEN:-}
       - XDG_DATA_HOME=/home/praf/.local/share
       - PR_AF_WORKDIR=/workspaces

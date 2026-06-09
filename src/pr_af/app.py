@@ -24,7 +24,7 @@ _project_root = Path(__file__).resolve().parents[2]
 load_dotenv(_project_root / ".env")
 
 _ai_config = AIIntegrationConfig.from_env()
-NODE_ID = os.getenv("PR_AF_NODE_ID", os.getenv("PR_AF", "pr-af"))
+NODE_ID = os.getenv("NODE_ID", "pr-af")
 HarnessConfig = _agentfield.HarnessConfig
 
 app = Agent(
@@ -59,20 +59,54 @@ def _extract_pr_number(pr_url: str) -> int | None:
     return None
 
 
+def _resolve_budget_caps(
+    max_cost_usd: float | None, max_duration_seconds: int | None
+) -> tuple[float, int]:
+    """Resolve the review budget caps.
+
+    When the caller does not pass an explicit value, fall back to the
+    ``PR_AF_MAX_COST_USD`` / ``PR_AF_MAX_DURATION_SECONDS`` env vars (so the
+    budget can be tuned per deployment without a code change), and finally to
+    the historical defaults (2.0 USD / 300s) when neither is set. An explicit
+    argument always wins over the env var.
+    """
+    if max_cost_usd is None:
+        max_cost_usd = float(os.getenv("PR_AF_MAX_COST_USD", "2.0"))
+    if max_duration_seconds is None:
+        max_duration_seconds = int(os.getenv("PR_AF_MAX_DURATION_SECONDS", "300"))
+    return max_cost_usd, max_duration_seconds
+
+
 def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
     git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
-    subprocess.run(
-        ["git", "-C", target_dir, "fetch", "--depth", "1", "origin", f"pull/{pr_number}/head:pr-review"],
+    # Fetch the PR head into FETCH_HEAD rather than directly into a local
+    # ``pr-review`` branch. When the workspace is reused across reviews, the
+    # previous run leaves ``pr-review`` checked out, and
+    # ``git fetch origin pull/N/head:pr-review`` is *refused* by git
+    # ("refusing to fetch into branch '...' checked out at ..."). That failure
+    # was previously swallowed (capture_output, no return-code check), so every
+    # PR after the first in a workspace's lifetime got reviewed against the
+    # first PR's tree — producing silent "no findings" reviews. Fetching to
+    # FETCH_HEAD always succeeds, and ``checkout -B`` then (re)points
+    # ``pr-review`` at it even when it is the currently checked-out branch.
+    fetch = subprocess.run(
+        ["git", "-C", target_dir, "fetch", "--depth", "1", "origin", f"pull/{pr_number}/head"],
         env=git_env,
         timeout=300,
         capture_output=True,
+        text=True,
     )
-    subprocess.run(
-        ["git", "-C", target_dir, "checkout", "pr-review"],
+    if fetch.returncode != 0:
+        raise ValueError(f"git fetch of PR #{pr_number} head failed: {fetch.stderr.strip()}")
+    checkout = subprocess.run(
+        ["git", "-C", target_dir, "checkout", "-B", "pr-review", "FETCH_HEAD"],
         env=git_env,
         timeout=30,
         capture_output=True,
+        text=True,
     )
+    if checkout.returncode != 0:
+        raise ValueError(f"git checkout of PR #{pr_number} (pr-review) failed: {checkout.stderr.strip()}")
 
 
 def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
@@ -95,7 +129,7 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         os.makedirs(workdir, exist_ok=True)
 
         clone_url = target
-        gh_token = os.getenv("GH_TOKEN") or os.getenv("GITHUB_TOKEN", "")
+        gh_token = os.getenv("GH_TOKEN", "")
         if gh_token and clone_url.startswith("https://github.com/"):
             clone_url = clone_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
 
@@ -110,12 +144,6 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
                 capture_output=True,
             )
         else:
-            # Stale non-git directory left over from a previous failed run can
-            # exist when CI was killed mid-clone. Clear it so `git clone` works.
-            if os.path.isdir(target_dir):
-                import shutil
-
-                shutil.rmtree(target_dir, ignore_errors=True)
             # Shallow clone: only need enough history to read files, not full history
             clone_cmd = ["git", "clone", "--depth", "1", "--no-tags", clone_url, target_dir]
             # If we know the PR number, skip default branch checkout — we'll fetch the PR ref
@@ -156,8 +184,8 @@ async def review(
     base_ref: str | None = None,
     head_ref: str | None = None,
     depth: str = "auto",
-    max_cost_usd: float = 2.0,
-    max_duration_seconds: int = 300,
+    max_cost_usd: float | None = None,
+    max_duration_seconds: int | None = None,
     focus: str = "auto",
     ignore_paths: list[str] | None = None,
     hints: list[str] | None = None,
@@ -169,34 +197,15 @@ async def review(
     dry_run: bool = False,
     post_pr_number: int | None = None,
     suggestion_mode: str = "comment",
-    provider: str | None = None,
-    harness_model: str | None = None,
-    ai_model: str | None = None,
-    phase_config: dict[str, dict[str, str] | str] | None = None,
-    tier_config: dict[str, dict[str, str | None]] | None = None,
 ) -> dict[str, object]:
-    # Runtime provider/model override via contextvars — concurrent-safe.
-    # harness_model: model ID for the harness provider (e.g., "claude-sonnet-4-6" for claude-code)
-    # ai_model: model ID for .ai() calls via litellm (e.g., "anthropic/claude-sonnet-4-6")
-    # When ai_model is not set, .ai() uses the container's default (from env vars).
-    from .runtime_config import set_runtime_overrides
-
-    if provider or harness_model or ai_model:
-        set_runtime_overrides(
-            provider=provider,
-            harness_model=harness_model,
-            ai_model=ai_model,
-        )
-        print(
-            f"[PR-AF] Runtime override: provider={provider}, "
-            f"harness_model={harness_model}, ai_model={ai_model}",
-            flush=True,
-        )
     print(
         f"[PR-AF DEBUG] review() called with pr_url={pr_url!r}, "
         f"diff_text={'<set>' if diff_text else None}, repo_path={repo_path!r}, "
         f"depth={depth!r}, dry_run={dry_run!r}",
         flush=True,
+    )
+    max_cost_usd, max_duration_seconds = _resolve_budget_caps(
+        max_cost_usd, max_duration_seconds
     )
     review_input = ReviewInput(
         pr_url=pr_url,
@@ -218,23 +227,11 @@ async def review(
         dry_run=dry_run,
         post_pr_number=post_pr_number,
         suggestion_mode=suggestion_mode,
-        phase_config=phase_config,
     )
     resolved_repo_path = _resolve_repo(review_input.repo_path, review_input.pr_url)
     if not review_input.repo_path:
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
     config = ReviewConfig.from_input(review_input)
-    # Apply tier_config if provided via API
-    if tier_config:
-        from .config import ModelTierConfig, PhaseProviderConfig
-        for tier_name in ("budget", "mid", "premium"):
-            if tier_name in tier_config:
-                tc = tier_config[tier_name]
-                if isinstance(tc, dict):
-                    setattr(config.tier_config, tier_name, PhaseProviderConfig(
-                        provider=tc.get("provider"),
-                        model=tc.get("model"),
-                    ))
     orchestrator = ReviewOrchestrator(app=app, input=review_input, config=config)
     try:
         result = await orchestrator.run()
@@ -274,7 +271,7 @@ async def _fire_review(
     input_payload: dict[str, object] = {
         "pr_url": pr_url,
         "depth": "standard",
-        "dry_run": True,
+        "dry_run": False,
     }
     if hints:
         input_payload["hints"] = hints
@@ -282,7 +279,7 @@ async def _fire_review(
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                f"{_CP_URL}/api/v1/execute/async/{NODE_ID}.review",
+                f"{_CP_URL}/api/v1/execute/async/pr-af.review",
                 content=body,
                 headers={"Content-Type": "application/json"},
             )

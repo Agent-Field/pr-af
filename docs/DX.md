@@ -33,7 +33,7 @@ POST /api/v1/execute/async/pr-af.review
 - Configurable: `--clone` (full clone), `--shallow` (depth=1), `--no-clone` (API only)
 
 **Authentication:**
-- `GITHUB_TOKEN` env var (personal access token or GitHub App installation token)
+- `GH_TOKEN` env var (personal access token or GitHub App installation token)
 - GitHub App: preferred for CI/CD (fine-grained permissions, higher rate limits)
 
 **Best for:** CI/CD pipelines, GitHub Action triggers, full-featured review.
@@ -369,7 +369,7 @@ comments:
 
 | Variable | Required | Description |
 |---|---|---|
-| `GITHUB_TOKEN` | Yes (for GitHub output) | GitHub PAT or App installation token |
+| `GH_TOKEN` | Yes (for GitHub output) | GitHub PAT or App installation token |
 | `AGENTFIELD_API_KEY` | Yes | AgentField platform API key |
 | `OPENROUTER_API_KEY` | Yes | LLM provider API key |
 | `PR_AF_CONFIG` | No | Path to config file (default: `.pr-af.yml`) |

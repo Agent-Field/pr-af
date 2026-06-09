@@ -14,8 +14,8 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 
 RUN pip install --no-cache-dir --prefix=/install \
-    "agentfield" \
-    "claude-agent-sdk" \
+    "agentfield>=0.1.84" \
+    "hax-sdk>=0.2.4" \
     "pydantic>=2.0" \
     "httpx>=0.27" \
     "python-dotenv>=1.0" \
@@ -30,11 +30,12 @@ FROM python:3.11-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AGENTFIELD_SERVER=http://agentfield:8080 \
-    HARNESS_PROVIDER=claude-code \
-    HARNESS_MODEL=claude-sonnet-4-6 \
+    PR_AF_PROVIDER=opencode \
+    PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5 \
     PORT=8004 \
     HOME=/home/praf \
     PYTHONPATH=/app/src \
+    PATH=/home/praf/.opencode/bin:${PATH} \
     XDG_DATA_HOME=/home/praf/.local/share \
     PR_AF_WORKDIR=/workspaces
 
@@ -43,22 +44,21 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    git \
-    nodejs \
-    npm && \
+    git && \
     groupadd --gid 10001 praf && \
     useradd --uid 10001 --gid praf --create-home --home-dir /home/praf --shell /bin/sh praf && \
-    npm install -g @anthropic-ai/claude-code && \
     su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
     mkdir -p /workspaces /home/praf/.local/share && \
     chown -R praf:praf /app /workspaces /home/praf && \
     rm -rf /var/lib/apt/lists/*
 
-ENV PATH=/home/praf/.opencode/bin:/usr/local/bin:${PATH}
+RUN mkdir -p /home/praf/.config/opencode && \
+    echo '{"$schema":"https://opencode.ai/config.json","model":"openrouter/moonshotai/kimi-k2.5","small_model":"openrouter/moonshotai/kimi-k2.5","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"},"models":{"moonshotai/kimi-k2.5":{}}}}}' \
+    > /home/praf/.config/opencode/opencode.json && \
+    chown -R praf:praf /home/praf/.config
 
 COPY --from=builder /install /usr/local
 COPY src/ /app/src/
-COPY entrypoint.sh /app/entrypoint.sh
 
 USER praf
 
@@ -67,5 +67,4 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8004/health || exit 1
 
-ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "-m", "pr_af.app"]

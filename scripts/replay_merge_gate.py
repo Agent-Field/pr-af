@@ -31,7 +31,6 @@ import httpx  # noqa: E402
 from pr_af.merge_gate import _MERGE_GATE_SYSTEM, _parse_verdict  # noqa: E402
 from pr_af.schemas.output import ScoredFinding  # noqa: E402
 
-
 OR_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
 

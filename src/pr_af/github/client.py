@@ -85,7 +85,7 @@ def _is_github_app_configured() -> bool:
 
 class GitHubClient:
     def __init__(self, token: str | None = None):
-        self.token = token or os.getenv("GITHUB_TOKEN", "")
+        self.token = token or os.getenv("GH_TOKEN", "")
         self.base_url = "https://api.github.com"
         self._use_app_auth = _is_github_app_configured()
 
@@ -262,7 +262,7 @@ class GitHubClient:
         if self._use_app_auth:
             token = await _get_installation_token(owner, repo)
         else:
-            token = os.getenv("GH_TOKEN") or self.token or os.getenv("GITHUB_TOKEN", "")
+            token = os.getenv("GH_TOKEN") or self.token
         if not token:
             raise ValueError("GitHub token is required for clone_repo")
 

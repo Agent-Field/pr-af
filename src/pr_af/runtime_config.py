@@ -6,7 +6,11 @@ shared mutable state. Set once at the start of review(), read by every
 
 Usage in review():
     from pr_af.runtime_config import set_runtime_overrides
-    set_runtime_overrides(provider="claude-code", harness_model="claude-sonnet-4-6", ai_model="anthropic/claude-sonnet-4-6")
+    set_runtime_overrides(
+        provider="claude-code",
+        harness_model="claude-sonnet-4-6",
+        ai_model="anthropic/claude-sonnet-4-6",
+    )
 
 Usage in reasoner functions:
     from pr_af.runtime_config import get_harness_kwargs, get_ai_kwargs

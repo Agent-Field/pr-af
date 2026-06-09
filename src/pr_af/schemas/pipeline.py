@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from .severity import Severity  # noqa: TC001 - runtime-needed pydantic field type
+
 # ---------------------------------------------------------------------------
 # Phase 1 → Phase 3: Intake Result
 # Format: Hybrid (structured fields for routing + pr_summary string for LLM context)
@@ -169,7 +171,7 @@ class ReviewFinding(BaseModel):
     line_start: int
     line_end: int
     hunk_context: str = ""  # Code context around the finding
-    severity: str  # critical | important | suggestion | nitpick
+    severity: Severity  # critical | important | suggestion | nitpick (normalized)
     title: str
     body: str  # Detailed explanation (string — appears in GitHub comment)
     suggestion: str | None = None  # Concrete fix (code block)
@@ -191,7 +193,7 @@ class CrossRefInteraction(BaseModel):
     finding_b_title: str
     interaction_type: str  # compound_risk | assumption_violation | consistency_gap
     description: str  # How they interact
-    combined_severity: str  # The severity of the combined issue
+    combined_severity: Severity  # The severity of the combined issue (normalized)
     file_paths: list[str]
     line_references: list[str] = Field(default_factory=list)
 
