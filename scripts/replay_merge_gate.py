@@ -156,10 +156,13 @@ async def _run(
         cost = float(((usage or {}).get("cost_details") or {}).get("upstream_inference_cost", 0.0))
         total_cost += cost
 
+    avg_per_finding = total_cost / max(len(findings), 1)
     print("=" * 70)
+    print(f"  Model:                             {model}")
     print(f"  Blocking (would REQUEST_CHANGES): {len(blocking)}")
     print(f"  Advisory (non-blocking comment):  {len(advisory)}")
-    print(f"  Approx upstream cost:              ${total_cost:.4f}")
+    print(f"  Upstream cost (gate only):         ${total_cost:.4f}")
+    print(f"  Per-finding gate cost:             ${avg_per_finding:.4f}")
     print("=" * 70)
     print()
 
