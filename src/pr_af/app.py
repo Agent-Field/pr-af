@@ -110,6 +110,12 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
                 capture_output=True,
             )
         else:
+            # Stale non-git directory left over from a previous failed run can
+            # exist when CI was killed mid-clone. Clear it so `git clone` works.
+            if os.path.isdir(target_dir):
+                import shutil
+
+                shutil.rmtree(target_dir, ignore_errors=True)
             # Shallow clone: only need enough history to read files, not full history
             clone_cmd = ["git", "clone", "--depth", "1", "--no-tags", clone_url, target_dir]
             # If we know the PR number, skip default branch checkout — we'll fetch the PR ref

@@ -39,9 +39,22 @@ def score_findings(
 
     scored: list[ScoredFinding] = []
 
+    # Severity normalization — reviewer LLMs sometimes emit uppercase or aliases
+    # like "high"/"medium". Map them to the canonical lowercase rubric so downstream
+    # code (emoji lookup, by_severity counting, severity_rank gates) doesn't break.
+    _ALIASES = {
+        "critical": "critical", "high": "critical", "blocker": "critical",
+        "important": "important", "medium": "important", "major": "important",
+        "suggestion": "suggestion", "minor": "suggestion", "low": "suggestion",
+        "nitpick": "nitpick", "info": "nitpick", "trivia": "nitpick", "trivial": "nitpick",
+    }
+    def _norm_sev(s: str) -> str:
+        return _ALIASES.get((s or "").strip().lower(), "suggestion")
+
     for finding in findings:
+        norm_sev = _norm_sev(finding.severity)
         # Base weight from severity
-        base = config.base_weights.get(finding.severity, 0.3)
+        base = config.base_weights.get(norm_sev, 0.3)
 
         # Confidence-weighted base
         score = base * finding.confidence
@@ -70,7 +83,7 @@ def score_findings(
             active_multipliers.append("blast_radius_high")
 
         # Confidence threshold filtering
-        min_confidence = config.confidence_thresholds.get(finding.severity, 0.5)
+        min_confidence = config.confidence_thresholds.get(norm_sev, 0.5)
         if finding.confidence < min_confidence:
             continue  # Drop low-confidence findings
 
@@ -82,7 +95,7 @@ def score_findings(
                 file_path=finding.file_path,
                 line_start=finding.line_start,
                 line_end=finding.line_end,
-                severity=finding.severity,
+                severity=norm_sev,
                 title=finding.title,
                 body=finding.body,
                 suggestion=finding.suggestion,
