@@ -122,19 +122,19 @@ def score_findings(
 
 
 def determine_review_event(findings: list[ScoredFinding]) -> str:
-    """Determine the GitHub review event based on findings.
+    """Determine the GitHub review event based on the merge-gate verdict.
+
+    Decoupled from severity. The merge-gate is the single source of truth
+    for "must fix before merging". Severity remains the reviewer's badness
+    label and drives sorting/display, not the event.
 
     Returns: APPROVE | COMMENT | REQUEST_CHANGES
     """
-    severities = {f.severity for f in findings}
-
-    if "critical" in severities:
+    if any(f.blocking for f in findings):
         return "REQUEST_CHANGES"
-    if "important" in severities:
-        return "COMMENT"
     if findings:
-        return "APPROVE"  # Only suggestions/nitpicks → approve with comments
-    return "APPROVE"  # Clean → approve
+        return "COMMENT"  # Advisory-only findings: surface, but don't gate merge.
+    return "APPROVE"
 
 
 def deduplicate_exact(findings: list[ReviewFinding]) -> list[ReviewFinding]:

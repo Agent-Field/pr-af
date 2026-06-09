@@ -28,6 +28,10 @@ class ScoredFinding(BaseModel):
     tags: list[str] = Field(default_factory=list)
     score: float = 0.0
     active_multipliers: list[str] = Field(default_factory=list)
+    # Orthogonal release-blocker axis. Severity = "how bad", blocking = "must fix before merge".
+    # Default False so unreviewed findings never falsely block merge.
+    blocking: bool = False
+    blocking_reason: str = ""
 
 
 class ReviewSummary(BaseModel):
@@ -35,6 +39,8 @@ class ReviewSummary(BaseModel):
 
     total_findings: int = 0
     by_severity: dict[str, int] = Field(default_factory=dict)
+    blocking_count: int = 0
+    advisory_count: int = 0
     dimensions_run: int = 0
     cross_ref_interactions: int = Field(
         default=0,

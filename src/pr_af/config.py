@@ -147,6 +147,13 @@ class CommentConfig(BaseModel):
     # failure, the original body is kept.
     polish_enabled: bool = True
 
+    # Parallel `.ai()` merge-gate pass: classifies each finding as blocking
+    # vs non-blocking using a tight release-manager bar (build/security/data
+    # loss/contract break/regression only). Findings that don't meet the bar
+    # stay as advisory inline comments and never trigger REQUEST_CHANGES.
+    # Default ON for production noise reduction. Failures default to advisory.
+    merge_gate_enabled: bool = True
+
     severity_emojis: dict[str, str] = Field(
         default_factory=lambda: {
             "critical": "🔴",

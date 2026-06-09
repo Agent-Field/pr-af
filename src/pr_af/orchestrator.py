@@ -1198,8 +1198,10 @@ class ReviewOrchestrator:
         severity_rank = {"nitpick": 0, "suggestion": 1, "important": 2, "critical": 3}
         min_rank = severity_rank.get(self.config.comments.min_severity, 1)
 
-        comments: list[GitHubComment] = []
         filtered_for_comments: list[ScoredFinding] = []
+        # Parallel arrays: comment_findings[i] is the finding for comment_pairs[i].
+        comment_findings: list[ScoredFinding] = []
+        comment_pairs: list[GitHubComment] = []
         skipped_severity = 0
         skipped_path = 0
         skipped_range = 0
@@ -1217,30 +1219,67 @@ class ReviewOrchestrator:
             if not in_range:
                 skipped_range += 1
                 continue
-            comments.append(
+            comment_findings.append(finding)
+            comment_pairs.append(
                 GitHubComment(
                     path=norm_path,
                     line=finding.line_start,
                     side=finding.diff_side,
-                    body=self._format_comment_body(finding),
+                    body="",  # populated after polish + gate
                 )
             )
         print(
             f"[PR-AF] Comment filtering: {len(scored_findings)} scored → "
             f"{len(filtered_for_comments)} pass severity (skipped {skipped_severity}) → "
-            f"{len(filtered_for_comments) - skipped_path - skipped_range} in-diff "
-            f"(skipped {skipped_path} path, {skipped_range} range) → "
-            f"{len(comments)} inline comments",
+            f"{len(comment_pairs)} in-diff "
+            f"(skipped {skipped_path} path, {skipped_range} range)",
             flush=True,
         )
 
-        comments = comments[: self.config.comments.max_comments]
-        review_event = determine_review_event(filtered_for_comments)
+        # Cap inline-comment count BEFORE merge-gate to keep gate cost bounded.
+        # The summary still references the full filtered_for_comments list.
+        max_comments = self.config.comments.max_comments
+        if len(comment_pairs) > max_comments:
+            comment_findings = comment_findings[:max_comments]
+            comment_pairs = comment_pairs[:max_comments]
 
-        if self.config.comments.polish_enabled and comments:
+        # Phase 1: parallel pass — merge-gate (over ALL filtered findings) and
+        # polish (over the in-diff inline-comment bodies). Independent of each
+        # other, fired concurrently so the slower one bounds the wall-clock.
+        gate_task: asyncio.Task[list[ScoredFinding]] | None = None
+        polish_task: asyncio.Task[list[GitHubComment]] | None = None
+
+        # Pre-fill comment bodies with the unpolished format so a polish failure
+        # still produces a valid review.
+        for f, c in zip(comment_findings, comment_pairs, strict=True):
+            c.body = self._format_comment_body(f)
+
+        if self.config.comments.merge_gate_enabled and filtered_for_comments:
+            from .merge_gate import classify_findings
+
+            gate_task = asyncio.create_task(classify_findings(self.app, filtered_for_comments))
+
+        if self.config.comments.polish_enabled and comment_pairs:
             from .polish import polish_comments
 
-            comments = await polish_comments(self.app, comments)
+            polish_task = asyncio.create_task(polish_comments(self.app, comment_pairs))
+
+        if gate_task is not None:
+            filtered_for_comments = await gate_task
+        if polish_task is not None:
+            comment_pairs = await polish_task
+
+        # Phase 2: re-decorate comment bodies with the non-blocking badge using
+        # the gate verdict. Look up each comment-finding by id in the gated list
+        # so we don't depend on list ordering being preserved by gather.
+        gated_by_id: dict[str, ScoredFinding] = {f.id: f for f in filtered_for_comments}
+        decorated: list[GitHubComment] = []
+        for f, c in zip(comment_findings, comment_pairs, strict=True):
+            gated = gated_by_id.get(f.id, f)
+            decorated.append(c.model_copy(update={"body": self._decorate_with_blocking(gated, c.body)}))
+        comments = decorated
+
+        review_event = determine_review_event(filtered_for_comments)
 
         summary_body = self._format_summary(
             findings=filtered_for_comments,
@@ -1298,13 +1337,24 @@ class ReviewOrchestrator:
             except Exception as exc:
                 print(f"[PR-AF] Failed to post review: {exc}", flush=True)
 
+        # Propagate gate verdict back onto the canonical scored_findings list so
+        # downstream consumers (JSON/SARIF/UI) see `blocking` populated.
+        gated_by_id_full: dict[str, ScoredFinding] = {f.id: f for f in filtered_for_comments}
+        scored_findings = [
+            (gated_by_id_full[f.id] if f.id in gated_by_id_full else f) for f in scored_findings
+        ]
+
         by_severity: dict[str, int] = {}
         for finding in scored_findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
+        blocking_total = sum(1 for f in scored_findings if f.blocking)
+        advisory_total = len(scored_findings) - blocking_total
 
         summary = ReviewSummary(
             total_findings=len(scored_findings),
             by_severity=by_severity,
+            blocking_count=blocking_total,
+            advisory_count=advisory_total,
             dimensions_run=len(plan.dimensions),
             cross_ref_interactions=self.cross_ref_count,
             adversary_challenged=self.adversary_challenged_count,
@@ -1711,43 +1761,59 @@ class ReviewOrchestrator:
             )
         return dimensions
 
-    def _format_comment_body(self, finding: ScoredFinding) -> str:
-        emoji = self.config.comments.severity_emojis.get(finding.severity, "")
-        severity_label = finding.severity.upper()
-        lines = [f"{emoji} **[{severity_label}] {finding.title}**", ""]
+    def _decorate_with_blocking(self, finding: ScoredFinding, body: str) -> str:
+        """Wrap the comment in a GitHub-native callout so authors see merge-status at a glance.
 
-        lines.append(finding.body)
+        Uses Markdown alerts (`> [!CAUTION]` red bar / `> [!NOTE]` blue bar)
+        which render with strong visual color in GitHub's PR UI. This is more
+        intentional than a custom emoji badge — the alert itself signals
+        "act on this" vs "informational" before any text is read.
+        """
+
+        if finding.blocking:
+            header = "> [!CAUTION]\n> **Must-fix before merge.**"
+            if finding.blocking_reason:
+                header += f" {finding.blocking_reason}"
+        else:
+            header = "> [!NOTE]\n> **Advisory — non-blocking.** Safe to merge and address in a follow-up."
+            if finding.blocking_reason:
+                header += f"\n>\n> _Why non-blocking:_ {finding.blocking_reason}"
+        return f"{header}\n\n{body}"
+
+    def _format_comment_body(self, finding: ScoredFinding) -> str:
+        """Inline comment body.
+
+        Designed for skim-reading. The callout (added later by
+        `_decorate_with_blocking`) tells the author what to DO. This function
+        renders WHAT the issue is. The title is bold and prominent; severity
+        sits as a small subtitle so it doesn't shout when the gate already
+        said "advisory".
+        """
+
+        emoji = self.config.comments.severity_emojis.get(finding.severity, "")
+        lines = [f"**{finding.title}**", "", finding.body.strip()]
 
         if finding.evidence:
-            lines.extend(["", "---", ""])
-            evidence_lines = finding.evidence.strip().splitlines()
-            for ev_line in evidence_lines:
+            lines.extend(["", "<details><summary>Evidence</summary>", ""])
+            for ev_line in finding.evidence.strip().splitlines():
                 lines.append(f"> {ev_line}")
+            lines.extend(["", "</details>"])
 
         if self.config.comments.include_suggestions and finding.suggestion:
             suggestion_text = finding.suggestion.strip()
             if self.config.comments.suggestion_mode == "code":
                 lines.extend(["", "```suggestion", suggestion_text, "```"])
             else:
-                lines.extend(
-                    [
-                        "",
-                        "**💡 Suggested Fix**",
-                        "",
-                        suggestion_text,
-                    ]
-                )
+                lines.extend(["", "**Suggested fix.** " + suggestion_text])
 
-        meta_parts: list[str] = []
+        # Subtitle line — small grey chips for severity, dimension, confidence.
+        meta_parts: list[str] = [f"{emoji} reviewer: {finding.severity}"]
         if self.config.comments.include_dimension_attribution:
             meta_parts.append(f"`{finding.dimension_name}`")
         if self.config.comments.include_confidence:
-            pct = int(finding.confidence * 100)
-            meta_parts.append(f"confidence {pct}%")
-        if meta_parts:
-            lines.extend(["", "---", f"*{' · '.join(meta_parts)}*"])
-
-        lines.extend(["", "<sub>🤖 Reviewed by [AgentField PR-AF](https://github.com/Agent-Field/pr-af)</sub>"])
+            meta_parts.append(f"confidence {int(finding.confidence * 100)}%")
+        meta_parts.append("[PR-AF](https://github.com/Agent-Field/pr-af)")
+        lines.extend(["", f"<sub>{' · '.join(meta_parts)}</sub>"])
 
         return "\n".join(lines).strip()
 
@@ -1792,23 +1858,33 @@ class ReviewOrchestrator:
         by_severity: dict[str, int] = {"critical": 0, "important": 0, "suggestion": 0, "nitpick": 0}
         for finding in findings:
             by_severity[finding.severity] = by_severity.get(finding.severity, 0) + 1
+        blocking_count = sum(1 for f in findings if f.blocking)
+        advisory_count = len(findings) - blocking_count
         emojis = self.config.comments.severity_emojis
         duration = round(time.monotonic() - self.started_at, 1)
 
-        rating = self._compute_rating(by_severity, len(findings))
+        rating = self._compute_rating_v2(blocking_count, advisory_count, len(findings))
+
+        # Headline: lead with the merge verdict so authors see "go/no-go" first.
+        if blocking_count == 0 and advisory_count == 0:
+            verdict_line = "> ✅ **Safe to merge.** No findings from automated review."
+        elif blocking_count == 0:
+            verdict_line = (
+                f"> ✅ **Safe to merge.** {advisory_count} advisory note"
+                f"{'s' if advisory_count != 1 else ''} below — non-blocking, "
+                "safe to address in a follow-up."
+            )
+        else:
+            verdict_line = (
+                f"> 🚫 **Merge blocked.** {blocking_count} must-fix issue"
+                f"{'s' if blocking_count != 1 else ''} found by automated review. "
+                "See must-fix section below."
+            )
 
         lines: list[str] = [
             f"## {rating['emoji']} PR-AF Review — **{rating['label']}**",
             "",
-            "*Automated multi-agent code review · "
-            "[PR-AF](https://github.com/Agent-Field/pr-af) built with "
-            "[AgentField](https://github.com/Agent-Field/agentfield)*",
-            "",
-            f"> **{len(findings)} findings** · "
-            f"{emojis.get('critical', '')} {by_severity.get('critical', 0)} critical · "
-            f"{emojis.get('important', '')} {by_severity.get('important', 0)} important · "
-            f"{emojis.get('suggestion', '')} {by_severity.get('suggestion', 0)} suggestions · "
-            f"{emojis.get('nitpick', '')} {by_severity.get('nitpick', 0)} nitpicks",
+            verdict_line,
             "",
         ]
 
@@ -1827,44 +1903,27 @@ class ReviewOrchestrator:
 
         lines.extend(self._build_key_findings(findings))
 
-        if findings:
-            lines.extend(
-                [
-                    "<details>",
-                    "<summary><b>All Findings by Severity</b></summary>",
-                    "",
-                ]
-            )
-            for sev in ("critical", "important", "suggestion", "nitpick"):
-                sev_findings = [f for f in findings if f.severity == sev]
-                if not sev_findings:
-                    continue
-                lines.append(f"#### {emojis.get(sev, '')} {sev.title()} ({len(sev_findings)})")
-                lines.append("")
-                for f in sev_findings:
-                    path_ref = f"`{self._normalize_path(f.file_path)}:{f.line_start}`" if f.file_path else ""
-                    lines.append(f"- **{f.title}** {path_ref}")
-                lines.append("")
-            lines.extend(["</details>", ""])
+        # Single combined details block: gate explainer + pipeline internals,
+        # collapsed by default so the merge verdict stays the visual focal point.
+        lines.extend(self._build_collapsible_internals(findings, plan, intake, duration, by_severity, emojis))
 
-        lines.extend(self._build_review_details(findings, plan))
-
-        lines.extend(self._build_pipeline_stats(intake, duration))
-
-        lines.append(f"Review ID: `{self.review_id}`")
-
+        # Compact one-line footer: severity reference + cost/duration + branding.
+        # Replaces the previous multi-block stats card + review-id line + badge.
+        cost_display = f"${self.total_cost_usd:.4f}" if self.total_cost_usd > 0 else "$0"
+        sev_chips = (
+            f"{emojis.get('critical', '')} {by_severity.get('critical', 0)} crit · "
+            f"{emojis.get('important', '')} {by_severity.get('important', 0)} imp · "
+            f"{emojis.get('suggestion', '')} {by_severity.get('suggestion', 0)} sug · "
+            f"{emojis.get('nitpick', '')} {by_severity.get('nitpick', 0)} nit"
+        )
         lines.extend(
             [
-                "",
-                "<br>",
-                '<div align="right">',
-                '  <a href="https://github.com/Agent-Field/pr-af">',
-                "    <img"
-                ' src="https://img.shields.io/badge/Powered_by-AgentField-6366f1'
-                '?style=flat-square&logo=github"'
-                ' alt="AgentField PR-AF"/>',
-                "  </a>",
-                "</div>",
+                "---",
+                f"<sub>By reviewer severity: {sev_chips} · "
+                f"{duration}s · {cost_display} · "
+                f"Review `{self.review_id}` · "
+                "[PR-AF](https://github.com/Agent-Field/pr-af) on "
+                "[AgentField](https://github.com/Agent-Field/agentfield)</sub>",
             ]
         )
 
@@ -1888,151 +1947,150 @@ class ReviewOrchestrator:
             return {"emoji": "🟡", "label": "Mostly Good", "grade": "B+"}
         return {"emoji": "🟢", "label": "Looks Good — Minor Suggestions", "grade": "A-"}
 
+    def _compute_rating_v2(self, blocking: int, advisory: int, total: int) -> dict[str, str]:
+        """Blocking-driven rating. The merge gate is the source of truth for
+        whether the PR is safe to ship. Severity drives the secondary breakdown.
+        """
+
+        if total == 0:
+            return {"emoji": "🟢", "label": "Looks Good", "grade": "A"}
+        if blocking >= 3:
+            return {"emoji": "🔴", "label": "Multiple Merge-Blockers", "grade": "D"}
+        if blocking >= 1:
+            return {"emoji": "🔴", "label": "Merge Blocked — Must-Fix Found", "grade": "C"}
+        if advisory >= 10:
+            return {"emoji": "🟢", "label": "Safe to Merge — Many Advisories", "grade": "B"}
+        if advisory >= 3:
+            return {"emoji": "🟢", "label": "Safe to Merge — Advisories Only", "grade": "B+"}
+        return {"emoji": "🟢", "label": "Safe to Merge — Minor Advisories", "grade": "A-"}
+
     def _build_key_findings(self, findings: list[ScoredFinding]) -> list[str]:
         if not findings:
-            return ["**No issues found.** This PR looks clean across all review dimensions.", ""]
+            return []
+
+        blocking = [f for f in findings if f.blocking]
+        advisory = [f for f in findings if not f.blocking]
 
         lines: list[str] = []
-        by_sev: dict[str, list[ScoredFinding]] = {}
-        for f in findings:
-            by_sev.setdefault(f.severity, []).append(f)
+        emojis = self.config.comments.severity_emojis
 
-        blocking = by_sev.get("critical", []) + by_sev.get("important", [])
-        non_blocking = by_sev.get("suggestion", []) + by_sev.get("nitpick", [])
-
-        lines.append("### Key Findings")
-        lines.append("")
-
+        # Must-fix block: prominent, one bullet per finding with reason + location.
+        # Truncate at 8 to keep the summary scannable.
         if blocking:
-            lines.append(f"**{len(blocking)} issue(s) should be addressed before merge:**")
+            lines.append(f"### 🚫 Must-fix before merge ({len(blocking)})")
             lines.append("")
             for f in blocking[:8]:
-                emoji = self.config.comments.severity_emojis.get(f.severity, "")
-                path_ref = f" (`{self._normalize_path(f.file_path)}:{f.line_start}`)" if f.file_path else ""
-                lines.append(f"- {emoji} **{f.title}**{path_ref} — {self._first_sentence(f.body)}")
+                sev_emoji = emojis.get(f.severity, "")
+                path_ref = self._loc(f)
+                reason = f.blocking_reason or self._first_sentence(f.body)
+                lines.append(f"- {sev_emoji} **{f.title}** — {path_ref}")
+                lines.append(f"  > {reason}")
             if len(blocking) > 8:
-                lines.append(f"- … and {len(blocking) - 8} more (see All Findings by Severity)")
+                lines.append(f"- _…and {len(blocking) - 8} more must-fix issues — see inline comments_")
             lines.append("")
 
-        if non_blocking:
-            lines.append(f"**{len(non_blocking)} suggestion(s) and style note(s):**")
-            lines.append("")
-            for f in non_blocking[:5]:
-                emoji = self.config.comments.severity_emojis.get(f.severity, "")
-                path_ref = f" (`{self._normalize_path(f.file_path)}:{f.line_start}`)" if f.file_path else ""
-                lines.append(f"- {emoji} {f.title}{path_ref}")
-            if len(non_blocking) > 5:
-                lines.append(f"- … and {len(non_blocking) - 5} more (see All Findings by Severity)")
-            lines.append("")
-
-        affected_files = sorted({self._normalize_path(f.file_path) for f in findings if f.file_path})
-        if affected_files:
-            lines.append(f"**Files with findings:** {', '.join(f'`{p}`' for p in affected_files[:10])}")
-            if len(affected_files) > 10:
-                lines.append(f" … and {len(affected_files) - 10} more")
-            lines.append("")
-
-        return lines
-
-    def _build_review_details(self, findings: list[ScoredFinding], plan: ReviewPlan | None) -> list[str]:
-        lines: list[str] = []
-        detail_parts: list[str] = []
-
-        if plan and plan.dimensions:
-            detail_parts.append(f"**Dimensions Analyzed ({len(plan.dimensions)}):**")
-            detail_parts.append("")
-            for dim in plan.dimensions:
-                detail_parts.append(f"- **{dim.name}** — {len(dim.target_files)} file(s)")
-            detail_parts.append("")
-
-        if self.meta_selector_results:
-            detail_parts.append(f"**Meta-Dimension Lenses ({len(self.meta_selector_results)}):**")
-            detail_parts.append("")
-            for meta in self.meta_selector_results:
-                dim_count = len(meta.dimensions)
-                conf_pct = int(meta.confidence * 100)
-                detail_parts.append(
-                    f"- **{meta.lens.title()}** — {dim_count} dimension(s), {conf_pct}% coverage confidence"
-                )
-            detail_parts.append("")
-
-        sub_review_dims = {f.dimension_name for f in findings if "→" in f.dimension_name}
-        if sub_review_dims:
-            detail_parts.append(f"**Sub-Reviews Spawned ({len(sub_review_dims)} deep-dives):**")
-            detail_parts.append("")
-            for dim_name in sorted(sub_review_dims):
-                count = sum(1 for f in findings if f.dimension_name == dim_name)
-                detail_parts.append(f"- **{dim_name}** ({count} finding(s))")
-            detail_parts.append("")
-
-        if self.cross_ref_count > 0 or self.adversary_confirmed_count > 0 or self.adversary_challenged_count > 0:
-            detail_parts.append("**Cross-Reference & Adversary Analysis:**")
-            detail_parts.append("")
-            if self.cross_ref_count > 0:
-                detail_parts.append(f"- **{self.cross_ref_count}** compound finding(s) synthesized")
-            total_adv = self.adversary_confirmed_count + self.adversary_challenged_count
-            if total_adv > 0:
-                detail_parts.append(
-                    f"- **{total_adv}** finding(s) adversarially tested: "
-                    f"{self.adversary_confirmed_count} confirmed, "
-                    f"{self.adversary_challenged_count} challenged"
-                )
-            detail_parts.append("")
-
-        if detail_parts:
-            lines.extend(
-                [
-                    "<details>",
-                    "<summary><b>Review Process Details</b></summary>",
-                    "",
-                    *detail_parts,
-                    "</details>",
-                    "",
-                ]
+        # Advisory block: collapsed table by default. Keep visual noise low.
+        if advisory:
+            open_attr = "" if blocking else " open"
+            lines.append("<details" + open_attr + ">")
+            lines.append(
+                f"<summary><b>🟢 Advisory ({len(advisory)})</b> — "
+                "non-blocking, safe to address in a follow-up</summary>"
             )
+            lines.append("")
+            lines.append("| | Finding | Location |")
+            lines.append("|---|---|---|")
+            for f in advisory[:30]:
+                sev_emoji = emojis.get(f.severity, "")
+                lines.append(f"| {sev_emoji} | {f.title} | {self._loc(f)} |")
+            if len(advisory) > 30:
+                lines.append(f"| | _…and {len(advisory) - 30} more — see inline comments_ | |")
+            lines.append("")
+            lines.append("</details>")
+            lines.append("")
 
         return lines
 
-    def _build_pipeline_stats(self, intake: IntakeResult | None, duration: float) -> list[str]:
-        cost_display = (
-            f"${self.total_cost_usd:.4f}" if self.total_cost_usd > 0 else "N/A (provider does not report cost)"
+    def _loc(self, f: ScoredFinding) -> str:
+        """Compact file:line reference, or em-dash if unknown."""
+
+        if not f.file_path:
+            return "—"
+        norm = self._normalize_path(f.file_path)
+        if f.line_start > 0:
+            return f"`{norm}:{f.line_start}`"
+        return f"`{norm}`"
+
+    def _build_collapsible_internals(
+        self,
+        findings: list[ScoredFinding],
+        plan: ReviewPlan | None,
+        intake: IntakeResult | None,
+        duration: float,
+        by_severity: dict[str, int],
+        emojis: dict[str, str],
+    ) -> list[str]:
+        """One collapsed block holding the gate explainer + pipeline internals.
+
+        Goal: keep the summary visual focus on the merge verdict. Engineers who
+        want to audit the pipeline can expand — everyone else sees clean output.
+        """
+
+        lines: list[str] = []
+        lines.append("<details>")
+        lines.append("<summary><b>About this review</b> — how the merge-gate works · pipeline internals</summary>")
+        lines.append("")
+        lines.append(
+            "**Merge-gate criteria.** A finding is marked **must-fix** only when it would "
+            "break the build, introduce a security vulnerability reachable from production code, "
+            "cause data loss or corruption, break a public API/CLI/schema contract, or regress "
+            "previously-working behavior. Everything else — code quality, test coverage, "
+            "defensive hardening, style, performance suggestions without a measured impact — "
+            "is surfaced as **advisory** and does not block merge."
         )
-        exhaustion_reason = ""
+        lines.append("")
+
+        # Pipeline counts — compressed to one paragraph instead of multiple cards.
+        pipeline_bits: list[str] = []
+        if plan and plan.dimensions:
+            pipeline_bits.append(f"{len(plan.dimensions)} review dimensions")
+        if self.meta_selector_results:
+            pipeline_bits.append(f"{len(self.meta_selector_results)} lenses")
+        if self.cross_ref_count > 0:
+            pipeline_bits.append(f"{self.cross_ref_count} cross-ref compounds")
+        total_adv = self.adversary_confirmed_count + self.adversary_challenged_count
+        if total_adv > 0:
+            pipeline_bits.append(
+                f"{total_adv} adversarial challenges ({self.adversary_confirmed_count} confirmed)"
+            )
+        if self.coverage_iterations > 0:
+            pipeline_bits.append(f"{self.coverage_iterations} coverage iterations")
+        if self.agent_invocations:
+            pipeline_bits.append(f"{self.agent_invocations} agent invocations")
+        if pipeline_bits:
+            lines.append("**Pipeline.** " + " · ".join(pipeline_bits) + ".")
+            lines.append("")
+
+        if intake:
+            lines.append(
+                f"**Routing.** PR type `{intake.pr_type}` · complexity `{intake.complexity}` · "
+                f"AI-generated probability `{intake.ai_generated:.0%}`."
+            )
+            lines.append("")
+
         if self.budget_exhausted:
             elapsed = time.monotonic() - self.started_at
-            if elapsed > self.config.budget.max_duration_seconds:
-                exhaustion_reason = f" (timeout: {int(elapsed)}s > {self.config.budget.max_duration_seconds}s limit)"
-            elif self.total_cost_usd >= self.config.budget.max_cost_usd:
-                exhaustion_reason = (
-                    f" (cost: ${self.total_cost_usd:.2f} ≥ ${self.config.budget.max_cost_usd:.2f} limit)"
-                )
-
-        stats_rows = [
-            f"| Duration | {duration}s |",
-            f"| Agent invocations | {self.agent_invocations} |",
-            f"| Coverage iterations | {self.coverage_iterations} |",
-            f"| Estimated cost | {cost_display} |",
-            f"| Budget exhausted | {'Yes' + exhaustion_reason if self.budget_exhausted else 'No'} |",
-        ]
-        if intake:
-            stats_rows.extend(
-                [
-                    f"| PR type | {intake.pr_type} |",
-                    f"| Complexity | {intake.complexity} |",
-                ]
+            why = (
+                f"timeout ({int(elapsed)}s > {self.config.budget.max_duration_seconds}s)"
+                if elapsed > self.config.budget.max_duration_seconds
+                else f"cost (${self.total_cost_usd:.2f} ≥ ${self.config.budget.max_cost_usd:.2f})"
             )
+            lines.append(f"⚠️ **Budget exhausted** — {why}. Some review depth was capped.")
+            lines.append("")
 
-        return [
-            "<details>",
-            "<summary><b>Pipeline Stats</b></summary>",
-            "",
-            "| Metric | Value |",
-            "|--------|-------|",
-            *stats_rows,
-            "",
-            "</details>",
-            "",
-        ]
+        lines.append("</details>")
+        lines.append("")
+        return lines
 
     @staticmethod
     def _first_sentence(text: str) -> str:

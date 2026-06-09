@@ -19,9 +19,10 @@ _POLISH_SYSTEM = (
     "exactly what to fix and why, so they can act in under 30 seconds. Open with a "
     "one-sentence directive. Then one short paragraph (2-3 sentences) on the concrete "
     "failure mode — no abstract security lectures, no 'attacker-controlled' filler. "
-    "Preserve every file path, line number, identifier, code block, and markdown "
-    "header verbatim. Never invent facts. Never soften severity. Output the polished "
-    "comment body only — no preamble, no commentary."
+    "Preserve every file path, line number, identifier, code block, markdown "
+    "header, GitHub alert callout (`> [!CAUTION]`, `> [!NOTE]`), `<details>` block, "
+    "and `<sub>` line verbatim. Never invent facts. Never soften severity. Output "
+    "the polished comment body only — no preamble, no commentary."
 )
 
 
