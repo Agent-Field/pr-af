@@ -98,11 +98,18 @@ async def create_hax_form_request_with_timeout(
         tags=["hitl", "hax", "create_request"],
     )
 
+    # Attribute the request to this node so the hub shows PR-AF as the sender
+    # instead of "Unknown sender". Defaults to NODE_ID, env-overridable.
+    _sender_name = os.getenv("HAX_SENDER_NAME") or os.getenv("NODE_ID", "pr-af")
     kwargs: dict[str, Any] = {
         "type": request_type,
         "payload": payload,
         "title": title,
         "expires_in_seconds": expires_in_seconds,
+        "sender": {
+            "key": os.getenv("HAX_SENDER_KEY", _sender_name),
+            "display_name": _sender_name,
+        },
     }
     if description is not None:
         kwargs["description"] = description
