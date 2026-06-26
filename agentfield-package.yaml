@@ -1,0 +1,43 @@
+name: pr-af
+version: 0.1.0
+description: Opens draft pull requests from a task description
+author: Agent-Field
+
+entrypoint:
+  start: python -m pr_af.app
+  healthcheck: /health
+
+agent_node:
+  node_id: pr-af
+  default_port: 8004
+
+user_environment:
+  required:
+    - name: OPENROUTER_API_KEY
+      description: LLM provider key (OpenRouter)
+      type: secret
+      scope: global
+  optional:
+    - name: AGENTFIELD_SERVER
+      description: Control-plane URL
+      default: http://localhost:8080
+    - name: AGENTFIELD_API_KEY
+      description: Control-plane API key (if auth is enabled)
+      type: secret
+      scope: global
+    - name: GH_TOKEN
+      description: GitHub token for cloning repos / opening PRs
+      type: secret
+      scope: global
+    - name: PR_AF_PROVIDER
+      description: Coding-agent harness provider
+      default: opencode
+    - name: PR_AF_MODEL
+      description: Model the harness uses
+      default: openrouter/moonshotai/kimi-k2.5
+    - name: PR_AF_MAX_COST_USD
+      description: Per-run cost ceiling (USD)
+      default: "2.0"
+    - name: PR_AF_MAX_DURATION_SECONDS
+      description: Per-run wall-clock ceiling (seconds)
+      default: "300"
