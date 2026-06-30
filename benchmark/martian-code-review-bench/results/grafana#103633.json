@@ -1,0 +1,301 @@
+{
+  "id": "grafana#103633",
+  "repo": "grafana",
+  "pr_url": "https://github.com/grafana/grafana/pull/103633",
+  "language": "Go",
+  "review_model": "openrouter/z-ai/glm-5.2",
+  "judge_model": "anthropic/claude-sonnet-4.6",
+  "difficulty_score": 0.8033,
+  "recall": 0.5,
+  "hits": 1,
+  "n_goldens": 2,
+  "duration_seconds": 4230.818,
+  "cost_usd": 0,
+  "goldens": [
+    {
+      "comment": "The Check operation exhibits asymmetric cache trust logic: cached permission grants are trusted and returned immediately, but cached denials from the same permission cache are ignored, leading to a fresh database lookup. This allows stale cached grants to provide access to revoked resources, posing a security risk. ",
+      "severity": "High"
+    },
+    {
+      "comment": "The test comment says the cached permissions 'allow access', but the map stores false for dashboards:uid:dash1, so checkPermission will still treat this scope as not allowed.",
+      "severity": "Low"
+    }
+  ],
+  "golden_verdicts": [
+    {
+      "golden_idx": 0,
+      "hit": true,
+      "matched_finding": "permDenialCache introduces a 30s false-denial window",
+      "reason": "F4 explicitly identifies the asymmetric cache trust logic: permCache hits fall through to DB on stale results, but permDenialCache hits return denied immediately with no DB fallback, which is exactly the security risk described in G0."
+    },
+    {
+      "golden_idx": 1,
+      "hit": false,
+      "matched_finding": null,
+      "reason": "None of the tool findings identify the specific issue that the test comment says 'allow access' but the map stores false for dashboards:uid:dash1, making the scope not allowed. The findings discuss cache logic bugs but not this specific test comment/value mismatch."
+    }
+  ],
+  "findings": [
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a pre-existing bug in List/Watch that the PR does not introduce; it is an incomplete fix for an already-broken behavior, not a regression of previously-working functionality.",
+      "body": "Verdict written to `/tmp/pr-af-work/grafana/.agentfield_output.json`.\n\n**Property does NOT hold** (confidence: high).\n\n**Summary:** The changed `List` (service.go:180-192) treats a `permCache` hit as terminal \u2014 it never falls through to `getIdentityPermissions` and never consults `permDenialCache`. Since `listPermission` (lines 637-671) builds the visible resource set purely from the cached `scopeMap`, a just-created resource whose scope is absent from the 30s-TTL cache is filtered out.\n\nThe primary caller \u2014 `pkg/storage/unified/resource/server.go` List handler (lines 719-747) \u2014 calls `access.Compile` (which triggers the authz List RPC) and uses the returned `ItemChecker` to filter a backend iterator that includes just-created resources. The cached checker drops them. The Watch handler (line 823) has the same bug.\n\nThis is structurally symmetric to the Check bug the PR fixes (Check was patched to fall through to `getIdentityPermissions` when cached perms don't allow). The PR does not extend that fix to List, so the creator-access bug class persists for list/watch of just-created dashboards/folders \u2014 contradicting the README's documented `kubectl create` \u2192 `kubectl get` workflow. Severity: high.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "consistency-verify",
+      "dimension_name": "Consistency Verifier",
+      "evidence": "The changed `List` (service.go:180-192) treats a `permCache` hit as terminal \u2014 it never falls through to `getIdentityPermissions` and never consults `permDenialCache`. Since `listPermission` (lines 637-671) builds the visible resource set purely from the cached `scopeMap`, a just-created resource whose scope is absent from the 30s-TTL cache is filtered out.",
+      "file_path": "service.go",
+      "id": "f_009",
+      "line_end": 192,
+      "line_start": 180,
+      "score": 0.9,
+      "severity": "critical",
+      "suggestion": null,
+      "tags": [
+        "consistency"
+      ],
+      "title": "List and Watch handlers do not fall through to getIdentityPermissions for just-created resources"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "The finding describes false denials (availability impact, not an auth bypass or security vulnerability) and observability gaps in metrics/traces; it does not demonstrate a build break, data loss, contract break, or a concrete regression from prior behavior.",
+      "body": "The two findings combine into a compound observability blind spot that makes a security/availability regression operationally invisible.\n\n**The chain:**\n1. `userPermDenialCacheKey` (cache.go:30-32) builds the denial-cache key via unescaped `_`-delimited concatenation of `userUID`, `action`, `name`, `parent`. Grafana's UID validation (`pkg/util/shortid_generator.go`) explicitly permits `_` in user-supplied UIDs, so distinct `(name, parent)` pairs can collide to the same key (finding 1).\n2. When a colliding key is looked up, `permDenialCache.Get` returns the denial entry for a *different* resource and the service short-circuits with `Allowed: false` at service.go:120 \u2014 a **false denial** for a resource the user may actually be permitted to access.\n3. At service.go:118 this false-denial path emits `permissionCacheUsage.WithLabelValues(\"true\", checkReq.Action).Inc()` \u2014 the *same* label values emitted at service.go:132 for a perm-cache **allow**. Because `metrics.go:36` defines the only labels as `{cache_hit, action}` with no `cache` or `outcome` dimension, an operator cannot split `cache_hit=\"true\"` into allow-cache vs denial-cache sources (finding 2).\n4. Critically, `requestCount` (metrics.go:27, labels `{is_error, valid, verb, group, resource}`) also has **no `allowed`/`denied` dimension**. Both the false-denial path (line 119) and the true-allow path (line 133) emit `is_error=\"false\", valid=\"true\"`. There is no metric anywhere in the service that distinguishes an allowed `CheckResponse` from a denied one.\n5. The tracing span (service.go:108-114) sets attributes for `subject`, `namespace`, `action`, `name`, `folder` but does **not** record the `Allowed` outcome of the response.\n\n**Compound effect (worse than either finding alone):** A collision-induced false denial produces telemetry that is byte-for-byte identical to a legitimate allow in `permissionCacheUsage`, identical to any valid check in `requestCount`, and lacks an outcome attribute in the span. An operator monitoring `permission_cache_usage{cache_hit=\"true\"}` as a cache-health signal will see the false-denial rate *contribute positively* to the hit-rate numerator \u2014 the anomaly registers as an *improvement*, not a regression. There is no alternative metric, label, or span attribute that would surface the false denials. Without the collision (finding 1) there are no false denials to hide; without the metric conflation (finding 2) the false denials would at least increment a distinguishable counter. Together, a security-relevant regression is completely masked by the observability layer that should detect it.\n\n**Why this is `important` rather than `suggestion`:** Each individual finding is rated `suggestion` (low exploitability / observability debt). The compound elevates severity because it removes the operational detection path for the security issue: not only can false denials happen, but no operator-side signal can reveal them, extending the detection window from the 30s denial-cache TTL to \"until a user complains.\"\n\n**Escalation note:** If an attacker deliberately crafts UIDs to trigger collisions (e.g., importing dashboards with UIDs like `a_b` to collide with existing `a` / `b_c` pairs), the resulting denials would be indistinguishable from legitimate traffic in every emitted signal, making incident diagnosis rely entirely on out-of-band user reports.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "compound",
+      "dimension_name": "Compound Analysis",
+      "evidence": "service.go:116-120 (denial-cache hit returns false denial, emits permissionCacheUsage{cache_hit=\"true\"} at line 118 and requestCount{is_error=\"false\", valid=\"true\"} at line 119); service.go:131-134 (perm-cache allow emits identical permissionCacheUsage{cache_hit=\"true\"} at line 132 and identical requestCount labels at line 133); metrics.go:27 (requestCount labels are {is_error, valid, verb, group, resource} \u2014 no allowed/denied dimension); metrics.go:36 (permissionCacheUsage labels are {cache_hit, action} \u2014 no cache/outcome dimension); cache.go:30-32 (key built with unescaped `_` delimiter on user-controllable name/parent); service.go:108-114 (span attributes omit the Allowed outcome); pkg/util/shortid_generator.go:23 (UID validation permits `_`). The false-denial path and the true-allow path emit identical metric label vectors, and no span attribute records the outcome \u2014 verified by reading the full metrics.go (39 lines) and grepping all span.SetAttributes calls in service.go (none set an `allowed` attribute).",
+      "file_path": "pkg/services/authz/rbac/service.go",
+      "id": "f_005",
+      "line_end": 121,
+      "line_start": 116,
+      "score": 0.728,
+      "severity": "important",
+      "suggestion": "Address both findings together, since fixing only one leaves the compound risk intact:\n1. Make the denial-cache key collision-safe (length-prefix or `\\x00` delimiter per finding 1's suggestion).\n2. Add an `outcome` or `cache` label to `permissionCacheUsage` so denial-cache denies are distinguishable from perm-cache allows (per finding 2's suggestion #1 or #2).\n3. Additionally, add an `allowed` label (or a separate `denied_request_count` counter) to `requestCount` so that allow vs deny is observable on the primary request counter \u2014 this closes the detection gap independent of which cache served the response.\n4. Set `attribute.Bool(\"allowed\", allowed)` on the Check span so the outcome is recorded in traces, giving operators a third detection channel.\nWithout at least items 1 and 3, a false-denial regression remains invisible in every emitted signal.",
+      "tags": [
+        "compound",
+        "observability",
+        "security",
+        "availability",
+        "false-denial",
+        "metric-masking",
+        "denial-cache",
+        "detection-gap",
+        "rbac"
+      ],
+      "title": "Denial-cache key collision produces false denials that are undetectable in all emitted metrics and traces"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "The stale-cache behavior in List is a pre-existing bug not introduced by this PR; the PR fixes Check but not fixing List in the same PR is an incomplete fix, not a regression.",
+      "body": "The PR correctly fixes the stale-cache issue for the `Check` path, but the same bug remains in the `List` path. `List` has neither the `permDenialCache` short-circuit nor the fall-through mechanism added to `Check`. On cache hit (line 181, `err == nil`), it returns the cached permission set directly to `listPermission` (line 194) without re-querying the DB. If the cached perm set lacks the newly-created resource's scope, that resource is absent from the list response until `permCache` expires.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "correctness",
+      "dimension_name": "Correctness",
+      "evidence": "service.go:161-197",
+      "file_path": "service.go",
+      "id": "f_002",
+      "line_end": 197,
+      "line_start": 161,
+      "score": 0.63,
+      "severity": "important",
+      "suggestion": "Apply the same fall-through pattern to `List` (on cache hit, if `listPermission` yields an empty/missing result for a known-creatable resource type, re-query DB), or at minimum, add the symmetric test (`TestService_CacheList` \u2192 `\"Fallback to the database on outdated cache\"`) to document the current behavior gap, and confirm whether `List` is intentionally excluded from the fix.",
+      "tags": [
+        "stale-cache",
+        "list-path",
+        "asymmetry"
+      ],
+      "title": "Stale-cache bug remains in the List path"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "The collision causes a temporary false denial (fail-closed) requiring crafted UIDs with 30s TTL, which is not a security bypass, data loss, regression, or contract break.",
+      "body": "`userPermDenialCacheKey` (cache.go:30-32) has a key-collision bug. It joins 4 variable components with `_` delimiters, but Grafana UIDs (dashboard/folder) explicitly allow `_` per `IsValidShortUID` (shortid_generator.go:33-34, regex `^[a-zA-Z0-9\\-\\_]*$`, confirmed by test at dashboard_service_test.go:112). Two distinct `(name, parent)` pairs like `(\"n1_n2\", \"p\")` vs `(\"n1\", \"n2_p\")` produce identical cache keys \u2192 false denial via cache hit at service.go:117-120, bounded by 30s TTL. Severity: **important** (fail-closed, requires crafted UIDs, but proven reachable with valid Grafana inputs). The existing `userPermCacheKey` is collision-safe because `action` is mapper-constrained to contain no `_`; the new function adds user-controlled `_`-permissive components, introducing a new risk. Confidence: 0.85.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "security",
+      "dimension_name": "Security",
+      "evidence": "It joins 4 variable components with `_` delimiters, but Grafana UIDs (dashboard/folder) explicitly allow `_` per `IsValidShortUID` (shortid_generator.go:33-34, regex `^[a-zA-Z0-9\\-\\_]*$`, confirmed by test at dashboard_service_test.go:112). Two distinct `(name, parent)` pairs like `(\"n1_n2\", \"p\")` vs `(\"n1\", \"n2_p\")` produce identical cache keys \u2192 false denial via cache hit at service.go:117-120, bounded by 30s TTL.",
+      "file_path": "cache.go",
+      "id": "f_004",
+      "line_end": 32,
+      "line_start": 30,
+      "score": 0.595,
+      "severity": "important",
+      "suggestion": null,
+      "tags": [],
+      "title": "Key-collision bug in userPermDenialCacheKey"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": true,
+      "blocking_reason": "The new permDenialCache returns stale denials for up to 30s without DB fallback, regressing previously-correct behavior where a just-granted permission would be honored immediately.",
+      "body": "Verdict written to `/tmp/pr-af-work/grafana/.agentfield_output.json`.\n\nThe `permDenialCache` (service.go:153-155) introduces a 30s false-denial window that did not exist before this PR. The key verified asymmetry:\n\n- **permCache** (existing): on stale/false result \u2192 falls through to DB \u2192 correct answer (service.go:136\u2192139)\n- **permDenialCache** (new): on hit \u2192 returns denied immediately, NO DB fallback (service.go:117-121)\n\nWhen a permission is granted on an existing resource after a denial was cached, the denial cache returns stale `denied` for up to 30s. Before this PR, the permCache miss would have fallen through to DB and returned `allowed`. `ClearUserPermissionCache` (called after resource creation) clears the accesscontrol service's cache, not the RBAC denial cache \u2014 and permission-update paths (`dashboard_permission.go:317-327`) don't call it at all.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "consistency-verify",
+      "dimension_name": "Consistency Verifier",
+      "evidence": "service.go:153-155, service.go:136\u2192139, service.go:117-121, dashboard_permission.go:317-327",
+      "file_path": "service.go",
+      "id": "f_008",
+      "line_end": 155,
+      "line_start": 117,
+      "score": 0.56,
+      "severity": "important",
+      "suggestion": null,
+      "tags": [
+        "consistency"
+      ],
+      "title": "permDenialCache introduces a 30s false-denial window"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Missing tests and compile-time interface assertions are code quality suggestions with no demonstrated production impact.",
+      "body": "The newly added `NoopCache` type (lines 239-251) implements the `cache.Cache` interface from `github.com/grafana/authlib/cache`, but has no dedicated unit tests and no compile-time interface compliance assertion (`var _ cache.Cache = (*NoopCache)(nil)`). While the type is trivial \u2014 `Get` returns `cache.ErrNotFound`, `Set` and `Delete` are no-ops \u2014 Go best practice for new types implementing external interfaces is to include both:\n\n1. **Compile-time assertion**: `var _ cache.Cache = (*NoopCache)(nil)` \u2014 catches interface drift if `cache.Cache` ever adds methods. Without this, a future interface change in `authlib/cache` would only be caught at the call site (`authzlib.WithCacheClientOption`), not at the type definition.\n\n2. **Unit tests**: Verify `Get` returns `(nil, cache.ErrNotFound)`, `Set` returns `nil` without storing, `Delete` returns `nil`. These are especially valuable because `NoopCache` is the core mechanism that ensures every in-proc authz Check/List call bypasses client-side caching \u2014 a behavioral guarantee worth locking in with a test.\n\nThe type is currently used only at line 103 (`authzlib.WithCacheClientOption(&NoopCache{})`), and the `authzlib` client correctly handles the `ErrNotFound` return as a cache miss (verified in `authz/client.go:107` \u2014 `if err == nil { return res, nil }` falls through on error). So the runtime behavior is correct, but the lack of tests means regressions (e.g., accidentally returning `nil` instead of `ErrNotFound` from `Get`) would not be caught.",
+      "confidence": 0.75,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "coverage_gap_rbac",
+      "dimension_name": "Coverage Gap: rbac.go in-proc client cache removal and NoopCache",
+      "evidence": "Step 1: `NoopCache{}` is instantiated at rbac.go:103 as `authzlib.WithCacheClientOption(&NoopCache{})` which expects a `cache.Cache` interface.\nStep 2: The `cache.Cache` interface (authlib/cache/cache.go:22-31) requires `Get`, `Set`, `Delete` methods \u2014 NoopCache implements all three.\nStep 3: Grep for `NoopCache` in `*_test.go` files under `pkg/services/authz/` returns no matches \u2014 no test coverage exists.\nStep 4: Grep for `var _ cache.Cache` in `pkg/services/authz/` returns no matches \u2014 no compile-time assertion exists.\nStep 5: The `authzlib.ClientImpl.check()` method (authz/client.go:106-108) calls `getCachedCheck` which calls `c.cache.Get()`. With NoopCache, `Get` returns `cache.ErrNotFound`, causing `err != nil`, which correctly falls through to the server call. This behavior is currently untested.",
+      "file_path": "pkg/services/authz/rbac.go",
+      "id": "f_006",
+      "line_end": 251,
+      "line_start": 239,
+      "score": 0.292,
+      "severity": "suggestion",
+      "suggestion": "Add a compile-time interface assertion after the type declaration:\n```go\nvar _ cache.Cache = (*NoopCache)(nil)\n```\n\nAnd a basic test in `rbac_test.go`:\n```go\nfunc TestNoopCache(t *testing.T) {\n    c := &NoopCache{}\n    ctx := context.Background()\n\n    _, err := c.Get(ctx, \"key\")\n    require.ErrorIs(t, err, cache.ErrNotFound)\n\n    require.NoError(t, c.Set(ctx, \"key\", []byte(\"data\"), time.Minute))\n    require.NoError(t, c.Delete(ctx, \"key\"))\n}\n```",
+      "tags": [
+        "test-coverage",
+        "new-type",
+        "interface-compliance",
+        "best-practice"
+      ],
+      "title": "NoopCache lacks unit tests and compile-time interface assertion"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Minor performance efficiency concern with redundant gob encoding; explicitly not a correctness issue and no demonstrated production impact.",
+      "body": "With the old `newRBACClient` (which used a `LocalCache`), the `authzlib.ClientImpl.cacheCheck` and `cacheItemChecker` methods (in `authlib/authz/client.go`) would encode the result with `gob.NewEncoder` and store it via `cache.Set`. On subsequent calls, `cache.Get` would return the cached bytes, skipping both the server call and the encoding.\n\nWith `NoopCache`, `Get` always returns `cache.ErrNotFound`, so every call falls through to the server. After the server responds, `cacheCheck`/`cacheItemChecker` still performs the full `gob.Encode` of the result (encoding a `bool` for Check, or an `*itemChecker` struct for List) before calling `NoopCache.Set` \u2014 which is a no-op that discards the encoded bytes.\n\nThis means the gob encoding work is performed on every single in-proc Check/List call but the result is always thrown away. For `Check`, the cost is negligible (encoding a single `bool`). For `Compile`/`List`, the `itemChecker` struct contains `Items` and `Folders` maps which could be larger, making the wasted encoding more significant under high-frequency list operations.\n\nThis is not a correctness issue \u2014 the behavior is functionally correct. It's a minor efficiency concern that is an unavoidable consequence of using the `authzlib.ClientImpl` as-is with a noop cache, since the encoding happens inside the library before `Set` is called. The alternative would be to bypass the `authzlib` client entirely for in-proc mode and call the server directly, but that would require significant refactoring.",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "coverage_gap_rbac",
+      "dimension_name": "Coverage Gap: rbac.go in-proc client cache removal and NoopCache",
+      "evidence": "Step 1: rbac.go:103 \u2014 `authzlib.WithCacheClientOption(&NoopCache{})` sets NoopCache as the client cache.\nStep 2: authz/client.go:106-108 \u2014 `c.getCachedCheck(ctx, key)` calls `c.cache.Get()`. NoopCache.Get returns `(nil, cache.ErrNotFound)`, so `err != nil` and the cache-hit path is skipped.\nStep 3: authz/client.go:127 \u2014 Server call `c.clientV1.Check(outCtx, checkReq)` is executed.\nStep 4: authz/client.go:133 \u2014 `c.cacheCheck(ctx, key, resp.Allowed)` is called.\nStep 5: authz/client.go:352-356 \u2014 `gob.NewEncoder(&buf).Encode(allowed)` encodes the bool into a buffer.\nStep 6: authz/client.go:359 \u2014 `c.cache.Set(ctx, key, buf.Bytes(), cache.DefaultExpiration)` calls NoopCache.Set which returns nil without storing.\nStep 7: The encoded bytes in `buf` are discarded. This gob encoding runs on every Check call.",
+      "file_path": "pkg/services/authz/rbac.go",
+      "id": "f_007",
+      "line_end": 105,
+      "line_start": 101,
+      "score": 0.273,
+      "severity": "suggestion",
+      "suggestion": "This is an inherent trade-off of using NoopCache with the existing authzlib client. No code change is needed in this PR. If the wasted encoding becomes a measurable performance concern, consider either:\n1. Adding a `NoEncode` cache wrapper that skips encoding when the underlying cache is a NoopCache\n2. For in-proc mode, bypassing the authzlib client and calling the server's `Check`/`List` methods directly (avoiding gob encode/decode entirely)\n3. Filing an upstream issue in `grafana/authlib` to short-circuit encoding when the cache is a noop",
+      "tags": [
+        "performance",
+        "wasted-work",
+        "gob-encoding",
+        "noop-cache"
+      ],
+      "title": "In-proc NoopCache causes redundant gob encoding on every Check/List call"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Metric semantics drift is an observability/monitoring concern that does not break runtime authorization correctness, security, data integrity, or any public API contract.",
+      "body": "The `permissionCacheUsage` counter is declared in `pkg/services/authz/rbac/metrics.go` (lines 29-37) with name `permission_cache_usage`, Help text `\"AuthZ service permission cache usage\"`, and labels `[]string{\"cache_hit\", \"action\"}`. The metric name and Help text scope it to the **permission cache** (`permCache`), and prior to this PR the `cache_hit=\"true\"` label value had a single, unambiguous meaning: *the permCache returned a permission map that was used to answer (allow) the request* (the only pre-PR `\"true\"` emission site was the equivalent of current line 132 \u2014 permCache hit + `checkPermission` returned true).\n\nThis PR introduces a second, semantically distinct cache `permDenialCache` (service.go:58, initialized at service.go:85 with `shortCacheTTL`) and at line 118 emits `permissionCacheUsage.WithLabelValues(\"true\", checkReq.Action).Inc()` on a **denial-cache HIT** \u2014 i.e. when the request is short-circuited with `Allowed: false` from the denial cache, *without* consulting `permCache` at all. The same label value `\"true\"` is reused, so the `cache_hit` label now conflates two orthogonal outcomes:\n\n1. **permCache allow-hit** (line 132): request served from the permission cache, result = ALLOW.\n2. **permDenialCache deny-hit** (line 118): request served from the denial cache, result = DENY, permCache never consulted.\n\nThese are not the same cache, not the same result, and not the same operational meaning. `metrics.go` exposes **no label dimension** that disambiguates the two (only `cache_hit` and `action`), so the conflation is unrecoverable from the emitted metrics.\n\nConcrete operator impact: a dashboard computing *permission cache hit rate* as `sum(permission_cache_usage{cache_hit=\"true\"}) / sum(permission_cache_usage)` will now have its numerator inflated by denial-cache denies. A dashboard computing *cache-served allow rate* (previously equal to `cache_hit=\"true\"` because every `\"true\"` was an allow) will silently start including denies. There is no way for an operator to split `cache_hit=\"true\"` into \"served-from-allow-cache\" vs \"served-from-deny-cache\" without a new label.\n\nA second, related drift: on the permCache-hit-but-deny fall-through path (line 137), `permissionCacheUsage.WithLabelValues(\"false\", ...)` is emitted *even though the permCache was technically a hit* \u2014 it returned a map that simply lacked the requested scope. So `cache_hit=\"false\"` now also means \"permCache hit but scope not present\", not just \"permCache miss/error\". The previous contract tied `cache_hit` to *whether the permCache returned data used to answer*; the new contract ties it to *whether any cache short-circuited the request*, which is a different abstraction.\n\nNeither redefinition is documented: the Help text in `metrics.go:34` is unchanged (still `\"AuthZ service permission cache usage\"`); there are no code comments at service.go:118 or :137 explaining the new semantics; and the PR description (per provided context) does not mention any metric semantics change. This is silent contract drift / observability debt rather than a runtime correctness bug \u2014 the service still functions \u2014 but it breaks the fidelity of the `permissionCacheUsage` abstraction that operators and dashboards depend on.\n\nNote this finding is scoped to the `permissionCacheUsage` metric semantics. The `requestCount` counter (service.go:119) labels the denial-hit path as `is_error=false, valid=true`, which is accurate (the request was valid and did not error); `requestCount` has no \"served-from-cache\" dimension, so it does not make a conflation claim the way `permissionCacheUsage` does.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "observability-abstraction-fidelity",
+      "dimension_name": "Observability Abstraction Fidelity",
+      "evidence": "Step 1: `metrics.go:29-37` declares `permissionCacheUsage` with `Name: \"permission_cache_usage\"`, `Help: \"AuthZ service permission cache usage\"`, labels `[]string{\"cache_hit\", \"action\"}`. No other labels exist on this counter (verified by reading the full 39-line file).\nStep 2: `service.go:117-121` \u2014 on `permDenialCache.Get` hit, the code emits `s.metrics.permissionCacheUsage.WithLabelValues(\"true\", checkReq.Action).Inc()` at line 118 and `s.metrics.requestCount.WithLabelValues(\"false\", \"true\", ...).Inc()` at line 119, then returns `&authzv1.CheckResponse{Allowed: false}` at line 120. The permCache is NOT consulted on this path.\nStep 3: `service.go:131-134` \u2014 on permCache hit + `checkPermission` returning `allowed=true`, the code emits `s.metrics.permissionCacheUsage.WithLabelValues(\"true\", checkReq.Action).Inc()` at line 132 and the same `requestCount` labels at line 133, then returns `&authzv1.CheckResponse{Allowed: allowed}` (allowed=true) at line 134.\nStep 4: Comparing Step 2 and Step 3 \u2014 both emit `permissionCacheUsage{cache_hit=\"true\", action=...}` but Step 2 is a DENY served from `permDenialCache` and Step 3 is an ALLOW served from `permCache`. Same label values, different caches, different outcomes.\nStep 5: `service.go:137` \u2014 on permCache hit + `checkPermission` returning false (fall-through), emits `permissionCacheUsage.WithLabelValues(\"false\", ...)` even though permCache returned a usable map (just one lacking the requested scope). This redefines `cache_hit=\"false\"` to include \"permCache hit, scope absent\".\nStep 6: `metrics.go:34` Help text is `\"AuthZ service permission cache usage\"` \u2014 scoped to the permission cache, with no mention of a denial cache. No code comments at service.go:118 or :137 document the conflation. The PR description (per provided context) does not mention metric semantics changes.\nStep 7: No disambiguating label exists \u2014 `metrics.go:36` is the complete label set `[]string{\"cache_hit\", \"action\"}`, so an operator cannot split `cache_hit=\"true\"` into allow-cache vs denial-cache sources from the emitted time series.",
+      "file_path": "pkg/services/authz/rbac/service.go",
+      "id": "f_000",
+      "line_end": 119,
+      "line_start": 118,
+      "score": 0.27,
+      "severity": "suggestion",
+      "suggestion": "Pick one of three options, in order of preference:\n\n1. **Add a disambiguating label** to `permissionCacheUsage`: change labels to `[]string{\"cache\", \"hit\", \"action\"}` where `cache` \u2208 {`permission`, `denial`} and `hit` \u2208 {`true`, `false`}. Emit `{cache=\"denial\", hit=\"true\", action}` at line 118 and `{cache=\"permission\", hit=\"true\", action}` at line 132. This preserves the original \"permission cache hit\" signal exactly (sum over `cache=\"permission\"`) while exposing the new denial-cache signal. Update the Help text to `\"AuthZ service permission and denial cache usage\"`.\n\n2. **Introduce a separate counter** `denialCacheUsage` with labels `[]string{\"cache_hit\", \"action\"}` and Help `\"AuthZ service permission denial cache usage\"`, and stop touching `permissionCacheUsage` on the denial-cache path (remove the increment at line 118). This preserves `permissionCacheUsage`'s contract unchanged.\n\n3. **Minimally, document the redefinition**: update the Help text at `metrics.go:34` to `\"AuthZ service permission cache and denial cache usage (cache_hit=true indicates the request was served from either cache without DB access)\"` and add a code comment at service.go:118 noting the label conflation. This is the weakest fix \u2014 dashboards still can't split the two outcomes \u2014 but it at least makes the contract drift explicit.\n\nAlso, regardless of which option is chosen, consider whether line 137's `cache_hit=\"false\"` for a permCache-hit-that-lacked-scope should be split (e.g. a `cache_hit=\"partial\"` value) so the metric faithfully reports \"permCache returned data but did not answer the request\".",
+      "tags": [
+        "observability",
+        "metrics",
+        "abstraction-drift",
+        "contract-violation",
+        "permissionCacheUsage",
+        "denial-cache",
+        "label-conflation",
+        "dashboard-impact"
+      ],
+      "title": "permissionCacheUsage cache_hit=\"true\" silently conflates denial-cache denies with perm-cache allows, breaking the metric's documented contract"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Missing test coverage for edge cases is explicitly non-blocking.",
+      "body": "`TestService_CacheList` only tests the cache-HIT happy path. There is no equivalent of `TestService_CacheCheck`'s `\"Fallback to the database on outdated cache\"` subtest for List, and no denial-cache test for List.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "testing",
+      "dimension_name": "Testing",
+      "evidence": "service_test.go:1291-1323",
+      "file_path": "service_test.go",
+      "id": "f_003",
+      "line_end": 1323,
+      "line_start": 1291,
+      "score": 0.27,
+      "severity": "suggestion",
+      "suggestion": "Add a symmetric test (`TestService_CacheList` \u2192 `\"Fallback to the database on outdated cache\"`) to document the current behavior gap or cover the fix if applied.",
+      "tags": [
+        "test-coverage",
+        "stale-cache"
+      ],
+      "title": "Test coverage gap for List path stale cache"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "A false denial errs on the safe side of authorization (over-restrictive, not a bypass), and the finding itself acknowledges exploitability requires crafted UIDs and aligned collisions with low practical probability.",
+      "body": "The denial cache key is built via unescaped string concatenation with `_` as delimiter:\n\n```go\nreturn namespace + \".perm_\" + userUID + \"_\" + action + \"_\" + name + \"_\" + parent\n```\n\nGrafana's UID validation (`pkg/util/shortid_generator.go:33`) explicitly allows underscores in UIDs: `validUIDCharPattern = a-zA-Z0-9\\-\\_`. While auto-generated UIDs (via `GenerateShortUID`, Base36+hex) never contain `_`, users can manually supply UIDs containing `_` when creating or importing dashboards/folders \u2014 the validation pattern permits it.\n\nThis makes the key construction non-injective: different `(name, parent)` pairs can produce the same cache key.\n\n## Collision example\n| name | parent | key suffix |\n|------|--------|------------|\n| `a_b` | `c` | `_a_b_c` |\n| `a` | `b_c` | `_a_b_c` |\n\nBoth map to an identical denial cache key.\n\n## Impact\n- **Denial cached for resource X** \u2192 user checks resource **Y** with a colliding key \u2192 receives a **false denial for Y** (even if they have access). 30s TTL window (`shortCacheTTL`).\n- `name` = dashboard/folder UID from `req.GetName()` (service.go:226); `parent` = parent folder UID from `req.GetFolder()` (service.go:227). Both are user-controllable via gRPC `CheckRequest`.\n- Same latent risk applies to `userPermCacheKey` (cache.go:27) if `userUID` could contain `_`.\n\n## Exploitability\n- **Auto-generated UIDs:** Not exploitable (Base36, no `_`).\n- **User-supplied UIDs with `_`:** Exploitable. Grafana permits `_` in UIDs via API/import. Probability is low in practice (requires crafted UIDs AND aligned collision), but the design is not collision-safe.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "security",
+      "dimension_name": "Security",
+      "evidence": "return namespace + \".perm_\" + userUID + \"_\" + action + \"_\" + name + \"_\" + parent",
+      "file_path": "pkg/services/authz/rbac/cache.go",
+      "id": "f_001",
+      "line_end": 32,
+      "line_start": 30,
+      "score": 0.24,
+      "severity": "suggestion",
+      "suggestion": "Use length-prefix encoding or a delimiter that cannot appear in any component:\n\n```go\n// Length-prefix (safe against any character):\nreturn fmt.Sprintf(\"%s.perm\\x00%d:%s\\x00%d:%s\\x00%d:%s\\x00%d:%s\",\n    namespace, len(userUID), userUID, len(action), action,\n    len(name), name, len(parent), parent)\n```\n\nOr use a delimiter outside the valid UID charset (e.g. `\\x00`), since `validUIDCharPattern` excludes it.",
+      "tags": [
+        "cache",
+        "collision",
+        "rbac",
+        "security"
+      ],
+      "title": "Denial cache key collision risk (unescaped delimiter)"
+    }
+  ]
+}

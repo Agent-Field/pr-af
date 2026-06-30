@@ -1,0 +1,338 @@
+{
+  "id": "grafana#80329",
+  "repo": "grafana",
+  "pr_url": "https://github.com/grafana/grafana/pull/80329",
+  "language": "Go",
+  "review_model": "openrouter/z-ai/glm-5.2",
+  "judge_model": "anthropic/claude-sonnet-4.6",
+  "difficulty_score": 0.3443,
+  "recall": 1.0,
+  "hits": 1,
+  "n_goldens": 1,
+  "duration_seconds": 1904.583,
+  "cost_usd": 0,
+  "goldens": [
+    {
+      "comment": "The code uses Error log level for what appears to be debugging information. This will pollute error logs in production. Consider using Debug or Info level instead.",
+      "severity": "Low"
+    }
+  ],
+  "golden_verdicts": [
+    {
+      "golden_idx": 0,
+      "hit": true,
+      "matched_finding": "F0",
+      "reason": "F0 directly identifies the same issue: r.log.Error used for routine success logging (non-error paths), which pollutes error logs in production, and suggests using Debug instead."
+    }
+  ],
+  "findings": [
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Incorrect log severity on success paths is an operational hygiene issue, not a correctness, security, data-loss, API-contract, or behavioral regression problem.",
+      "body": "Six new `r.log.Error(...)` calls (lines 534, 537, 554, 557, 576, 579) log at **Error severity on every batch iteration, including the success path** (`err == nil`). This violates the package-wide cleanup logging convention and will flood Grafana logs at ERROR level under normal operation.\n\n**Convention violation.** Every one of the 8 sibling cleanup jobs in `pkg/services/cleanup/cleanup.go` follows the same pattern: `logger.Error(...)` is called **only** on the failure path (`err != nil`), and `logger.Debug(...)` is called on the success path. For example, `cleanUpOldAnnotations` (lines 126-130):\n\n```go\nif err != nil && !errors.Is(err, context.DeadlineExceeded) {\n    logger.Error(\"failed to clean up old annotations\", \"error\", err)\n} else {\n    logger.Debug(\"Deleted excess annotations\", \"annotations affected\", affected, \"annotation tags affected\", affectedTags)\n}\n```\n\nThe same Error-on-failure / Debug-on-success pattern is repeated in `deleteExpiredSnapshots` (196-200), `deleteExpiredDashboardVersions` (206-210), `deleteExpiredImages` (218-222), `expireOldUserInvites` (233-237), `deleteStaleShortURLs` (245-249), `deleteStaleQueryHistory` (258-280), and `cleanUpTmpFolder` (155/165/178 Error on err, 182 Debug for success summary). The new annotation cleanup code is the **only** cleanup path that logs at Error on success.\n\n**Operational impact.** This PR also changes the ticker interval from 10 minutes to 1 minute (`cleanup.go` line 77: `time.Minute * 10` \u2192 `time.Minute * 1`) \u2014 a 10x increase in cleanup frequency. The `untilDoneOrCancelled` loop invokes the callback (and thus these log calls) once per batch until the batch returns zero affected. On an instance with many annotations, a single cleanup tick can iterate many batches, and each batch emits **two** Error-level log lines. At 1-min cadence this is a sustained stream of false ERROR logs.\n\n**False alerts.** Monitoring systems that count ERROR-level log lines (a very common Grafana / Loki / Datadog alerting pattern) will fire false alerts during normal cleanup operation. The `err` field in these log lines is `nil` on success, which is also unusual for Error-level logs and will look broken to operators investigating the alerts.\n\n**Wasteful payload.** The `\"ids\", ids` field logs the entire fetched ID slice (up to `AnnotationCleanupJobBatchSize`, which can be 32767 or higher) at Error level on every batch. This is both a logging-volume problem and a noise problem for log indexing.\n\nThis appears to be leftover debugging instrumentation that should be `r.log.Debug(...)` (or removed entirely), matching the convention of every other cleanup job.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "error-level-logging",
+      "dimension_name": "Error-level logging on routine success",
+      "evidence": "Step 1: `CleanUpService.Run` (cleanup.go:74-86) ticks every 1 minute (line 77: `time.NewTicker(time.Minute * 1)`) and calls `srv.clean(ctx)`.\nStep 2: `clean` (cleanup.go:88-121) iterates `cleanupJobs` and calls `srv.cleanUpOldAnnotations(ctx)` (line 101, fn at cleanup.go:123-131).\nStep 3: `cleanUpOldAnnotations` calls `srv.annotationCleaner.Run(ctx, srv.Cfg)` which dispatches to `CleanupServiceImpl.Run` (annotationsimpl/cleanup.go:35-57).\nStep 4: `CleanupServiceImpl.Run` calls `cs.store.CleanAnnotations(...)` three times (lines 37, 43, 49) and `cs.store.CleanOrphanedAnnotationTags(...)` once (line 55).\nStep 5: `CleanAnnotations` (xorm_store.go:519-567) wraps its work in `untilDoneOrCancelled(ctx, func() (int64, error) {...})`. The callback is invoked once per batch until it returns 0 affected, an error, or ctx is cancelled.\nStep 6: Inside the callback, line 534 `r.log.Error(\"Annotations to clean by time\", \"count\", len(ids), \"ids\", ids, \"cond\", cond, \"err\", err)` is reached on EVERY batch. At this point `err` is the return of `r.fetchIDs` on line 530-533; if `fetchIDs` succeeded the early return on line 532 was NOT taken, so `err == nil`. The Error log is emitted with a nil err.\nStep 7: Line 537 `r.log.Error(\"cleaned annotations by time\", \"count\", len(ids), \"affected\", x, \"err\", y)` likewise logs `y` (the deleteByIDs error) at Error level even when `y == nil` (success).\nStep 8: The same pattern repeats at lines 554/557 (MaxCount branch) and 576/579 (CleanOrphanedAnnotationTags).\nStep 9: Contrast with the sibling convention in pkg/services/cleanup/cleanup.go: cleanUpOldAnnotations (126-130), deleteExpiredSnapshots (196-200), deleteExpiredDashboardVersions (206-210), deleteExpiredImages (218-222), expireOldUserInvites (233-237), deleteStaleShortURLs (245-249), deleteStaleQueryHistory (258-280) \u2014 ALL use `logger.Error` only on `err != nil` and `logger.Debug` on the success branch. The new code is the sole exception.\nStep 10: Result \u2014 under normal operation (no errors), every cleanup tick emits 2 Error log lines per batch across 3 CleanAnnotations calls + 1 CleanOrphanedAnnotationTags call, at 1-minute cadence. This is a sustained stream of false ERROR-level logs.",
+      "file_path": "pkg/services/annotations/annotationsimpl/xorm_store.go",
+      "id": "f_000",
+      "line_end": 579,
+      "line_start": 534,
+      "score": 0.665,
+      "severity": "important",
+      "suggestion": "Replace all six `r.log.Error(...)` calls with `r.log.Debug(...)` to match the package-wide convention (Error on failure, Debug on success). If per-batch observability is desired on the error path, gate the Error log on `err != nil` and keep a Debug log for the success path, mirroring the sibling pattern:\n\n```go\nids, err := r.fetchIDs(ctx, \"annotation\", cond)\nif err != nil {\n    return 0, err\n}\nr.log.Debug(\"Annotations to clean by time\", \"count\", len(ids))\n\nx, y := r.deleteByIDs(ctx, \"annotation\", ids)\nif y != nil {\n    r.log.Error(\"cleaned annotations by time\", \"count\", len(ids), \"affected\", x, \"err\", y)\n} else {\n    r.log.Debug(\"cleaned annotations by time\", \"count\", len(ids), \"affected\", x)\n}\nreturn x, y\n```\n\nAlso consider dropping the `\"ids\", ids` field (or truncating it) to avoid logging potentially tens of thousands of IDs per batch.",
+      "tags": [
+        "logging",
+        "convention-violation",
+        "operational-impact",
+        "false-alerts",
+        "log-flooding",
+        "cleanup"
+      ],
+      "title": "r.log.Error used for routine success logging across all three cleanup paths, violating package convention and risking error-log flooding at 1-min cadence"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "A 10x cleanup frequency increase is a performance/load concern that doesn't break correctness, cause data loss, or introduce a security vulnerability.",
+      "body": "The cleanup service ticker was changed from `time.Minute * 10` to `time.Minute * 1` \u2014 a 10x frequency increase for the ENTIRE cleanup service, not just annotations. This affects all 8 cleanup jobs (tmp files, snapshots, dashboard versions, images, annotations, user invites, short URLs, query history) and raises database load 10x on every Grafana instance. The PR description only discusses the subquery split for the MySQL deadlock fix; this ticker change is completely unmentioned and unrelated to the stated fix. It should be in its own PR with explicit justification, or at minimum be called out in the PR description with a rationale for why 10x load is acceptable.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "unrelated_changes",
+      "dimension_name": "Unrelated Changes / Scope Discipline",
+      "evidence": "git diff: `-ticker := time.NewTicker(time.Minute * 10)` \u2192 `+ticker := time.NewTicker(time.Minute * 1)`; PR description titled 'Annotations: Split cleanup into separate queries and deletes to avoid deadlocks on MySQL' makes no mention of ticker frequency.",
+      "file_path": "pkg/services/cleanup/cleanup.go",
+      "id": "f_005",
+      "line_end": 77,
+      "line_start": 77,
+      "score": 0.665,
+      "severity": "important",
+      "suggestion": "Revert this change unless it is essential to the deadlock fix. If it is essential (e.g., to make the under-delete window smaller), document why in the PR description and consider a separate configurable interval for annotation cleanup rather than changing the global cleanup ticker. Note also that `clean()` has a hardcoded 9-minute timeout (line 89) that is now larger than the 1-minute tick interval \u2014 if a clean() run takes >1 minute, ticks coalesce and the next run fires immediately after, which may cause overlapping work on slow databases.",
+      "tags": [
+        "scope-creep",
+        "operational-impact",
+        "undocumented-change",
+        "load-increase"
+      ],
+      "title": "Ticker interval changed 10min \u2192 1min without justification in PR description"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "The finding describes a hypothetical operational risk dependent on specific workload assumptions (100k rows, 50-100ms per op) and a pre-existing silent timeout handler, not a demonstrated regression, data loss, or correctness break.",
+      "body": "The PR introduces three interacting changes whose combination creates an operational risk that no individual finding captures:\n\n1. **10x ticker increase** (cleanup.go:77, 10min -> 1min) \u2014 mentioned in finding 1 but only in the context of log volume.\n2. **Slower multi-statement batched loop** \u2014 the new `fetchIDs` + `deleteByIDs` design (finding 4) does 2 SQL round-trips per batch instead of the old single DELETE-with-subquery. `untilDoneOrCancelled` (finding 3) loops until `affected == 0`, running 4 separate batched loops per cleanup cycle (3x `CleanAnnotations` for alert/API/dashboard types + 1x `CleanOrphanedAnnotationTags`).\n3. **Fixed 9-minute timeout with silent DeadlineExceeded handling** (cleanup.go:89, cleanup.go:126) \u2014 pre-existing, but now exercised differently.\n\n**Compound mechanism:** `clean()` (cleanup.go:88) runs 8 cleanup jobs sequentially under a single 9-minute context. Annotations is job #5. With the default batch size of 100 (setting.go:710) and a moderate annotation volume (e.g., 100k rows to clean), each `CleanAnnotations` call does ~1000 batches x 2 round-trips = 2000 SQL operations. Across 3 type calls + orphaned tags, that's ~8000 SQL operations. At 50-100ms per op on a busy MySQL instance, annotation cleanup alone consumes 400-800 seconds \u2014 most or all of the 9-minute budget.\n\nWhen the timeout fires during annotation cleanup, `untilDoneOrCancelled` returns `context.DeadlineExceeded`, which is **silently swallowed** by `cleanUpOldAnnotations` (line 126: `if err != nil && !errors.Is(err, context.DeadlineExceeded)` \u2014 no log, no metric). Then `clean()` checks `ctx.Err()` at line 111 and returns, **skipping jobs 6-8** (expire old user invites, delete stale short URLs, delete stale query history). The operator has zero visibility into this.\n\nWith the 1-minute ticker, `Run` calls `clean()` synchronously (line 81). If `clean()` takes >1 minute, ticks coalesce and the next `clean()` fires immediately after the previous one returns. This creates continuous back-to-back cleanup execution with no cooldown, repeatedly running jobs 1-4 (which may have nothing to do) before hitting the annotation cleanup again \u2014 potentially re-starving jobs 6-8 on every cycle. The sustained DB load from continuous cleanup also increases lock contention with concurrent writes, partially undermining the deadlock fix this PR introduces.\n\n**Why an individual reviewer would miss this:** Finding 1 focuses on log severity; finding 3 on function promotion; finding 4 on receiver coupling. None individually addresses the interaction between the cadence change, the slower per-batch design, the sequential job ordering, and the silent timeout handling.",
+      "confidence": 0.75,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "compound",
+      "dimension_name": "Compound Analysis",
+      "evidence": "cleanup.go:77 \u2014 ticker = 1 minute (was 10 minutes). cleanup.go:89 \u2014 `const timeout = 9 * time.Minute`. cleanup.go:96-105 \u2014 8 sequential jobs, 'cleanup old annotations' is index 4 (5th). cleanup.go:110-118 \u2014 sequential loop with `ctx.Err()` check before each job. cleanup.go:126 \u2014 `if err != nil && !errors.Is(err, context.DeadlineExceeded)` silently ignores timeout errors from annotation cleanup. xorm_store.go:528-539, 548-559, 570-581 \u2014 each cleanup path calls fetchIDs (SELECT) then deleteByIDs (DELETE) per batch = 2 round-trips. xorm_store.go:643-661 \u2014 untilDoneOrCancelled loops until `affected == 0` (line 656), processing all matching rows. cleanup.go:35-57 \u2014 CleanupServiceImpl.Run invokes CleanAnnotations 3x + CleanOrphanedAnnotationTags 1x = 4 batched loops per cycle. setting.go:710 \u2014 default AnnotationCleanupJobBatchSize = 100. cleanup.go:81 \u2014 `srv.clean(ctx)` called synchronously in ticker select, so ticks coalesce when clean() exceeds 1 minute.",
+      "file_path": "pkg/services/cleanup/cleanup.go",
+      "id": "f_011",
+      "line_end": 131,
+      "line_start": 77,
+      "score": 0.525,
+      "severity": "important",
+      "suggestion": "1. Revert or separately justify the ticker change (10min -> 1min) \u2014 it is unmentioned in the PR description and affects ALL 8 cleanup jobs, not just annotations. 2. If the 1-minute cadence is intentional, add per-job time budgets within clean() so a single long-running job cannot starve downstream jobs. 3. Log (at Warn level) when annotation cleanup hits the DeadlineExceeded path instead of silently swallowing it, so operators can detect chronic cleanup starvation. 4. Consider making the annotation cleanup incremental across cycles (e.g., process at most N batches per cycle) rather than running until all matching rows are deleted within a single 9-minute window.",
+      "tags": [
+        "operational-impact",
+        "cleanup-starvation",
+        "timeout-interaction",
+        "cadence-change",
+        "silent-failure",
+        "compound-risk"
+      ],
+      "title": "10x cadence + 2-round-trip-per-batch loop + fixed 9-min timeout + silent DeadlineExceeded swallowing = downstream cleanup job starvation and invisible timeout"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Test performance and potential CI flakiness concerns are non-blocking code quality issues, not build/test breakage or correctness problems.",
+      "body": "The new test case creates 40003 annotations (and 80006 annotation_tag rows) via InsertMulti in batches of 500 \u2014 that's 80+ round trips just for annotations and 160+ for tags, against an in-memory SQLite DB. It then runs the cleanup which fetches and deletes 40000 rows in batches. While it's guarded by `testing.Short()` skip, in full CI this test will add meaningful wall-clock time and memory pressure to the annotations test package. The test exists to verify the SQLite parameter-limit code path (batch size 32767 > 999), but 40003 rows is far more than needed to exercise that branch \u2014 a batch size of 1001 with ~1100 annotations would trigger the same code path in milliseconds.",
+      "confidence": 0.78,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "test_stability",
+      "dimension_name": "Test Stability / CI Performance",
+      "evidence": "Test case at lines 95-116: createAnnotationsNum: 40003, createOldAnnotationsNum: 0, annotationCleanupJobBatchSize: 32767, affectedAnnotations: 40000. createTestAnnotations uses batches of 500 (lines 188-204), so 40003 annotations = 81 InsertMulti calls + 161 for tags = 242 round trips.",
+      "file_path": "pkg/services/annotations/annotationsimpl/cleanup_test.go",
+      "id": "f_007",
+      "line_end": 116,
+      "line_start": 95,
+      "score": 0.304,
+      "severity": "suggestion",
+      "suggestion": "Reduce the test scale: use `annotationCleanupJobBatchSize: 1001` (still > 999 to hit the SQLite inline-values branch) and `createAnnotationsNum` of ~1100 to verify the same behavior with ~40x less data. Alternatively, keep the large test but move it to a separately-tagged test (`t.Run` with a build tag or `testing.Short()` is already there \u2014 consider also `//go:build integration` or a longer timeout budget).",
+      "tags": [
+        "test-performance",
+        "ci-time",
+        "test-scale"
+      ],
+      "title": "New 40003-annotation test case is slow and may make CI flaky"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a test maintainability/documentation suggestion with no impact on production code, build, tests, or existing behavior.",
+      "body": "The test presets `ID: int64(i+1)` on each `*annotations.Item` before batch-inserting via `sess.InsertMulti(...)`, then uses `a.ID` to link `annotationTag` rows:\n\n```go\na := &annotations.Item{ID: int64(i + 1), ...}\nnewAnnotations = append(newAnnotations, a)\nnewAnnotationTags = append(newAnnotationTags,\n    &annotationTag{AnnotationID: a.ID, TagID: 1},\n    &annotationTag{AnnotationID: a.ID, TagID: 2})\n```\n\nThis linkage is **mechanically correct** because:\n\n1. **xorm `innerInsertMulti`** (`pkg/util/xorm/session_insert.go:153`) checks `if col.IsAutoIncrement && isZero(fieldValue.Interface()) { continue }`. Since `int64(i+1)` is always \u2265 1 (non-zero), the `id` column IS included in the INSERT with the explicit value.\n2. **SQLite** accepts explicit IDs into `INTEGER PRIMARY KEY AUTOINCREMENT` columns (documented behavior).\n3. **No writeback needed**: Unlike `innerInsert` (single-row, which calls `res.LastInsertId()` and writes back via `aiValue.Set(...)` at line 578), `innerInsertMulti` does NOT write back IDs to slice elements. But since the test presets the ID and xorm inserts with that exact value, `a.ID` in the slice already matches the DB row's PK.\n\n### Why this is fragile\n\nA future maintainer who:\n- Changes `ID: int64(i+1)` to `ID: 0` (or removes the field), OR\n- Switches from `InsertMulti` to a hypothetical batch insert that auto-increments\n\n...would silently break the FK linkage: xorm would auto-increment the annotation ID in the DB, but `a.ID` would remain 0, creating orphaned `annotationTag` rows with `AnnotationID: 0`.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "correctness",
+      "dimension_name": "Correctness verification",
+      "evidence": "",
+      "file_path": "pkg/services/annotations/annotationsimpl/cleanup_test.go",
+      "id": "f_001",
+      "line_end": 292,
+      "line_start": 232,
+      "score": 0.27,
+      "severity": "suggestion",
+      "suggestion": "Add a brief comment explaining the xorm `InsertMulti` ID behavior:\n\n```go\n// Preset IDs because xorm's InsertMulti does not write back auto-incremented IDs\n// to slice elements (unlike single-row Insert). The preset value is included in\n// the INSERT because innerInsertMulti skips auto-increment columns only when\n// the field value is zero. This ensures a.ID matches the DB row's PK for FK linkage.\na := &annotations.Item{ID: int64(i + 1), ...}\n```",
+      "tags": [
+        "correctness",
+        "fragility",
+        "xorm"
+      ],
+      "title": "Test relies on undocumented xorm InsertMulti behavior for FK linkage"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "The reviewer explicitly states this is not blocking and is a stylistic consistency suggestion only, with no demonstrated production impact.",
+      "body": "Sibling subquery-DELETEs in `deleteChildrenDashboardAssociations` are transactional (sess-scoped, row-locked, once-per-delete), NOT the same deadlock class as the fixed non-transactional batch loop. Not blocking; follow-up issue for stylistic consistency only.",
+      "confidence": 0.88,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "",
+      "dimension_name": "",
+      "evidence": "",
+      "file_path": "",
+      "id": "f_003",
+      "line_end": 0,
+      "line_start": 0,
+      "score": 0.264,
+      "severity": "suggestion",
+      "suggestion": null,
+      "tags": [],
+      "title": "Sibling subquery-DELETEs in deleteChildrenDashboardAssociations are transactional"
+    },
+    {
+      "active_multipliers": [
+        "adversary_challenged"
+      ],
+      "blocking": false,
+      "blocking_reason": "No exploitable injection path exists in this PR; all call sites pass hardcoded literals and the finding itself confirms there is no immediate exploit.",
+      "body": "`fetchIDs` builds the SELECT statement by interpolating `table` and `condition` directly into the SQL string with `fmt.Sprintf`. This is a pattern that is generally flagged by SQL-injection linters. In this PR all call sites pass hardcoded table names (\"annotation\", \"annotation_tag\") and conditions built from `annotationType` plus a computed `cutoffDate` int64, so there is no immediate exploitable injection. However: (1) the `annotationType` parameter is a raw SQL fragment like `\"alert_id > 0\"` / `\"dashboard_id > 0\"` / `\"alert_id = 0 AND dashboard_id > 0\"` that flows from `cleanUpOldAnnotations` \u2192 `annotationCleaner.Run` \u2014 this is a pre-existing smell but the new fetchIDs makes it more visible; (2) the function signature `fetchIDs(ctx, table, condition string)` invites future callers to pass user-influenced strings. The same concern applies to `deleteByIDs` which interpolates `table`.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "sql_injection",
+      "dimension_name": "SQL Injection / Unparameterized SQL",
+      "evidence": "Line 585: `sql := fmt.Sprintf(`SELECT id FROM %s`, table)`; Line 589: `sql += fmt.Sprintf(` WHERE %s`, condition)`. The `condition` at line 529 is `fmt.Sprintf(`%s AND created < %v ORDER BY id DESC %s`, annotationType, cutoffDate, ...)` where annotationType is a SQL fragment string.",
+      "file_path": "pkg/services/annotations/annotationsimpl/xorm_store.go",
+      "id": "f_006",
+      "line_end": 595,
+      "line_start": 584,
+      "score": 0.12,
+      "severity": "suggestion",
+      "suggestion": "Add a code comment documenting that `table` and `condition` MUST be hardcoded literals or fully-internal strings, never user input. Consider validating `table` against an allowlist {\"annotation\", \"annotation_tag\"} at the top of fetchIDs/deleteByIDs. If annotationType is ever made configurable in the future, switch to a structured enum and build the SQL fragment from constants rather than accepting a raw string.",
+      "tags": [
+        "sql-injection-surface",
+        "defense-in-depth",
+        "string-interpolation"
+      ],
+      "title": "fetchIDs interpolates table and condition strings into SQL via fmt.Sprintf (not parameterized)"
+    },
+    {
+      "active_multipliers": [
+        "adversary_challenged"
+      ],
+      "blocking": false,
+      "blocking_reason": "Suggestion is for a clarifying comment only; no correctness or behavior issue demonstrated.",
+      "body": "`untilDoneOrCancelled` checks `ctx.Done()` only in the `select` before invoking `batchWork`. Once a batch starts (fetchIDs + deleteByIDs), it runs to completion even if the context expires mid-batch. This is mostly fine for correctness (the job is idempotent), but with the new 1-minute ticker and a 9-minute `clean()` timeout, a pathological batch on a slow database could overrun. More importantly, `fetchIDs` and `deleteByIDs` use `r.db.WithDbSession(ctx, ...)` which DOES respect cancellation internally \u2014 but the select structure means a context cancellation that arrives DURING `batchWork` will surface as an error from fetchIDs/deleteByIDs (good) rather than being caught by the select. This is acceptable but worth a clarifying comment so future readers understand the cancellation semantics.",
+      "confidence": 0.72,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "concurrency_correctness",
+      "dimension_name": "Concurrency Correctness",
+      "evidence": "Lines 643-666: the `select` has `case <-ctx.Done()` and `default: affected, err := batchWork()`. There is no cancellation check inside the default branch. batchWork (the closure at lines 528-538 etc.) calls r.fetchIDs and r.deleteByIDs which both use r.db.WithDbSession(ctx, ...) \u2014 so ctx is respected inside, but only as an error return, not as a select.",
+      "file_path": "pkg/services/annotations/annotationsimpl/xorm_store.go",
+      "id": "f_008",
+      "line_end": 666,
+      "line_start": 643,
+      "score": 0.108,
+      "severity": "suggestion",
+      "suggestion": "Add a one-line comment above the `default:` branch noting that batchWork is expected to respect ctx internally (via WithDbSession) so mid-batch cancellation propagates as an error rather than via the select. No code change strictly required.",
+      "tags": [
+        "concurrency",
+        "context-cancellation",
+        "timeout-semantics"
+      ],
+      "title": "Context cancellation only checked BETWEEN batches, not mid-batch \u2014 long batches can overrun the 9-min clean() timeout"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Reviewer explicitly states this is harmless with no current production impact; it is a minor logic imprecision with no demonstrated breakage.",
+      "body": "The decision to inline IDs into the SQL string (vs. using placeholders) is based on `r.cfg.AnnotationCleanupJobBatchSize > sqliteParameterLimit` (the configured batch size), not on `len(ids)` (the actual number of IDs fetched in this batch). If batch size is configured to 1000 but only 5 IDs are fetched, the inline branch is taken unnecessarily \u2014 producing a short SQL string but skipping the parameterized path. This is harmless (the inline SQL for 5 IDs is tiny and safe since IDs are trusted int64s from the DB), but it's a minor logic imprecision. The real risk would be a future where AnnotationCleanupJobBatchSize is made configurable to a very large value on SQLite \u2014 the inlined SQL string could approach SQLite's SQLITE_MAX_SQL_LENGTH (default 1,000,000 bytes); 32767 IDs at ~7 chars each is ~230KB which is under the limit but worth noting.",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "logic_correctness",
+      "dimension_name": "Logic Correctness / Edge Cases",
+      "evidence": "Line 608: `if r.db.GetDBType() == migrator.SQLite && r.cfg.AnnotationCleanupJobBatchSize > sqliteParameterLimit`. The check uses r.cfg.AnnotationCleanupJobBatchSize (config), not len(ids) (actual).",
+      "file_path": "pkg/services/annotations/annotationsimpl/xorm_store.go",
+      "id": "f_009",
+      "line_end": 618,
+      "line_start": 607,
+      "score": 0.091,
+      "severity": "nitpick",
+      "suggestion": "Optionally, gate the inline branch on `len(ids) > sqliteParameterLimit` instead of the configured batch size, so the parameterized path is used whenever the actual batch fits. This is more precise and avoids the edge case. Not a blocker.",
+      "tags": [
+        "edge-case",
+        "logic-precision",
+        "sqlite"
+      ],
+      "title": "SQLite inline-values branch is selected by CONFIGURED batch size, not actual len(ids)"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Test-only fragility in ID assignment does not break the build, production code, or any existing contract.",
+      "body": "The refactored `createTestAnnotations` now sets `a.ID = int64(i + 1)` explicitly (line ~237) and the test was restructured so each subtest creates annotations and registers a t.Cleanup that DELETEs FROM annotation and annotation_tag. Because `fakeSQL := db.InitTestDB(t)` is created ONCE at the top of TestIntegrationAnnotationCleanUp and shared across all subtests (table-driven), the explicit IDs starting at 1 will collide across subtests unless the cleanup runs reliably between them. The t.Cleanup is registered INSIDE each subtest (after createTestAnnotations), so ordering should be safe (cleanup runs when the subtest ends), but relying on explicit IDs when the DB is shared is fragile \u2014 if a subtest fails partway and cleanup doesn't run, the next subtest starts with leftover rows with the same IDs. The original code did not set ID explicitly (let the DB auto-assign).",
+      "confidence": 0.68,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "test_correctness",
+      "dimension_name": "Test Correctness",
+      "evidence": "Line 237: `newAnnotations := make([]*annotations.Item, 0, expectedCount)`; Line 240: `ID: int64(i + 1),` \u2014 explicit ID assignment. fakeSQL is created once at line 33 and shared across all table-driven subtests via the for loop at line 119.",
+      "file_path": "pkg/services/annotations/annotationsimpl/cleanup_test.go",
+      "id": "f_010",
+      "line_end": 294,
+      "line_start": 237,
+      "score": 0.088,
+      "severity": "nitpick",
+      "suggestion": "Either (a) don't set a.ID explicitly \u2014 let the DB assign IDs (the original behavior), or (b) if explicit IDs are needed for the 40003-row test, move the InitTestDB call INTO each subtest so each has a fresh DB. Option (a) is simpler and restores the original safety.",
+      "tags": [
+        "test-isolation",
+        "shared-state",
+        "id-collision"
+      ],
+      "title": "Hardcoded annotation IDs (i+1) in createTestAnnotations may collide across subtests sharing the same SQLite DB"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Architectural refactor suggestion with no demonstrated production impact; explicitly deferred until a second consumer appears.",
+      "body": "`asAny` and `untilDoneOrCancelled` ARE genuinely-promotable free functions; extract when a second consumer appears.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "",
+      "dimension_name": "",
+      "evidence": "",
+      "file_path": "",
+      "id": "f_004",
+      "line_end": 0,
+      "line_start": 0,
+      "score": 0.085,
+      "severity": "nitpick",
+      "suggestion": null,
+      "tags": [],
+      "title": "asAny and untilDoneOrCancelled are genuinely-promotable free functions"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Test performance optimization suggestion with no correctness impact; falls under non-blocking performance concerns.",
+      "body": "The 5th subtest creates **40003 annotations + 80006 annotation_tags = 120,009 rows** in 241 batch round-trips (batch size 500). While `testing.Short()` guards against short-mode runs, this test runs in full CI.\n\nOn SQLite in-memory (test DB default), this should complete in seconds. On file-based SQLite (some CI configurations), the I/O from 241 batch INSERT round-trips could make this test noticeably slow.",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "performance",
+      "dimension_name": "Performance / test infrastructure",
+      "evidence": "",
+      "file_path": "pkg/services/annotations/annotationsimpl/cleanup_test.go",
+      "id": "f_002",
+      "line_end": 292,
+      "line_start": 232,
+      "score": 0.07,
+      "severity": "nitpick",
+      "suggestion": "Consider reducing the row count while preserving the test's intent (verifying the `deleteByIDs` inlined-values branch handles batches > 999 parameters). The test could use, e.g., 1003 annotations + 2006 tags (still > 999 to trigger the inline branch) instead of 40003 + 80006, unless the 40003 count has specific significance to the `SQLITE_MAX_VARIABLE_NUMBER` threshold being tested.",
+      "tags": [
+        "performance",
+        "test-infrastructure"
+      ],
+      "title": "40003-annotation subtest creates 120K rows \u2014 potential CI performance concern"
+    }
+  ]
+}

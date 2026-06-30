@@ -1,0 +1,175 @@
+{
+  "id": "grafana#90939",
+  "repo": "grafana",
+  "pr_url": "https://github.com/grafana/grafana/pull/90939",
+  "language": "Go",
+  "review_model": "openrouter/z-ai/glm-5.2",
+  "judge_model": "anthropic/claude-sonnet-4.6",
+  "difficulty_score": 0.5205,
+  "recall": 0.5,
+  "hits": 1,
+  "n_goldens": 2,
+  "duration_seconds": 1946.002,
+  "cost_usd": 0,
+  "goldens": [
+    {
+      "comment": "The GetWebAssets function implements an incomplete double-checked locking pattern for caching web assets. The function first checks if the cache is populated using a read lock (RLock), and if the cache is empty, it acquires a write lock to populate it. However, it fails to re-check whether the cache was populated by another goroutine while waiting to acquire the write lock.",
+      "severity": "Medium"
+    },
+    {
+      "comment": "In addition to the missing double-check, the function has a critical flaw in its error handling: it unconditionally assigns the fetch result to the cache (line 69: entryPointAssetsCache = result) regardless of whether the fetch succeeded or failed. When an error occurs during asset fetching, result is nil, and this nil value overwrites any previously valid cache entry.",
+      "severity": "High"
+    }
+  ],
+  "golden_verdicts": [
+    {
+      "golden_idx": 0,
+      "hit": true,
+      "matched_finding": "Missing re-check under write lock in double-checked locking pattern",
+      "reason": "F0 directly identifies the missing re-check after acquiring the write lock in the double-checked locking pattern at the same code location."
+    },
+    {
+      "golden_idx": 1,
+      "hit": false,
+      "matched_finding": null,
+      "reason": "None of the tool findings address the unconditional assignment of nil result to the cache on error (line 69: entryPointAssetsCache = result)."
+    }
+  ],
+  "findings": [
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a performance optimization for a redundant-but-idempotent initialization path, not a correctness or production-impact bug.",
+      "body": "The double-checked locking (DCL) pattern is incomplete. After the RLock fast-path check returns nil (lines 41\u201347), the code acquires the write lock (line 48) but does **not** re-check whether `entryPointAssetsCache` has already been populated by another goroutine that held the write lock first.\n\n**Scenario**: On cold start (non-Dev mode), N concurrent requests all see `entryPointAssetsCache == nil` under RLock. They all proceed to acquire the write lock serially. Goroutine A reads `assets-manifest.json` from disk, parses JSON, populates the cache, and releases. Goroutine B then acquires the lock \u2014 without a re-check, B reads and parses the same file **again**, overwriting the cache with identical data. This repeats for all N goroutines.\n\nThis is **not a correctness bug** \u2014 the file read is idempotent, so the cache always ends up with the correct data. However, it defeats the primary performance benefit of the DCL pattern: ensuring the expensive initialization work happens exactly once. On a busy server startup where many handlers call `GetWebAssets` simultaneously, this causes N redundant disk reads + JSON parses instead of 1.\n\nThe fix is a single re-check after acquiring the write lock:\n```go\nentryPointAssetsCacheMu.Lock()\ndefer entryPointAssetsCacheMu.Unlock()\n\n// Re-check under write lock to avoid redundant initialization\nif cfg.Env != setting.Dev && entryPointAssetsCache != nil {\n    return entryPointAssetsCache, nil\n}\n```",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "coverage_gap_cluster_0",
+      "dimension_name": "Coverage Gap: pkg/api/webassets/webassets.go",
+      "evidence": "Step 1: Goroutines A and B both call `GetWebAssets` concurrently in non-Dev mode (cold cache).\nStep 2: Both acquire RLock (line 41), read `entryPointAssetsCache` as nil (line 42), release RLock (line 43).\nStep 3: Both fail the fast-path check `cfg.Env != setting.Dev && ret != nil` (line 45) because `ret == nil`.\nStep 4: Goroutine A acquires write lock (line 48), reads file (line 60), sets `entryPointAssetsCache = result` (line 69), unlocks (deferred, line 49).\nStep 5: Goroutine B acquires write lock (line 48) \u2014 no re-check of `entryPointAssetsCache` \u2014 reads the same file again (line 60), overwrites cache with identical data (line 69).\nStep 6: Result: 2 redundant file reads instead of 1. Scales linearly with contention.",
+      "file_path": "pkg/api/webassets/webassets.go",
+      "id": "f_003",
+      "line_end": 49,
+      "line_start": 48,
+      "score": 0.255,
+      "severity": "suggestion",
+      "suggestion": "Add a re-check of `entryPointAssetsCache` (guarded by the already-held write lock) immediately after `entryPointAssetsCacheMu.Lock()` / `defer entryPointAssetsCacheMu.Unlock()`, before proceeding to the file read. This ensures only the first goroutine to acquire the write lock performs the expensive initialization; subsequent waiters return the now-populated cache immediately.",
+      "tags": [
+        "concurrency",
+        "performance",
+        "double-checked-locking",
+        "mutex"
+      ],
+      "title": "Missing re-check under write lock in double-checked locking pattern"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "The finding explicitly describes a pre-existing bug that this PR does not amplify or introduce, and the reviewer's own severity label is 'suggestion'.",
+      "body": "The ruler path uses `isGrafanaManagedAlertRule = rulerRuleType.grafana.rule(rule)` (line 246) which is true for BOTH alerting AND recording grafana rules. The prom path uses `isAlertingRule = prometheusRuleType.grafana.alertingRule(rule)` (line 302) which is true ONLY for alerting rules. Actions affected: Pause, Restore, DeletePermanently, ModifyExport \u2014 these use isGrafanaManagedAlertRule in the ruler path but isAlertingRule in the prom path. For a grafana recording rule, the ruler path's support flag may be true (conjunct evaluated) while the prom path's is false (conjunct skipped). The OR result uses the ruler path's overly broad flag, allowing Pause/Restore/DeletePermanently/Export on recording rules. This is a pre-existing bug in the ruler path \u2014 isGrafanaManagedAlertRule is too broad for actions that only make sense for alerting rules. The OR does not amplify this beyond what the ruler path alone already allows, but it prevents the prom path's more correct isAlertingRule check from taking effect.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "or-logic-permission-amplification",
+      "dimension_name": "OR-Logic Permission Amplification",
+      "evidence": "Ruler path line 246: `isGrafanaManagedAlertRule = rulerRuleType.grafana.rule(rule)` \u2014 true for alerting AND recording. Prom path line 302: `isAlertingRule = prometheusRuleType.grafana.alertingRule(rule)` \u2014 true only for alerting. Actions Pause/Restore/DeletePermanently/Export use isGrafanaManagedAlertRule in ruler path but isAlertingRule in prom path.",
+      "file_path": "public/app/features/alerting/unified/hooks/useAbilities.ts",
+      "id": "f_001",
+      "line_end": 302,
+      "line_start": 246,
+      "score": 0.24,
+      "severity": "suggestion",
+      "suggestion": "In the ruler path, replace isGrafanaManagedAlertRule with a narrower check that excludes recording rules for alerting-only actions (Pause, Silence, Restore). Use `rulerRuleType.grafana.alertingRule(rule)` instead of `rulerRuleType.grafana.rule(rule)` for these specific actions, matching the prom path's behavior.",
+      "tags": [
+        "or-logic",
+        "permission",
+        "recording-rules",
+        "pre-existing-bug",
+        "rule-type-classification"
+      ],
+      "title": "isGrafanaManagedAlertRule vs isAlertingRule asymmetry allows alerting-only actions on recording rules"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Missing test coverage for caching and concurrency behavior is a non-blocking code-quality suggestion, not a build or correctness regression.",
+      "body": "The function modified by this PR \u2014 `GetWebAssets` \u2014 has **zero test coverage**. The existing test file (`webassets_test.go`) only tests the internal helpers `readWebAssetsFromFile` and `readWebAssetsFromCDN`. There is no test that:\n\n1. Verifies the caching behavior (that a second call in non-Dev mode returns the cached value without re-reading the file).\n2. Verifies the Dev-mode behavior (that the cache is bypassed and the file is re-read each time).\n3. Exercises the new `sync.RWMutex` under `-race` to confirm the data race is actually fixed.\n\nWithout a test, running `go test -race ./pkg/api/webassets/...` does **not** exercise the mutex code at all \u2014 the race detector only triggers on code paths that are actually executed during tests. The PR's stated purpose (fixing a data race) cannot be verified by the existing test suite.\n\nA minimal test would: call `GetWebAssets` twice in non-Dev mode and assert the second call returns the same pointer (proving cache hit); call it in Dev mode and assert a different pointer (proving re-read); and run a concurrent stress test under `-race` to verify no data race.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "coverage_gap_cluster_0",
+      "dimension_name": "Coverage Gap: pkg/api/webassets/webassets.go",
+      "evidence": "Step 1: `webassets_test.go` contains `TestReadWebassets` (line 11) testing `readWebAssetsFromFile` and `TestReadWebassetsFromCDN` (line 89, skipped) testing `readWebAssetsFromCDN`.\nStep 2: Neither test calls `GetWebAssets` (the public API function modified by this PR).\nStep 3: `grep -n 'GetWebAssets' pkg/api/webassets/webassets_test.go` returns zero matches.\nStep 4: The mutex code at lines 41-49 and 69 is never executed during `go test ./pkg/api/webassets/...`.\nStep 5: `go test -race` cannot detect the data race fix because the race-prone code path is not exercised.",
+      "file_path": "pkg/api/webassets/webassets.go",
+      "id": "f_004",
+      "line_end": 71,
+      "line_start": 40,
+      "score": 0.24,
+      "severity": "suggestion",
+      "suggestion": "Add a `TestGetWebAssets` test that covers: (1) cache hit in non-Dev mode (second call returns same pointer, file is not re-read), (2) cache bypass in Dev mode (file is re-read each call), and (3) a concurrent stress test (e.g., `sync.WaitGroup` with N goroutines) run under `go test -race` to verify the mutex eliminates the data race.",
+      "tags": [
+        "testing",
+        "test-coverage",
+        "concurrency",
+        "race-detection"
+      ],
+      "title": "No test coverage for GetWebAssets caching and concurrency behavior"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a documentation/comment suggestion about intentional behavior that the reviewer confirms is technically correct and not a security concern.",
+      "body": "The ruler path (useAllRulerRuleAbilities) gates MaybeSupported on isRulerAvailable: `MaybeSupported = loading ? NotSupported : isRulerAvailable`. The prom path (useAllGrafanaPromRuleAbilities) uses `MaybeSupported = loading ? NotSupported : AlwaysSupported` with no isRulerAvailable gate. For grafana rules, isRulerAvailable is always true except when the feature discovery API errors (returns false). During that error window, the ruler path blocks all abilities (NotSupported) while the prom path continues evaluating normally. The OR result then allows actions via the prom path during feature discovery API errors when the ruler path alone would block them. This is technically correct for grafana rules (ruler IS always available; the feature discovery error is a false negative), so this is not a security concern. The asymmetry should be documented to prevent future confusion.",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "or-logic-permission-amplification",
+      "dimension_name": "OR-Logic Permission Amplification",
+      "evidence": "Ruler path line 253: `MaybeSupported = loading ? NotSupported : isRulerAvailable`. Prom path line 309: `MaybeSupported = loading ? NotSupported : AlwaysSupported`. useIsRuleEditable.ts line 71 shows isRulerAvailable is always true for grafana rules. Lines 33-41 return false only on feature discovery API errors.",
+      "file_path": "public/app/features/alerting/unified/hooks/useAbilities.ts",
+      "id": "f_000",
+      "line_end": 309,
+      "line_start": 253,
+      "score": 0.21,
+      "severity": "suggestion",
+      "suggestion": "Document the intentional asymmetry: the prom path's AlwaysSupported is more accurate than the ruler path's error-sensitive isRulerAvailable gate for grafana-managed rules. Consider adding a comment at both line 253 and line 309 explaining why the gates differ.",
+      "tags": [
+        "or-logic",
+        "permission",
+        "asymmetry",
+        "grafana-managed-rules",
+        "error-handling"
+      ],
+      "title": "isRulerAvailable gate asymmetry between ruler and prom paths"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "The finding itself cannot concretely demonstrate that namespace_uid and folderUid diverge in practice, making the alleged permission bypass speculative rather than demonstrated.",
+      "body": "The ruler path (useCanSilence, line 560) uses `rule.grafana_alert.namespace_uid` (RulerGrafanaRuleDTO) to resolve the folder for permission checks. The prom path (useCanSilenceInFolder, line 583) uses `rule?.folderUid` (GrafanaPromRuleDTOBase). If namespace_uid and folderUid resolve to different folders with different access control settings, the ruler path evaluates permissions against folder A while the prom path evaluates against folder B. The OR result takes the permissive result: if folder A denies but folder B allows (or vice versa), the action is allowed based on the more permissive folder's permissions. This is the most concerning OR-logic finding. The Silence action is particularly risky because AlertRuleMenu.tsx line 126 has no rulerRule rendering gate \u2014 Silence renders whenever canSilence is true, unlike Delete and Pause which require rulerRule. Severity depends on whether namespace_uid and folderUid actually diverge in practice. If they always reference the same folder, this is a non-issue. If they can diverge, the OR amplifies the divergence by taking the more permissive folder's permissions for Silence, Edit, Duplicate, and Export actions.",
+      "confidence": 0.6,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "or-logic-permission-amplification",
+      "dimension_name": "OR-Logic Permission Amplification",
+      "evidence": "Ruler path useCanSilence line 560: folder UID from `rule.grafana_alert.namespace_uid`. Prom path useCanSilenceInFolder line 583: folder UID from `rule?.folderUid`. AlertRuleMenu.tsx line 126: Silence menu item has no rulerRule gate, renders whenever canSilence is true. Per-action trace shows Silence has 'Medium' OR amplification risk due to no rendering gate + folder divergence.",
+      "file_path": "public/app/features/alerting/unified/hooks/useAbilities.ts",
+      "id": "f_002",
+      "line_end": 583,
+      "line_start": 560,
+      "score": 0.18,
+      "severity": "suggestion",
+      "suggestion": "Ensure namespace_uid and folderUid always reference the same folder. If they can legitimately diverge, either (a) unify the folder UID source between the two paths, or (b) require BOTH paths to agree (AND instead of OR) for silence/edit/duplicate/export actions when folder permissions differ. At minimum, add a runtime assertion or log warning when namespace_uid != folderUid to detect divergence in production.",
+      "tags": [
+        "or-logic",
+        "permission-amplification",
+        "folder-uid",
+        "namespace_uid",
+        "silence-action",
+        "security",
+        "access-control"
+      ],
+      "title": "Folder UID source divergence amplification \u2014 OR takes the more permissive folder's permissions"
+    }
+  ]
+}

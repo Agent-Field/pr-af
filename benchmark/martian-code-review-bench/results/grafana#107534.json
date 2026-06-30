@@ -1,0 +1,291 @@
+{
+  "id": "grafana#107534",
+  "repo": "grafana",
+  "pr_url": "https://github.com/grafana/grafana/pull/107534",
+  "language": "Go",
+  "review_model": "openrouter/z-ai/glm-5.2",
+  "judge_model": "anthropic/claude-sonnet-4.6",
+  "difficulty_score": 0.8934,
+  "recall": 1.0,
+  "hits": 1,
+  "n_goldens": 1,
+  "duration_seconds": 2211.052,
+  "cost_usd": 0,
+  "goldens": [
+    {
+      "comment": "The applyTemplateVariables method is called with request.filters as the third parameter, but this parameter is not used in the corresponding test setup.",
+      "severity": "Low"
+    }
+  ],
+  "golden_verdicts": [
+    {
+      "golden_idx": 0,
+      "hit": true,
+      "matched_finding": "F3 - Ad-hoc filters now applied in shard path \u2014 behavior change vs. previous code",
+      "reason": "F3 identifies that request.filters is passed to applyTemplateVariables in the shard path but no test verifies this behavior, directly matching G0's concern about request.filters not being used in the test setup."
+    }
+  ],
+  "findings": [
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": true,
+      "blocking_reason": "The finding concretely traces a regression where ad-hoc filters are double-applied to Loki queries, producing duplicate label selectors that did not occur in the prior code path.",
+      "body": "runShardSplitQuery now calls datasource.applyTemplateVariables(query, request.scopedVars, request.filters) at line 52, producing interpolated targets. These targets are later passed via subRequest (line 154, after interpolateShardingSelector) into runSplitQuery at line 163. runSplitQuery unconditionally calls datasource.applyTemplateVariables(query, request.scopedVars, request.filters) AGAIN at querySplitting.ts:299.\n\napplyTemplateVariables (datasource.ts:1110) internally calls addAdHocFilters (datasource.ts:1073), which appends each ad-hoc filter label to the expr via addLabelToQuery without any deduplication check. Because subRequest retains request.filters (subRequest = {...request, targets: ...}), the second interpolation re-applies the SAME ad-hoc filters to an expr that already contains them.\n\nResult: the final Loki query expr contains duplicate label selectors, e.g. {namespace=\"foo\", namespace=\"foo\", shard=\"0\"}. This can cause Loki query parse errors, unexpected stream selector matching, or silent result skew. This bug did not exist before the PR because the old code used interpolateVariablesInQueries (no filters arg) in runShardSplitQuery and runSplitQuery did not interpolate at all.\n\nConfidence: high. Code path verified end-to-end: shardQuerySplitting.ts:52 \u2192 shardQuerySplitting.ts:154 \u2192 shardQuerySplitting.ts:163 \u2192 querySplitting.ts:299. addAdHocFilters non-idempotency verified at datasource.ts:1073-1091.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "correctness",
+      "dimension_name": "Correctness",
+      "evidence": "shardQuerySplitting.ts:52 applies applyTemplateVariables with request.filters. shardQuerySplitting.ts:163 delegates to runSplitQuery with subRequest={...request, targets} (filters preserved). querySplitting.ts:299 applies applyTemplateVariables with request.filters again. datasource.ts:1073 addAdHocFilters appends labels via addLabelToQuery with no dedup.",
+      "file_path": "public/app/plugins/datasource/loki/shardQuerySplitting.ts",
+      "id": "f_005",
+      "line_end": 55,
+      "line_start": 48,
+      "score": 1.235,
+      "severity": "critical",
+      "suggestion": "Either (a) skip interpolation in runShardSplitQuery and let runSplitQuery handle it (remove the .map(applyTemplateVariables) at lines 49-52, keep only the filter), OR (b) pass a flag to runSplitQuery to skip interpolation when called from runShardSplitQuery, OR (c) strip request.filters from subRequest before delegating to runSplitQuery so the second interpolation is a no-op for ad-hoc filters. Option (a) is cleanest but requires verify that interpolateShardingSelector operates correctly on non-interpolated exprs.",
+      "tags": [
+        "double-interpolation",
+        "adhoc-filters",
+        "shard-splitting",
+        "query-correctness"
+      ],
+      "title": "Double interpolation in shard path duplicates ad-hoc filters"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": true,
+      "blocking_reason": "The redundant interpolation causes duplicate label filters in production queries, a regression of previously correct behavior.",
+      "body": "The PR moves template variable interpolation from a batch pre-processing step into the `runSplitQuery` and `runShardSplitQuery` entry points, using `applyTemplateVariables` (per-target) instead of `interpolateVariablesInQueries` (batch). It also now passes `request.filters` (ad-hoc filters) into the interpolation in the shard path. The PR introduces redundant interpolation because `DataSourceWithBackend.query()` already calls `applyTemplateVariables` on every target (line 185). Since `LokiDatasource.runQuery()` calls `super.query()`, and both splitting paths eventually call `runQuery()`, the interpolation chain becomes double (non-shard) or triple (shard). This causes `addFilterAsLabelFilter` (line 511) to append duplicate label filters (e.g., `| app=\"grafana\" | app=\"grafana\"`) for queries with parsers, as it is not deduplicated like `addFilterToStreamSelector`.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "correctness",
+      "dimension_name": "Correctness",
+      "evidence": "",
+      "file_path": "DataSourceWithBackend.ts",
+      "id": "f_000",
+      "line_end": 185,
+      "line_start": 185,
+      "score": 0.9,
+      "severity": "critical",
+      "suggestion": "Either remove interpolation from `runSplitQuery`/`runShardSplitQuery` and rely on `DataSourceWithBackend.query()`, or add an `alreadyInterpolated` flag to targets so `DataSourceWithBackend.query()` skips re-interpolation, or at minimum add deduplication to `addFilterAsLabelFilter` to match `addFilterToStreamSelector`'s behavior.",
+      "tags": [
+        "interpolation",
+        "ad-hoc-filters",
+        "redundancy",
+        "deduplication"
+      ],
+      "title": "Double/Triple Interpolation"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "This is a test fidelity and false-confidence concern, not a build break, regression, security issue, or contract break.",
+      "body": "Both querySplitting.test.ts and shardQuerySplitting.test.ts mock applyTemplateVariables as a simple function that replaces $__auto \u2192 '5m' and $step \u2192 '5m'. The test at shardQuerySplitting.test.ts:84 ('Interpolates queries before execution') asserts that $__auto is resolved to '5m'.\n\nHowever, the REAL applyTemplateVariables (datasource.ts:1110-1141) explicitly STRIPS __auto, __interval, __interval_ms, __range, __range_s, __range_ms from scopedVars (line 1113: const { __auto, __interval, __interval_ms, __range, __range_s, __range_ms, ...rest } = scopedVars). These variables are intentionally NOT resolved on the frontend \u2014 they're passed through as literal $__interval etc. for backend interpolation (comment at line 1118: 'pass through for backend interpolation').\n\nThis means the tests give false confidence: they assert behavior ($__auto \u2192 '5m') that the real implementation does NOT exhibit. A regression in the real applyTemplateVariables that accidentally resolves __auto would not be caught, and conversely the tests 'pass' while testing a fictional code path.\n\nThis is especially relevant for this PR because the swap from interpolateVariablesInQueries (which DOES resolve __interval via unfiltered scopedVars) to applyTemplateVariables (which strips them) is a semantic change that the tests fail to capture.",
+      "confidence": 0.92,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "test-fidelity",
+      "dimension_name": "Test Fidelity",
+      "evidence": "datasource.ts:1113 strips __auto, __interval, __interval_ms, __range, __range_s, __range_ms from scopedVars. shardQuerySplitting.test.ts:56-60 mock replaces $__auto\u2192'5m'. Real impl would leave $__auto unresolved (passed to backend).",
+      "file_path": "public/app/plugins/datasource/loki/shardQuerySplitting.test.ts",
+      "id": "f_007",
+      "line_end": 60,
+      "line_start": 56,
+      "score": 0.837,
+      "severity": "important",
+      "suggestion": "Either (a) make the test mock faithfully replicate the real applyTemplateVariables stripping behavior (so $__auto remains unresolved), or (b) use the real datasource.applyTemplateVariables in tests instead of a mock, or (c) at minimum add a test that documents the expected behavior of __auto/__interval in the split path (resolved vs. passed-through).",
+      "tags": [
+        "test-fidelity",
+        "mock-mismatch",
+        "interpolation",
+        "backend-pass-through"
+      ],
+      "title": "Test mock of applyTemplateVariables does not replicate real stripping of __auto/__interval vars"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "The finding describes an intentional behavior change and asks for additional test coverage, which is non-blocking.",
+      "body": "Before this PR, runShardSplitQuery called interpolateVariablesInQueries(request.targets, request.scopedVars) with NO adhocFilters argument (third param undefined). This means ad-hoc filters were NOT applied in the shard path before.\n\nAfter the PR, runShardSplitQuery calls applyTemplateVariables(query, request.scopedVars, request.filters) which passes request.filters through to addAdHocFilters. This is a deliberate behavior change (the PR description says callers no longer pre-interpolate), but it means shard-split queries now have ad-hoc filters applied.\n\nIndependent of the double-interpolation bug (which compounds this), this is a semantic change that may affect query results for users relying on shard splitting with ad-hoc filters. The change may be intended (consistency with non-shard path), but it should be called out and tested explicitly.\n\nThe existing test at shardQuerySplitting.test.ts:84 ('Interpolates queries before execution') does NOT cover ad-hoc filters \u2014 it only verifies shard selector and step interpolation. No test verifies that ad-hoc filters are correctly applied exactly once in the shard path.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "correctness",
+      "dimension_name": "Correctness",
+      "evidence": "Old code: interpolateVariablesInQueries(queries, scopedVars) \u2014 2 args, adhocFilters undefined. New code: applyTemplateVariables(q, scopedVars, request.filters) \u2014 3 args, filters passed. No test covers ad-hoc filter application in shard path.",
+      "file_path": "public/app/plugins/datasource/loki/shardQuerySplitting.ts",
+      "id": "f_006",
+      "line_end": 55,
+      "line_start": 48,
+      "score": 0.819,
+      "severity": "important",
+      "suggestion": "Add a test in shardQuerySplitting.test.ts that passes request.filters and verifies the final query expr contains each ad-hoc filter exactly once (not zero, not twice). This both locks in the new behavior and guards against the double-interpolation regression.",
+      "tags": [
+        "behavior-change",
+        "adhoc-filters",
+        "shard-splitting",
+        "test-coverage"
+      ],
+      "title": "Ad-hoc filters now applied in shard path \u2014 behavior change vs. previous code"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Missing test coverage for edge cases and mock fidelity issues are non-blocking per the bar.",
+      "body": "In both test files, `applyTemplateVariables` is mocked as a simple string replacement that is idempotent. The mock does not call real `addAdHocFilters`, so double/triple interpolation is invisible to tests. The assertion change from `toHaveBeenCalledTimes(1)` to `toHaveBeenCalledTimes(5)` accommodates the new call count but doesn't verify output correctness. No test verifies behavior with real ad-hoc filters in the splitting flow.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "testing",
+      "dimension_name": "Testing",
+      "evidence": "",
+      "file_path": "querySplitting.test.ts",
+      "id": "f_004",
+      "line_end": 1,
+      "line_start": 1,
+      "score": 0.63,
+      "severity": "important",
+      "suggestion": "Add a test that uses a non-idempotent mock (e.g. appends a marker each call, or simulates `addAdHocFilters`), asserts the final query expression has ad-hoc filters applied exactly once, and covers both shard and non-shard paths.",
+      "tags": [
+        "testing",
+        "mocks",
+        "interpolation"
+      ],
+      "title": "Tests Don't Catch the Double-Interpolation Problem"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Defensive hardening suggestion with no demonstrated impact on existing production callers.",
+      "body": "runSplitQuery now unconditionally calls applyTemplateVariables on all targets. Currently the only production caller is datasource.ts:339 which does NOT pre-interpolate (only normalizes via getNormalizedLokiQuery + maxLines default), so no existing caller is affected.\n\nHowever, there is no defensive guard preventing a future caller from passing pre-interpolated targets. If another caller is added that pre-interpolates (as runShardSplitQuery now does \u2014 see separate critical finding), double interpolation silently occurs. The shard path is already bitten by this.\n\nConsider adding either: (a) a documented precondition comment on runSplitQuery stating targets must be non-interpolated, (b) an optional options flag interpolate: boolean (default true) so callers can opt out, or (c) a debug-mode assertion that detects already-interpolated exprs.\n\nThis is defensive hardening, not a current bug (beyond the shard path which is tracked separately).",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "defensive-coding",
+      "dimension_name": "Defensive Coding",
+      "evidence": "querySplitting.ts:299 unconditionally calls applyTemplateVariables. datasource.ts:339 is the only production caller and does not pre-interpolate. runShardSplitQuery:163 is a caller that DOES pre-interpolate (via line 52), triggering the double-interpolation bug.",
+      "file_path": "public/app/plugins/datasource/loki/querySplitting.ts",
+      "id": "f_009",
+      "line_end": 299,
+      "line_start": 296,
+      "score": 0.332,
+      "severity": "suggestion",
+      "suggestion": "Add a JSDoc precondition on runSplitQuery: '@precondition request.targets must NOT be pre-interpolated; this function applies applyTemplateVariables internally.' Optionally add an options.interpolate flag (default true) for callers like runShardSplitQuery that handle interpolation themselves.",
+      "tags": [
+        "defensive-coding",
+        "api-contract",
+        "double-interpolation-risk"
+      ],
+      "title": "No guard against pre-interpolated callers causing double interpolation"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Filter order inconsistency is a code quality/consistency suggestion with no demonstrated correctness or production impact.",
+      "body": "The two entry points use opposite filter ordering. `querySplitting.ts` filters by `!q.hide` then `q.expr`, while `shardQuerySplitting.ts` filters by `q.expr` then `!q.hide`.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "consistency",
+      "dimension_name": "Consistency",
+      "evidence": "",
+      "file_path": "querySplitting.ts",
+      "id": "f_001",
+      "line_end": 298,
+      "line_start": 297,
+      "score": 0.24,
+      "severity": "suggestion",
+      "suggestion": "Standardize the filter order for consistency and readability.",
+      "tags": [
+        "consistency",
+        "readability"
+      ],
+      "title": "Filter Order Inconsistency"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a documentation/process suggestion about updating the PR description, not a code defect that breaks the build, security, or data.",
+      "body": "Old shard path: `interpolateVariablesInQueries(targets, scopedVars)` \u2014 no filters passed. Ad-hoc filters were only applied later by `DataSourceWithBackend.query()`. New shard path: `applyTemplateVariables(query, scopedVars, request.filters)` \u2014 filters passed. This is a genuine improvement, but it should be called out in the PR description as a behavioral change.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "behavior",
+      "dimension_name": "Behavioral Change",
+      "evidence": "",
+      "file_path": "shardQuerySplitting.ts",
+      "id": "f_002",
+      "line_end": 51,
+      "line_start": 50,
+      "score": 0.24,
+      "severity": "suggestion",
+      "suggestion": "Call out this behavioral change in the PR description.",
+      "tags": [
+        "behavioral-change",
+        "ad-hoc-filters"
+      ],
+      "title": "Behavioral Change: `request.filters` Now Applied in Shard Path"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Pure code-style consistency nitpick with no functional or correctness impact, as the finding itself confirms.",
+      "body": "shardQuerySplitting.ts:49-52 filters targets with .filter(q => q.expr).filter(q => !q.hide), while querySplitting.ts:297-299 filters with .filter(q => !q.hide).filter(q => q.expr). The order is reversed.\n\nFunctionally, both produce the same set (intersection of non-hidden and non-empty). However, the inconsistency is a code-smell that could mask a subtle difference if a future change makes the filters stateful or order-dependent. Since the PR touches both files and establishes the interpolation pattern, this is a good moment to align them.\n\nThe querySplitting.ts order (!hide first, then expr) is slightly more conventional (hide is a cheaper check). Recommend matching that order in shardQuerySplitting.ts.",
+      "confidence": 1,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "consistency",
+      "dimension_name": "Code Consistency",
+      "evidence": "shardQuerySplitting.ts:50-51: .filter((query) => query.expr).filter((query) => !query.hide). querySplitting.ts:297-298: .filter((query) => !query.hide).filter((query) => query.expr).",
+      "file_path": "public/app/plugins/datasource/loki/shardQuerySplitting.ts",
+      "id": "f_008",
+      "line_end": 52,
+      "line_start": 49,
+      "score": 0.13,
+      "severity": "nitpick",
+      "suggestion": "Change shardQuerySplitting.ts:49-52 to .filter((q) => !q.hide).filter((q) => q.expr) to match querySplitting.ts:297-298.",
+      "tags": [
+        "consistency",
+        "filter-order",
+        "code-style"
+      ],
+      "title": "Filter order inconsistency between shard and split paths"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Reviewer explicitly notes no behavioral impact expected; this is a minor ordering optimization, not a correctness or security issue.",
+      "body": "Old: interpolate ALL targets, then filter by `expr`/`hide`. New: filter by `expr`/`hide` first, then interpolate. Hidden/empty-expr queries are no longer interpolated \u2014 a minor optimization. No behavioral impact expected since those queries are dropped anyway, but worth noting.",
+      "confidence": 0.7,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "performance",
+      "dimension_name": "Performance",
+      "evidence": "",
+      "file_path": "shardQuerySplitting.ts",
+      "id": "f_003",
+      "line_end": 51,
+      "line_start": 50,
+      "score": 0.07,
+      "severity": "nitpick",
+      "suggestion": null,
+      "tags": [
+        "performance",
+        "optimization"
+      ],
+      "title": "Operation Ordering Change in Shard Path"
+    }
+  ]
+}

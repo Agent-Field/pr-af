@@ -6,3 +6,10 @@ _worktrees/
 .env
 .docker-sdk/
 agentfield-sdk/
+
+# Benchmark campaign scratch (raw transcripts, logs, per-run caches, one-off
+# experiments). The curated results AND the reproduction scripts live in
+# benchmark/martian-code-review-bench/ and ARE committed.
+_glm52_bench/
+_minimax_bench/
+.sisyphus/
