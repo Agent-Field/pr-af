@@ -20,7 +20,7 @@ import httpx
 
 from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
 from .diff_engine import parse_unified_diff
-from .evidence import EvidencePackage, extract_evidence_for_findings
+from .evidence import EvidencePackage, build_dimension_pack, extract_evidence_for_findings
 from .github.client import GitHubClient
 from .hitl import (
     approval_webhook_url,
@@ -34,12 +34,16 @@ from .reasoners.harnesses import (
     compound_dedup_phase,
     compound_finder_phase,
     coverage_gate,
+    deepen_findings,
     evidence_verifier,
+    extract_obligations,
+    verify_obligation,
     intake_phase,
     meta_mechanical,
     meta_semantic,
     meta_systemic,
     planning_phase,  # Keep for backward compat
+    post_worthiness_gate,
     review_dimension,
 )
 from .schemas.input import ChangedFile, GitHubPRData, ReviewInput
@@ -245,30 +249,75 @@ class ReviewOrchestrator:
         plan = await self._run_meta_selectors(intake, anatomy, review_depth, reviewer_feedback)
         print(f"[PR-AF] Meta-selectors complete: {len(plan.dimensions)} dimensions", flush=True)
 
-        print("[PR-AF] Phase 4+5: REVIEW (parallel) + LAYER", flush=True)
-        findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
-
-        review_task = asyncio.create_task(
-            self._run_parallel_review(plan, findings_queue, reviewer_feedback=reviewer_feedback)
-        )
-        layer_task = asyncio.create_task(self._run_review_layer(plan, findings_queue, anatomy))
-
-        _, layer_result = await asyncio.gather(review_task, layer_task)
-        all_findings, adversary_results = layer_result
+        if self.config.comments.post_worthiness_gate:
+            # EARLY-GATE reorder (quality + speed): run reviewers to completion, gate to
+            # the worth-posting findings, THEN run the heavy layer (evidence/adversary/
+            # compound) on only those. The layer's per-finding harness work drops ~3-4x
+            # (speed) and the posted set is precision-filtered (F1). Replaces the
+            # post-synthesis gate placement when enabled.
+            print("[PR-AF] Phase 4: REVIEW (parallel)", flush=True)
+            rq: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
+            await self._run_parallel_review(plan, rq, reviewer_feedback=reviewer_feedback)
+            reviewer_findings: list[ReviewFinding] = []
+            while True:
+                batch = await rq.get()
+                if batch is None:
+                    break
+                reviewer_findings.extend(batch)
+            kept = reviewer_findings
+            if len(reviewer_findings) > 1:
+                try:
+                    pw = await post_worthiness_gate(findings=[f.model_dump() for f in reviewer_findings])
+                    sel = [f for i, f in enumerate(reviewer_findings)
+                           if i in set(pw.get("keep_indices", range(len(reviewer_findings))))]
+                    if sel:
+                        print(f"[PR-AF] Phase 4.5: POST-WORTHINESS GATE (pre-layer) "
+                              f"{len(reviewer_findings)} -> {len(sel)}", flush=True)
+                        kept = sel
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[PR-AF] Pre-layer gate skipped: {exc}", flush=True)
+            lq: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
+            if kept:
+                lq.put_nowait(kept)
+            lq.put_nowait(None)
+            print("[PR-AF] Phase 5: LAYER (on gated findings)", flush=True)
+            all_findings, adversary_results = await self._run_review_layer(plan, lq, anatomy)
+        else:
+            print("[PR-AF] Phase 4+5: REVIEW (parallel) + LAYER (streaming)", flush=True)
+            findings_queue: asyncio.Queue[list[ReviewFinding] | None] = asyncio.Queue()
+            review_task = asyncio.create_task(
+                self._run_parallel_review(plan, findings_queue, reviewer_feedback=reviewer_feedback)
+            )
+            layer_task = asyncio.create_task(self._run_review_layer(plan, findings_queue, anatomy))
+            _, layer_result = await asyncio.gather(review_task, layer_task)
+            all_findings, adversary_results = layer_result
 
         print(
             f"[PR-AF] Review+Layer done: {len(all_findings)} findings, {len(adversary_results)} adversary results",
             flush=True,
         )
 
-        print("[PR-AF] Phase 6: COVERAGE LOOP", flush=True)
-        all_findings, adversary_results = await self._run_coverage_loop(plan, anatomy, all_findings, adversary_results)
+        # Phase 6 (coverage loop, re-reviews clusters) and Phase 6.7 (consistency-verify,
+        # traces the diff) are INDEPENDENT — they read the same findings/diff and only ADD
+        # findings. Run them CONCURRENTLY to overlap two of the slowest phases (genuine
+        # parallelization). consistency-verify's additions are tagged dimension_id
+        # "consistency-verify", so we merge them onto the coverage result cleanly.
+        print("[PR-AF] Phase 6+6.7: COVERAGE LOOP || CONSISTENCY VERIFY (parallel)", flush=True)
+        (cov_findings, adversary_results), cv_findings = await asyncio.gather(
+            self._run_coverage_loop(plan, anatomy, list(all_findings), adversary_results),
+            self._run_consistency_verify(list(all_findings)),
+        )
         self.adversary_challenged_count = sum(1 for result in adversary_results if result.verdict == "challenged")
         self.adversary_confirmed_count = sum(1 for result in adversary_results if result.verdict == "confirmed")
+        consistency_new = [f for f in cv_findings if getattr(f, "dimension_id", "") == "consistency-verify"]
+        all_findings = cov_findings + consistency_new
 
         print("[PR-AF] Phase 7: SYNTHESIS", flush=True)
         scored_findings = self._synthesize(all_findings, adversary_results)
         print(f"[PR-AF] Synthesis complete: {len(scored_findings)} scored findings", flush=True)
+        # NOTE: the post-worthiness gate now runs PRE-LAYER (Phase 4.5) when enabled, so the
+        # heavy layer processes only worth-posting findings (quality + speed). No gate here.
+
         if self.config.comments.merge_gate_enabled:
             scored_findings = await classify_findings(self.app, scored_findings)
         return plan, scored_findings
@@ -651,6 +700,15 @@ class ReviewOrchestrator:
                 all_patches = self._build_file_patches()
                 dim_patches = {f: p for f, p in all_patches.items() if f in dim.target_files}
 
+                # Evidence-pack: pre-read the target files (+ imports) so the reviewer
+                # reasons over a primed pack instead of cold-navigating over many turns.
+                primed = ""
+                if self.config.budget.evidence_pack_reviewers and self.input.repo_path:
+                    try:
+                        primed = build_dimension_pack(self.input.repo_path, dim.target_files, dim_patches)
+                    except Exception:  # noqa: BLE001
+                        primed = ""
+
                 result_raw = await review_dimension(
                     review_prompt=dim.review_prompt,
                     target_files=dim.target_files,
@@ -664,6 +722,7 @@ class ReviewOrchestrator:
                     diff_patches=dim_patches if dim_patches else None,
                     all_dimension_names=[d.name for d in plan.dimensions if d.id != dim.id],
                     reviewer_feedback=reviewer_feedback,
+                    primed_code=primed,
                 )
                 self.agent_invocations += 1
                 self._register_cost("review", self._extract_cost(result_raw))
@@ -833,6 +892,74 @@ class ReviewOrchestrator:
 
         return findings, adversary_results
 
+    async def _run_consistency_verify(self, all_findings: list[ReviewFinding]) -> list[ReviewFinding]:
+        """Phase 6.7 — decomposed consistency verification (emergent deep trace).
+
+        A defect is almost always a place where the changed code at one location
+        RELIES on something being true at another location, and it isn't. A single
+        reviewer checks many such reliances shallowly; we DECOMPOSE so the depth is
+        supplied by the architecture, not the prompt:
+          1. extract_obligations: one agent enumerates every cross-location reliance
+             the diff creates (breadth, emergent — derived from the code, not a bug list).
+          2. verify_obligation: ONE focused agent per obligation goes and reads BOTH
+             ends and checks they agree (depth — a narrow scope forces the multi-hop
+             trace the monolith skips).
+        Violations become findings, unioned with the existing set (originals kept).
+        """
+        if self._budget_or_timeout_exhausted("review"):
+            return all_findings
+        diff_patches = self._build_file_patches()
+        if not diff_patches:
+            return all_findings
+        repo = self.input.repo_path or ""
+        try:
+            ob_raw = await extract_obligations(
+                diff_patches=diff_patches, repo_path=repo, pr_context=self._build_pr_context_string()
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[PR-AF] Consistency-verify (extract) skipped: {exc}", flush=True)
+            return all_findings
+        self.agent_invocations += 1
+        self._register_cost("review", self._extract_cost(ob_raw))
+        obligations = (ob_raw.get("obligations", []) if isinstance(ob_raw, dict) else [])[:12]
+        if not obligations:
+            print("[PR-AF] Consistency-verify: 0 obligations", flush=True)
+            return all_findings
+        print(f"[PR-AF] Consistency-verify: tracing {len(obligations)} obligations (1 agent each)", flush=True)
+
+        async def _verify(o: dict) -> dict:
+            try:
+                return await verify_obligation(obligation=o, repo_path=repo)
+            except Exception:  # noqa: BLE001
+                return {"holds": True}
+
+        verdicts = await asyncio.gather(*[_verify(o) for o in obligations])
+        self.agent_invocations += len(verdicts)
+        new_findings: list[ReviewFinding] = []
+        for v in verdicts:
+            if not (isinstance(v, dict) and v.get("holds") is False and v.get("title")):
+                continue
+            try:
+                new_findings.append(ReviewFinding.model_validate({
+                    "dimension_id": "consistency-verify",
+                    "dimension_name": "Consistency Verifier",
+                    "file_path": v.get("file_path", ""),
+                    "line_start": v.get("line_start", 0),
+                    "line_end": v.get("line_end", 0) or v.get("line_start", 0),
+                    "severity": v.get("severity", "important"),
+                    "title": v.get("title", ""),
+                    "body": v.get("body", ""),
+                    "suggestion": v.get("suggestion"),
+                    "evidence": v.get("evidence", ""),
+                    "confidence": v.get("confidence", 0.7),
+                    "tags": ["consistency"],
+                }))
+            except Exception:  # noqa: BLE001
+                continue
+        print(f"[PR-AF] Consistency-verify: +{len(new_findings)} findings "
+              f"from {len(obligations)} obligations", flush=True)
+        return all_findings + new_findings
+
     def _synthesize(
         self,
         findings: list[ReviewFinding],
@@ -885,12 +1012,17 @@ class ReviewOrchestrator:
         return ranges
 
     def _build_file_patches(self) -> dict[str, str]:
+        # Memoized — called ~5x/review and pr_data is stable for the run.
+        cached = getattr(self, "_patches_cache", None)
+        if cached is not None:
+            return cached
         if not self.pr_data:
             return {}
         patches: dict[str, str] = {}
         for cf in self.pr_data.changed_files:
             if cf.patch:
                 patches[cf.path] = cf.patch
+        self._patches_cache: dict[str, str] = patches
         return patches
 
     def _build_pr_context_string(self) -> str:

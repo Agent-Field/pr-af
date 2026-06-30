@@ -56,6 +56,13 @@ class BudgetConfig(BaseModel):
     # Recursive sub-review depth (1=flat, 2=one sub-level, 3=max)
     max_review_depth: int = 2
 
+    # Evidence-pack-first reviewers: pre-read each dimension's target files (+ imports)
+    # and inject them so reviewers reason over a primed pack instead of cold-navigating
+    # the repo over many opencode turns. Strictly-additive context; the latency lever.
+    evidence_pack_reviewers: bool = Field(
+        default_factory=lambda: os.getenv("PR_AF_EVIDENCE_PACK", "1").lower() not in ("0", "false", "no")
+    )
+
 
 class ModelConfig(BaseModel):
     """Model routing per agent.
@@ -133,6 +140,15 @@ class CommentConfig(BaseModel):
     # stay as advisory inline comments and never trigger REQUEST_CHANGES.
     # Default ON for production noise reduction. Failures default to advisory.
     merge_gate_enabled: bool = True
+
+    # Calibrated post-worthiness gate: an experienced-reviewer pass that posts only
+    # genuinely worth-posting findings (drops nits + unverifiable claims). Validated
+    # as a precision/F1 lever (F1 ~0.38->0.48) at a recall cost (~0.69->0.52) — a
+    # precision<->recall dial. DEFAULT OFF to preserve recall-first behavior; flip on
+    # (PR_AF_POSTWORTHINESS_GATE=1) for F1-max / leaderboard mode.
+    post_worthiness_gate: bool = Field(
+        default_factory=lambda: os.getenv("PR_AF_POSTWORTHINESS_GATE", "").lower() in ("1", "true", "yes")
+    )
 
     severity_emojis: dict[str, str] = Field(
         default_factory=lambda: {

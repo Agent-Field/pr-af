@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import subprocess
@@ -114,12 +115,36 @@ class GitHubClient:
         return headers
 
     async def fetch_pr(self, pr_url: str) -> GitHubPRData:
-        """Fetch PR metadata, diff, and changed files from GitHub API."""
+        """Fetch PR metadata, diff, and changed files from GitHub API.
+
+        Retries on transient transport errors (connect blips, timeouts) and on
+        5xx / rate-limit responses, since a single flaky GitHub call must not
+        sink a whole review. 4xx (other than 403/429) fail fast.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                return await self._fetch_pr_once(pr_url)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if 400 <= status < 500 and status not in (403, 429):
+                    raise
+                last_exc = exc
+            except (httpx.TransportError, httpx.HTTPError) as exc:
+                last_exc = exc
+            await asyncio.sleep(2.0 * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
+
+    async def _fetch_pr_once(self, pr_url: str) -> GitHubPRData:
         owner, repo, number = self.parse_pr_url(pr_url)
 
         auth_headers = await self._headers_for_repo(owner, repo)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        # follow_redirects: GitHub 301-redirects API calls for repos that were
+        # renamed/transferred (e.g. calcom/cal.com -> /repositories/<id>/...).
+        # Without this every PR in such a repo fails with "Redirect response 301".
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             pr_resp = await client.get(
                 f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}",
                 headers=auth_headers,

@@ -12,6 +12,33 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from .schemas.pipeline import ReviewFinding
 
+# Shared file-read cache: the same files are read 8+ times per review (meta-selectors,
+# reviewers, evidence-extract/verify, adversary, compound, consistency). Cache by
+# (abspath, mtime) so a re-checkout (new mtime) invalidates — zero quality cost, just
+# eliminates redundant disk reads within a review.
+_FILE_CACHE: dict[tuple[str, float], list[str]] = {}
+
+
+def _read_file_lines(abspath: str) -> list[str]:
+    try:
+        mtime = os.path.getmtime(abspath)
+    except OSError:
+        return []
+    key = (abspath, mtime)
+    cached = _FILE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        with open(abspath, encoding="utf-8", errors="ignore") as handle:
+            lines = handle.read().splitlines(keepends=True)
+    except OSError:
+        return []
+    if len(_FILE_CACHE) > 2000:  # bound memory across many repos/files
+        _FILE_CACHE.clear()
+    _FILE_CACHE[key] = lines
+    return lines
+
+
 _SKIP_DIRS = (".git", "node_modules", "__pycache__", ".venv", "vendor", "venv")
 _TEXT_EXTENSIONS = {
     ".py",
@@ -192,12 +219,7 @@ def _read_code_snippet(repo_path: str, file_path: str, line: int, context_lines:
     if not _is_text_file(abs_path):
         return ""
 
-    try:
-        with open(abs_path, encoding="utf-8", errors="ignore") as handle:
-            lines = handle.readlines()
-    except OSError:
-        return ""
-
+    lines = _read_file_lines(abs_path)
     if not lines:
         return ""
 
@@ -439,6 +461,47 @@ def _extract_blast_radius_code(
             break
 
     return "\n\n".join(snippets[:5])
+
+
+def build_dimension_pack(
+    repo_path: str,
+    target_files: list[str],
+    diff_patches: dict[str, str] | None = None,
+    max_files: int = 6,
+    max_lines_per_file: int = 400,
+    max_chars: int = 16000,
+) -> str:
+    """Pre-read a review dimension's target files (+ import context) so the reviewer
+    reasons over a primed pack instead of cold-reading the repo over many turns.
+    Strictly additive context — the exact code the reviewer would have navigated to."""
+    if not repo_path or not target_files:
+        return ""
+    parts: list[str] = []
+    for fp in target_files[:max_files]:
+        # target files are already repo-relative — join directly; only fall back to
+        # _normalize_relative_path (which can mangle paths where the repo name recurs as
+        # a package component, e.g. org/keycloak/...) if the direct path is missing.
+        rel = fp.strip().lstrip("/")
+        abspath = os.path.join(repo_path, rel)
+        if not os.path.isfile(abspath):
+            alt = _normalize_relative_path(repo_path, fp)
+            if alt:
+                rel, abspath = alt, os.path.join(repo_path, alt)
+        if not (os.path.isfile(abspath) and _is_text_file(abspath)):
+            continue
+        lines = [ln.rstrip("\n") for ln in _read_file_lines(abspath)]
+        if not lines:
+            continue
+        shown = lines[:max_lines_per_file]
+        body = "\n".join(f"{i + 1}: {ln}" for i, ln in enumerate(shown))
+        trunc = f" (showing first {max_lines_per_file} of {len(lines)})" if len(lines) > max_lines_per_file else ""
+        imp = _build_import_context(repo_path, rel)
+        block = f"### {rel}{trunc}\n```\n{body}\n```"
+        if imp:
+            block += f"\n_import/usage context:_ {imp[:1200]}"
+        parts.append(block)
+    blob = "\n\n".join(parts)
+    return blob[:max_chars]
 
 
 def _normalize_relative_path(repo_path: str, file_path: str) -> str:
