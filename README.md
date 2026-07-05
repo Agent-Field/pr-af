@@ -21,11 +21,11 @@
 </div>
 
 PR-AF is the **#1 open-source code reviewer on Martian Code-Review-Bench**. It is built
-for thorough CI checks, not single-pass summaries: map the change, spawn focused reviewer
-agents, ground findings in code evidence, challenge the results, and return specific
-inline comments. Run cheaper DeepSeek-class models for routine PRs, GLM-5.2 for deep
-open-model reviews, or Opus-class frontier models for major PRs — where PR-AF tops the
-benchmark by a wide margin.
+for deep code review, not shallow diff summaries: turn each PR into a task-specific
+review plan, spawn focused reviewer agents, ground findings in code evidence, challenge
+the results, and squeeze more useful review intelligence out of cheaper models. Run
+DeepSeek-class models for routine PRs, GLM-5.2 for deep open-model reviews, or Opus-class
+frontier models for major PRs — where PR-AF tops the benchmark by a wide margin.
 
 <p align="center">
   <img src="assets/hero.png" alt="PR-AF — open-source agentic code review benchmark" width="100%" />
