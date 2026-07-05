@@ -2,7 +2,7 @@
 
 # PR-AF
 
-### Open-Source Agentic PR Reviewer Built on [AgentField](https://github.com/Agent-Field/agentfield)
+### Open-Source Agentic Code Review Built on [AgentField](https://github.com/Agent-Field/agentfield)
 
 [![Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-16a34a?style=for-the-badge)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/downloads/)
@@ -10,22 +10,41 @@
 [![More from Agent-Field](https://img.shields.io/badge/More_from-Agent--Field-111827?style=for-the-badge&logo=github)](https://github.com/Agent-Field)
 
 <p>
-  <a href="#what-you-get-back">Output</a> •
+  <a href="#benchmark-position">Benchmark</a> •
+  <a href="#one-call-dx">One-Call DX</a> •
   <a href="#how-it-works">How It Works</a> •
-  <a href="#comparison">Comparison</a> •
+  <a href="#ecosystem-comparison">Comparison</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="docs/ARCHITECTURE.md">Architecture</a>
 </p>
 
 </div>
 
-Other tools run a single LLM pass over the diff with a fixed checklist. PR-AF **builds a custom review strategy for every PR**: it examines the change, reasons about what could go wrong, spawns parallel reviewer agents with runtime-crafted prompts, challenges its own findings adversarially, and posts specific inline comments. Free, open source, one API call. A deep review of a 500-line PR costs about **$0.80 in LLM calls**.
+PR-AF is the **#1 open-source code reviewer on Martian Code-Review-Bench**. It is built
+for deep CI checks: map the change, spawn focused reviewer agents, ground findings in code
+evidence, challenge the results, and return specific inline comments.
 
 <p align="center">
-  <img src="assets/hero.png" alt="PR-AF — open-source agentic PR review" width="100%" />
+  <img src="assets/hero.png" alt="PR-AF — open-source agentic code review benchmark" width="100%" />
 </p>
 
-*Benchmark detail: on the 38 runnable Martian Code-Review-Bench PRs, PR-AF with GLM-5.2 reaches 0.706 golden recall and delivers the most valid findings in the adjusted comparison.*
+## Benchmark Position
+
+On the 38 runnable Martian Code-Review-Bench PRs, **PR-AF with GLM-5.2 is the
+#1 open-source reviewer in golden recall**: 0.706 across 42 compared tools. It is ahead
+of cubic-v2 and every qodo, coderabbit, greptile, copilot, and devin variant in this
+snapshot.
+
+Where PR-AF shines:
+
+| strength | result |
+|---|---|
+| **Known bug recall** | 0.706 golden recall — #1 open source across 42 compared tools. |
+| **More real issues found** | 595 independently valid findings, ~3× more than the leading commercial tools in the adjusted comparison. |
+| **Open + reproducible** | Single open model (`GLM-5.2`), public results, per-PR judge verdicts, and reproduction scripts. |
+| **Cost position** | About 10× cheaper per review than closed-source tools. |
+
+Full benchmark package: [`benchmark/martian-code-review-bench`](benchmark/martian-code-review-bench).
 
 ## One-Call DX
 
@@ -61,12 +80,11 @@ Posts inline GitHub review comments with evidence-grounded findings:
       "compound_risk": "Combined with missing auth middleware (finding #2), this is exploitable by unauthenticated users"
     }
   ],
-  "review_dimensions": 4,
-  "cost_usd": 0.83
+  "review_dimensions": 4
 }
 ```
 
-Custom review strategy per PR. Evidence-grounded. Zero false positives. ~$0.80 for a 500-line PR.
+Custom review strategy per PR. Evidence-grounded findings. About 10× cheaper per review than closed-source tools.
 
 ---
 
@@ -136,14 +154,14 @@ graph TD
 
 PR-AF uses this multi-phase cognitive pipeline to ensure rigorous, high-fidelity reviews:
 
-### 1. Evidence Grounding (0% False Positives)
-Language models inherently operate on probability, which leads to assumption-based false positives. If the system flags a missing validation check, PR-AF does not immediately accept it. Instead, it utilizes programmatic AST (Abstract Syntax Tree) extraction to pull the exact caller snippets and import contexts from the broader repository. This raw data is then evaluated through an isolated verification layer. If the initial claim cannot be irrefutably grounded in the extracted code, it is silently pruned.
+### 1. Evidence Grounding
+If the system flags a missing validation check, PR-AF does not immediately accept it. It pulls exact caller snippets and import context from the repository, then verifies whether the finding is grounded in the code before it reaches the final review.
 
 ### 2. Compound Vulnerability Synthesis
-Standard tools analyze code linearly. PR-AF looks at the entire board to identify cross-correlated risks. It clusters isolated, seemingly minor anomalies across different files and evaluates them concurrently to detect whether they coalesce into a larger systemic exploit. For example, identifying an unprotected API key in one module and a database merge vulnerability in another will be synthesized into a single, high-severity "Coordinated Injection" finding.
+Standard tools analyze code linearly. PR-AF clusters related risks across files and evaluates whether isolated findings combine into a larger systemic issue.
 
 ### 3. Falsifiability Gates
-Before any finding is compiled into the final GitHub comment, it must pass through a strict falsifiability framework. The system actively attempts to invalidate its own findings—searching for reasons why the reported anomaly might be safe, intended behavior, or securely mitigated elsewhere in the codebase structure. Only findings that survive this aggressive auto-invalidation process are surfaced to the developer.
+Before a finding becomes a GitHub comment, the system tries to invalidate it: safe behavior, intended behavior, existing mitigations, or weak evidence. Findings that survive are returned with file, line, body, suggestion, and evidence.
 
 ---
 

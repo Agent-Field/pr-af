@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.DS_Store
 .plandb.db
 _worktrees/
 *.egg-info/
