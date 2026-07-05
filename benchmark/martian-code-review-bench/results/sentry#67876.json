@@ -1,0 +1,362 @@
+{
+  "id": "sentry#67876",
+  "repo": "sentry",
+  "pr_url": "https://github.com/getsentry/sentry/pull/67876",
+  "language": "Python",
+  "review_model": "openrouter/z-ai/glm-5.2",
+  "judge_model": "anthropic/claude-sonnet-4.6",
+  "difficulty_score": 0.6366,
+  "recall": 0.333,
+  "hits": 1,
+  "n_goldens": 3,
+  "duration_seconds": 3757.491,
+  "cost_usd": 0,
+  "goldens": [
+    {
+      "comment": "Null reference if github_authenticated_user state is missing",
+      "severity": "Medium"
+    },
+    {
+      "comment": "OAuth state uses pipeline.signature (static) instead of a per-request random value",
+      "severity": "Medium"
+    },
+    {
+      "comment": "The code attempts to access integration.metadata[sender][login] without checking for the existence of the sender key. This causes a KeyError for integrations where the sender metadata was not set during creation",
+      "severity": "High"
+    }
+  ],
+  "golden_verdicts": [
+    {
+      "golden_idx": 0,
+      "hit": false,
+      "matched_finding": null,
+      "reason": "No tool finding addresses a missing github_authenticated_user state key specifically. F0/F5 address the sender metadata KeyError (G2), not a missing github_authenticated_user state."
+    },
+    {
+      "golden_idx": 1,
+      "hit": false,
+      "matched_finding": null,
+      "reason": "No tool finding identifies the OAuth state using pipeline.signature (static) instead of a per-request random value."
+    },
+    {
+      "golden_idx": 2,
+      "hit": true,
+      "matched_finding": "KeyError on integration.metadata[\"sender\"][\"login\"] when sender metadata is absent",
+      "reason": "F0 and F5 both directly identify the missing sender key check in integration.metadata causing a KeyError at the same code location."
+    }
+  ],
+  "findings": [
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": true,
+      "blocking_reason": "The new user-mismatch check raises an unhandled KeyError on a reachable code path (legacy or pipeline-created integrations without sender metadata), causing a 500 error where the endpoint previously worked.",
+      "body": "The user-mismatch check added by this PR accesses `integration.metadata[\"sender\"][\"login\"]` without first verifying that the `\"sender\"` key exists in `metadata`. This raises an unhandled `KeyError` that escapes `GitHubInstallation.dispatch`, surfacing as a 500 error instead of the structured `github-integration-failed.html` error page that the PR intends to show for all failure modes.\n\n**Why this is reachable in production**\n\n`build_integration` (line 351-379) only writes `integration[\"metadata\"][\"sender\"]` when `state.get(\"sender\")` is truthy (line 376-377). There are at least two realistic paths that produce an `Integration` row whose `metadata` lacks `\"sender\"`:\n\n1. **Pipeline-created integrations.** `IntegrationPipeline.finish_pipeline` (src/sentry/integrations/pipeline.py:93) calls `build_integration(self.state.data)`. The GitHub pipeline state only ever binds `installation_id` and (with this PR) `github_authenticated_user` — it never binds `\"sender\"`. So when the pipeline runs its finish step before the GitHub `installation` webhook is processed (a real race, since GitHub fires the webhook and the browser redirect in parallel), `ensure_integration` (pipeline.py:132) creates an `Integration` row with metadata that has **no `\"sender\"` key**. If that integration attempt is later abandoned (no `OrganizationIntegration` created) and the user retries the install on another org, `GitHubInstallation.dispatch` reaches line 500-505 and raises `KeyError`.\n\n2. **Legacy integrations.** Integrations created before the `\"sender\"` metadata field was introduced have no `\"sender\"` key in `metadata`. Re-adding any such integration to another org triggers the same `KeyError`.\n\n**Codebase pattern proof.** The sibling endpoint `src/sentry/integrations/github/installation.py:44` explicitly guards this exact condition: `if \"sender\" not in integration.metadata: return HttpResponse(status=404)`. The guard exists precisely because the team knows `\"sender\"` is not guaranteed to be present. The new check at line 503 omits the same guard, inconsistent with the established pattern.\n\n**Failure mode.** The `KeyError` is raised inside `GitHubInstallation.dispatch`, which is a `PipelineView.dispatch` method called by the pipeline framework. There is no `try/except KeyError` wrapping this call, so the exception propagates up through the pipeline and Django request handling to a generic 500 response — not the structured `postMessage` payload rendered by `error(request, self.active_organization)` that the PR's UX design relies on.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "keyerror-sender-metadata-missing",
+      "dimension_name": "KeyError on integration.metadata[\"sender\"][\"login\"] - no guard for missing sender metadata in user mismatch check",
+      "evidence": "Step 1: `GitHubInstallation.dispatch` (src/sentry/integrations/github/integration.py:447) is the second pipeline view, reached after `OAuthLoginView` binds `github_authenticated_user`.\nStep 2: Line 494 `Integration.objects.get(external_id=installation_id, status=ObjectStatus.ACTIVE)` succeeds — an Integration row exists.\nStep 3: Line 477-479 `OrganizationIntegration.objects.filter(integration=...).exists()` returns False (re-add to another org), so the early return at line 484-490 is skipped.\nStep 4: Line 502-503 evaluates `pipeline.fetch_state(\"github_authenticated_user\") != integration.metadata[\"sender\"][\"login\"]`.\nStep 5: `integration.metadata` is a JSONField dict; when the Integration was created via `build_integration` with a `state` lacking `\"sender\"` (line 376 guard `if state.get(\"sender\"):` is False), `metadata` contains only `access_token`, `expires_at`, `icon`, `domain_name`, `account_type` (lines 366-373) and NO `\"sender\"` key.\nStep 6: `integration.metadata[\"sender\"]` raises `KeyError: 'sender'`.\nStep 7: The exception propagates out of `dispatch` (no surrounding try/except) → Django returns HTTP 500 instead of the PR's `error(request, self.active_organization)` response.\n\nCorroborating evidence that `\"sender\"` is known to be optional: `src/sentry/integrations/github/installation.py:44` — `if \"sender\" not in integration.metadata: return HttpResponse(status=404)`.",
+      "file_path": "src/sentry/integrations/github/integration.py",
+      "id": "f_006",
+      "line_end": 505,
+      "line_start": 500,
+      "score": 1.105,
+      "severity": "critical",
+      "suggestion": "Guard the metadata access the same way `installation.py:44` does, and route the missing-sender case through the existing `error()` helper so the user sees the structured failure page instead of a 500:\n\n```python\n# Check that the authenticated GitHub user is the same as who installed the app.\nsender = integration.metadata.get(\"sender\")\nif not sender or pipeline.fetch_state(\"github_authenticated_user\") != sender.get(\"login\"):\n    return error(request, self.active_organization)\n```\n\nAlternatively, treat a missing `\"sender\"` as a definitive mismatch (since the original installer identity is unknown) by returning `error(...)` early when `\"sender\" not in integration.metadata`. Either approach fixes the `KeyError` and preserves the PR's intended UX of always rendering `github-integration-failed.html` for any failure in this step.",
+      "tags": [
+        "KeyError",
+        "missing-metadata-guard",
+        "pattern-inconsistency",
+        "unhandled-exception",
+        "race-condition",
+        "regression-in-ux"
+      ],
+      "title": "KeyError on integration.metadata[\"sender\"][\"login\"] when sender metadata is absent"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "A 500 error from a crafted/edge-case URL missing a query parameter is a defensive programming gap, not a security vulnerability, data loss, API break, or demonstrated regression introduced by this PR.",
+      "body": "When `setup_action=install` is present in the query string but `installation_id` is absent, `request.GET.get(\"installation_id\")` returns `None`. This `None` is then passed directly to `reverse(\"integration-installation\", args=[provider_id, installation_id])`. The `integration-installation` URL pattern (`r\"^extensions/external-install/(?P<provider_id>\\w+)/(?P<installation_id>\\w+)/$\"`) requires a `\\w+` match for `installation_id`, and Django's `reverse()` raises `NoReverseMatch` when `None` is supplied as the argument for a `\\w+` capture group. This produces an unhandled 500 error instead of a graceful error message.\n\nThis path is reachable: the condition on lines 40-44 only requires `provider_id == \"github\"`, `setup_action == \"install\"`, and `pipeline is None`. While GitHub normally sends `installation_id` alongside `setup_action=install`, an attacker can craft a URL like `/extensions/setup/github/?setup_action=install` without `installation_id`, triggering the 500. This is especially relevant to this PR because the new `OAuthLoginView` first-step changes the pipeline flow — if the pipeline expires (redis TTL) during the OAuth dance and GitHub's redirect back includes `setup_action=install` but the user has somehow lost the `installation_id` param (e.g., truncated redirect), this code path fires.\n\n**Confirmed by follow-up fix**: Sentry's own commit `93b2feaca6c` (\"fix(pipeline): Guard against missing installation_id in GitHub install redirect\") explicitly fixes this by adding `and installation_id` to the condition check, proving this is a recognized production bug.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "coverage_gap_1",
+      "dimension_name": "Coverage Gap 1 - pipeline_advancer.py",
+      "evidence": "Step 1: An HTTP request arrives at `PipelineAdvancerView.handle` with `provider_id=\"github\"` and `request.GET` containing `setup_action=install` but NO `installation_id` key.\nStep 2: Lines 32-35: `pipeline_cls.get_for_request()` returns None for both IntegrationPipeline and IdentityProviderPipeline (e.g., pipeline expired in redis or user navigated directly from GitHub without starting pipeline from Sentry).\nStep 3: Lines 40-44: The condition `provider_id == \"github\" and request.GET.get(\"setup_action\") == \"install\" and pipeline is None` evaluates True.\nStep 4: Line 45: `installation_id = request.GET.get(\"installation_id\")` returns `None` (key absent from GET).\nStep 5: Line 47: `reverse(\"integration-installation\", args=[\"github\", None])` is called. The URL pattern `r\"^extensions/external-install/(?P<provider_id>\\w+)/(?P<installation_id>\\w+)/$\"` in urls.py:664 requires `\\w+` for installation_id. Django's reverse() validates `None` against `\\w+`, fails to match, and raises `django.urls.exceptions.NoReverseMatch`.\nStep 6: The exception is unhandled in `handle()`, propagates to Django's middleware, and produces a 500 Internal Server Error response.\nConfirmation: Sentry follow-up commit 93b2feaca6c (\"fix(pipeline): Guard against missing installation_id in GitHub install redirect\") fixes exactly this by adding `and installation_id` to the condition.",
+      "file_path": "src/sentry/web/frontend/pipeline_advancer.py",
+      "id": "f_008",
+      "line_end": 48,
+      "line_start": 45,
+      "score": 0.864,
+      "severity": "important",
+      "suggestion": "Add `installation_id` to the condition check, matching the guard pattern already present in the trampoline fallback logic. Move the `installation_id = request.GET.get(\"installation_id\")` line above the condition and add `and installation_id` as an additional conjunct:\n```python\ninstallation_id = request.GET.get(\"installation_id\")\nif (\n    provider_id == \"github\"\n    and request.GET.get(\"setup_action\") == \"install\"\n    and pipeline is None\n    and installation_id\n):\n    return self.redirect(\n        reverse(\"integration-installation\", args=[provider_id, installation_id])\n    )\n```\nWhen `installation_id` is missing, execution falls through to the `pipeline is None or not pipeline.is_valid()` check on line 50, which shows the \"Invalid request.\" error message and redirects to `/` — a graceful failure instead of a 500.",
+      "tags": [
+        "error-handling",
+        "none-guard",
+        "url-reverse",
+        "github-integration",
+        "pre-existing-confirmed-by-followup-fix"
+      ],
+      "title": "Missing None guard for installation_id causes NoReverseMatch 500 error"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "This is a defensive programming and error-handling robustness improvement — narrowing try/except coverage gaps doesn't break the build, lose data, or introduce a security vulnerability reachable from a concrete exploit path.",
+      "body": "Both contributing findings share a single root cause: the `try:/except Exception: payload = {}` block at integration.py:425-429 covers only 2 lines (`safe_urlread(req).decode()` + `dict(parse_qsl(body))`) of a ~15-line network-bound OAuth callback flow in `OAuthLoginView.dispatch`. Every network call in this function that falls outside that 2-line window is uncaught — and there are TWO such calls, not one:\n\n1. `safe_urlopen(...)` at line 423 (BEFORE the try) — can raise `SSLError`/`ConnectionError`/`Timeout`/`RestrictedIPAddress`.\n2. `get_user_info(payload[\"access_token\"])` at line 434 (AFTER the except) — can raise `HTTPError`/`JSONDecodeError`/`ConnectionError`/`Timeout`/`SSLError` via `session.get` + `raise_for_status` + `resp.json()` (src/sentry/identity/github/provider.py:7-17).\n\n**Compound risk (worse than either finding alone):** A reviewer who addresses one site — e.g., moving `safe_urlopen` inside the try block as suggested by Finding 1 — may consider the OAuth callback error handling 'fixed' and miss that `get_user_info` at line 434 remains completely unprotected (Finding 0). The narrow try/except creates a structural pattern where the function *looks* like it has error handling (there is a try/except), but the coverage is so narrow that the two network-bound call sites on either side of it are both bare. The false sense of security is the compound hazard: each individual fix looks complete in isolation but leaves a residual uncaught 500-path.\n\n**Canonical pattern divergence confirms the systemic gap:** `OAuth2CallbackView.exchange_token` (src/sentry/identity/oauth2.py:286-314) — which `OAuthLoginView.dispatch` explicitly cites as its model (comment at line 415: 'similar to OAuth2CallbackView.exchange_token') — wraps the ENTIRE exchange (`safe_urlopen` + `safe_urlread` + parse) in a single try block with specific handlers for `SSLError` (line 292), `ConnectionError` (line 302), and `json.JSONDecodeError` (line 309), each with structured error dicts and `logger.info` calls. `OAuthLoginView.dispatch` diverges from this canonical pattern in three ways simultaneously: (a) `safe_urlopen` is outside the try, (b) the try covers only the parse step, (c) `get_user_info` is outside the try. The divergence is a single structural defect with multiple symptoms.\n\n**Correct fix is structural, not piecemeal:** The fix must address the root cause — the too-narrow try/except window — by either (a) widening a single try block to cover `safe_urlopen` through `get_user_info` with specific exception handlers mirroring `OAuth2CallbackView.exchange_token`, or (b) wrapping each network call site in its own try/except with specific handlers. Fixing only one site (as each individual finding suggests) leaves the other as a residual Django 500 path that violates the PR's stated goal that all installation failures render `github-integration-failed.html`.\n\n**Note on `oauth_scopes = ()` interaction:** `GitHubIdentityProvider.oauth_scopes = ()` (provider.py:33) means the GitHub App requests NO user scopes. `get_user_info` calls `GET /user` with the token; if the token has insufficient scope, `resp.raise_for_status()` raises `HTTPError` (403). This is a routine operational condition (not an exotic failure), which elevates the likelihood of triggering the uncaught `get_user_info` path independent of network failures.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "compound",
+      "dimension_name": "Compound Analysis",
+      "evidence": "integration.py:422-439 — the try/except at 425-429 covers only lines 426-427; safe_urlopen (423) and get_user_info (434) are both outside. Canonical pattern: src/sentry/identity/oauth2.py:286-314 wraps the ENTIRE exchange in try with specific SSLError/ConnectionError/JSONDecodeError handlers. get_user_info (src/sentry/identity/github/provider.py:7-17) performs session.get + raise_for_status + resp.json() — three distinct exception-raising operations, all uncaught at the call site. oauth_scopes = () at provider.py:33 means 403 from raise_for_status is a realistic operational trigger, not an exotic edge case.",
+      "file_path": "src/sentry/integrations/github/integration.py",
+      "id": "f_007",
+      "line_end": 439,
+      "line_start": 422,
+      "score": 0.773,
+      "severity": "important",
+      "suggestion": "Fix the structural root cause, not individual sites. Mirror OAuth2CallbackView.exchange_token by widening the try block to cover the entire network-bound flow and adding specific exception handlers with logging. At minimum:\n\n```python\ntry:\n    req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n    body = safe_urlread(req).decode(\"utf-8\")\n    payload = dict(parse_qsl(body))\nexcept (SSLError, ConnectionError) as e:\n    logger.info(\"github.oauth.token-exchange-error\", extra={\"error\": str(e)})\n    payload = {}\nexcept Exception:\n    payload = {}\n\nif \"access_token\" not in payload:\n    return error(request, self.active_organization)\n\ntry:\n    authenticated_user_info = get_user_info(payload[\"access_token\"])\nexcept (requests.exceptions.HTTPError, requests.exceptions.ConnectionError, requests.exceptions.Timeout, json.JSONDecodeError) as e:\n    logger.info(\"github.oauth.user-info-error\", extra={\"error\": str(e)})\n    return error(request, self.active_organization)\n\nif \"login\" not in authenticated_user_info:\n    return error(request, self.active_organization)\n```\n\nThis ensures BOTH network call sites are protected, preserving the PR's goal that all installation failures render the graceful error page. A piecemeal fix to only `safe_urlopen` or only `get_user_info` leaves a residual 500 path.",
+      "tags": [
+        "error-handling",
+        "systemic-control-gap",
+        "pattern-divergence",
+        "uncaught-exceptions",
+        "oauth",
+        "false-sense-of-security",
+        "compound-risk"
+      ],
+      "title": "Narrow try/except window in OAuthLoginView.dispatch is a systemic control gap — piecemeal fixes to either uncaught call site leave a residual 500 path"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Missing error handling around safe_urlopen causes a 500 instead of a friendly error page on network failures—a UX degradation but not a build break, security vulnerability, data loss, API contract break, or demonstrated regression.",
+      "body": "In `OAuthLoginView.dispatch`, the `safe_urlopen` call at line 423 is **outside** the `try:` block that begins at line 425. `safe_urlopen` (src/sentry/http.py:65-116) delegates to `SafeSession().request(...)` which can raise `requests.exceptions.SSLError`, `ConnectionError`, `Timeout`, or `sentry.exceptions.RestrictedIPAddress` (IP blacklist). None of these are caught by the `except Exception` at line 428 because that handler only wraps `safe_urlread(req).decode(\"utf-8\")` and `dict(parse_qsl(body))`.\n\nThis directly diverges from the canonical `OAuth2CallbackView.exchange_token` (src/sentry/identity/oauth2.py:282-314), which places `safe_urlopen` **inside** the try block and explicitly catches `SSLError` (line 292) and `ConnectionError` (line 302) with structured error dicts and logger.info calls.\n\n**Failure scenario:** A TLS error, DNS failure, or IP-blacklist hit on `https://github.com/login/oauth/access_token` causes `safe_urlopen` to raise. The exception propagates out of `dispatch` → Django returns a 500 to the user during the GitHub integration install flow, instead of the intended `github-integration-failed.html` error page. The user sees a raw server error rather than the friendly postMessage error payload.",
+      "confidence": 0.95,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "oauth-token-exchange-parsing",
+      "dimension_name": "OAuth access_token exchange response parsing in OAuthLoginView.dispatch",
+      "evidence": "Step 1: `OAuthLoginView.dispatch` (integration.py:423) calls `req = safe_urlopen(url=..., data=data)` OUTSIDE any try block.\nStep 2: Line 425 begins `try:` — only `safe_urlread(req).decode(\"utf-8\")` (426) and `dict(parse_qsl(body))` (427) are inside.\nStep 3: `safe_urlopen` (http.py:85) opens `SafeSession()` and calls `session.request(...)` (http.py:106) which raises `SSLError`/`ConnectionError`/`RestrictedIPAddress` on network failures.\nStep 4: These exceptions bypass the `except Exception` at line 428 (which only covers lines 426-427) and propagate out of `dispatch`.\nStep 5: Compare OAuth2CallbackView.exchange_token (oauth2.py:286-287): `try: req = safe_urlopen(...)` is INSIDE try, with `except SSLError` (292) and `except ConnectionError` (302) handlers — proving the canonical pattern wraps safe_urlopen.\nStep 6: Uncaught exception → Django 500 instead of `error(request, self.active_organization)` rendering the failure template.",
+      "file_path": "src/sentry/integrations/github/integration.py",
+      "id": "f_003",
+      "line_end": 429,
+      "line_start": 423,
+      "score": 0.665,
+      "severity": "important",
+      "suggestion": "Move `safe_urlopen` inside the try block and catch specific network exceptions, mirroring `OAuth2CallbackView.exchange_token` (src/sentry/identity/oauth2.py:286-308). At minimum:\n\n```python\ntry:\n    req = safe_urlopen(url=ghip.get_oauth_access_token_url(), data=data)\n    body = safe_urlread(req).decode(\"utf-8\")\n    payload = dict(parse_qsl(body))\nexcept (SSLError, ConnectionError) as e:\n    logger.info(\"github.oauth.token-exchange-error\", extra={\"error\": str(e)})\n    payload = {}\nexcept Exception:\n    payload = {}\n```\n\nThis preserves the fail-closed behavior (`payload = {}` → `\"access_token\" not in payload` → `error()`) while preventing 500s and logging the cause.",
+      "tags": [
+        "error-handling",
+        "network-errors",
+        "pattern-divergence",
+        "uncaught-exception"
+      ],
+      "title": "safe_urlopen called outside try/except — network errors propagate uncaught to 500"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Hardcoded test expectations are a maintainability concern, not a build break, regression, or production-impacting issue.",
+      "body": "Hardcoded state `9cae5e88803f35ed7970fc131e6e65d3` across 6+ tests — mass breakage on signature algorithm change",
+      "confidence": 0.5,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "F1",
+      "dimension_name": "Test Stability",
+      "evidence": "",
+      "file_path": "",
+      "id": "f_010",
+      "line_end": 0,
+      "line_start": 0,
+      "score": 0.65,
+      "severity": "critical",
+      "suggestion": null,
+      "tags": [],
+      "title": "Hardcoded state across 6+ tests"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Missing defensive guard for a KeyError is a defensive programming opportunity with UX impact (500 error / hung popup), not a security vulnerability, data loss, API break, or regression introduced by this PR.",
+      "body": "The re-install identity check indexes `integration.metadata[\"sender\"][\"login\"]` directly, with no guard for a missing `\"sender\"` key. A missing key raises `KeyError` → uncaught 500, bypassing the intentional `error()` render of `github-integration-failed.html` (so the popup's `postMessage` close signal is never emitted and the popup hangs).\n\nInconsistency proof: The sibling `GitHubIntegrationsInstallationEndpoint.get` in `src/sentry/integrations/github/installation.py:44-45` reads from the *same* `Integration.metadata` JSONField and *explicitly* guards:\n\n```python\nif \"sender\" not in integration.metadata:\n    return HttpResponse(status=404)\n```\n\nBoth files live in the same module (`src/sentry/integrations/github/`) and consume the same webhook-populated metadata. The sibling guard is proof that the team treats a missing `sender` as a real, reachable state (legacy installs, partial records, webhook payloads omitting sender). `integration.py` omitting the same guard is therefore a forgotten defensive check, not an intentional design choice.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "",
+      "dimension_name": "",
+      "evidence": "src/sentry/integrations/github/installation.py:44-45",
+      "file_path": "src/sentry/integrations/github/integration.py",
+      "id": "f_000",
+      "line_end": 505,
+      "line_start": 500,
+      "score": 0.63,
+      "severity": "important",
+      "suggestion": "Mirror the sibling guard and additionally use `.get()` for the inner `login` lookup so both keys are defended — see the `suggestion` field in the JSON for the drop-in replacement block.",
+      "tags": [],
+      "title": "Missing guard for `sender` key in re-install identity check"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a missing error-handling/defensive-programming issue that only manifests under upstream GitHub/network failures, not a build break, security vulnerability, data loss, API contract break, or regression of previously working behavior.",
+      "body": "Review complete. ## Verdict: `get_user_info` exceptions are **UNCAUGHT** — real mechanical bug\n\n**Escape path verified (no pipeline wrapper swallows exceptions):**\n- `PipelineAdvancerView.handle` (pipeline_advancer.py:63) → `pipeline.current_step()` — no try/except\n- `Pipeline.current_step` (base.py:188) → `dispatch_to(step)` \n- `Pipeline.dispatch_to` (base.py:196) → `step.dispatch(...)` — no try/except\n- `OAuthLoginView.dispatch` (integration.py:434) → `get_user_info(...)` — **OUTSIDE** the try/except that ended on line 429\n\n**Specific exceptions that escape to Django 500:**\n1. `requests.exceptions.HTTPError` from `resp.raise_for_status()` (provider.py:16) — triggered by 401 (revoked/expired token), 403 (insufficient scope — note `oauth_scopes = ()`), 404, 429 (rate limit), 5xx\n2. `json.JSONDecodeError` from `resp.json()` (provider.py:17) — non-JSON body (HTML error page during GitHub incident, proxy interception)\n3. `requests.exceptions.ConnectionError` / `Timeout` / `SSLError` from `session.get(...)` (provider.py:9)\n4. `TypeError` from `\"login\" not in authenticated_user_info` (integration.py:435) if `resp.json()` returns a non-iterable JSON value (lesser concern)\n\n**Blast radius:** Raw Django 500 traceback page instead of the PR's structured `postMessage` error payload in `github-integration-failed.html`. This directly violates the PR's stated goal that *all* installation failures render the graceful error page.\n\n**Severity:** `important` (not critical) — requires an upstream condition (GitHub non-2xx or network failure) rather than failing every request, but token revocation and rate limiting are routine operational events.\n\n**Confidence:** 0.9 — full call path traced and verified against actual source.",
+      "confidence": 0.9,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "error-handling",
+      "dimension_name": "Error Handling",
+      "evidence": "OAuthLoginView.dispatch (integration.py:434) → get_user_info(...) — OUTSIDE the try/except that ended on line 429",
+      "file_path": "integration.py",
+      "id": "f_002",
+      "line_end": 435,
+      "line_start": 434,
+      "score": 0.63,
+      "severity": "important",
+      "suggestion": null,
+      "tags": [
+        "error-handling",
+        "uncaught-exceptions",
+        "oauth",
+        "django-500"
+      ],
+      "title": "`get_user_info` exceptions are UNCAUGHT — real mechanical bug"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Missing test coverage for edge cases is explicitly non-blocking per the bar.",
+      "body": "Token exchange failure, get_user_info failure, state mismatch (CSRF), KeyError on missing sender metadata.",
+      "confidence": 0.5,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "key_gaps",
+      "dimension_name": "Test Coverage",
+      "evidence": "",
+      "file_path": "",
+      "id": "f_011",
+      "line_end": 0,
+      "line_start": 0,
+      "score": 0.455,
+      "severity": "important",
+      "suggestion": null,
+      "tags": [],
+      "title": "Key gaps in test coverage"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "Missing logging and overly broad exception handling is a diagnosability/code-quality improvement, not a correctness, security, or data-loss regression.",
+      "body": "Line 428-429 uses a bare `except Exception: payload = {}` that silently discards all exceptions from `safe_urlread`/`decode`/`parse_qsl` with **no logging**. The canonical `OAuth2CallbackView.exchange_token` (oauth2.py:286-314) catches specific exception types (`SSLError`, `ConnectionError`, `json.JSONDecodeError`) with dedicated `logger.info` calls that record the URL, verify_ssl state, and error class — enabling operators to diagnose OAuth failures.\n\nThe new code's bare except means:\n1. SSL errors during token exchange are invisible to operators (no log line).\n2. JSON decode errors (if response format ever differs) are invisible.\n3. `UnicodeDecodeError` on non-UTF-8 bodies is invisible.\n4. There is no way to distinguish \"GitHub returned an error response\" from \"network failed\" from \"parsing failed\" — all collapse into `payload = {}` → generic `error()` page.\n\nThis is a diagnosability regression. When a user reports \"GitHub integration install failed\", operators have no log trail to determine whether it was a network issue, a GitHub-side error, or a code exchange mismatch.",
+      "confidence": 0.85,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "oauth-token-exchange-parsing",
+      "dimension_name": "OAuth access_token exchange response parsing in OAuthLoginView.dispatch",
+      "evidence": "Step 1: integration.py:428-429 `except Exception: payload = {}` — no logger call, no exception variable captured.\nStep 2: Compare oauth2.py:292-296 `except SSLError: logger.info(\"identity.oauth2.ssl-error\", extra={...})` — logs URL and verify_ssl.\nStep 3: Compare oauth2.py:302-305 `except ConnectionError: logger.info(\"identity.oauth2.connection-error\", extra={...})` — logs URL.\nStep 4: Compare oauth2.py:309-311 `except json.JSONDecodeError: logger.info(\"identity.oauth2.json-error\", extra={...})` — logs URL.\nStep 5: The new code has none of these — all exceptions silently become `payload = {}`, leaving operators with no log trail for OAuth failures in the GitHub integration flow.",
+      "file_path": "src/sentry/integrations/github/integration.py",
+      "id": "f_005",
+      "line_end": 429,
+      "line_start": 428,
+      "score": 0.332,
+      "severity": "suggestion",
+      "suggestion": "Replace the bare except with specific exception handlers that log the cause, following `OAuth2CallbackView.exchange_token` (oauth2.py:286-314):\n\n```python\nexcept SSLError:\n    logger.info(\"github.oauth.token-exchange-ssl-error\", extra={\"url\": ghip.get_oauth_access_token_url()})\n    payload = {}\nexcept ConnectionError:\n    logger.info(\"github.oauth.token-exchange-connection-error\", extra={\"url\": ghip.get_oauth_access_token_url()})\n    payload = {}\nexcept Exception:\n    logger.exception(\"github.oauth.token-exchange-unexpected-error\")\n    payload = {}\n```\n\nAt minimum, add `logger.exception(...)` inside the bare except so the stack trace is captured for diagnosis.",
+      "tags": [
+        "error-handling",
+        "logging",
+        "diagnosability",
+        "pattern-divergence",
+        "bare-except"
+      ],
+      "title": "Bare `except Exception` swallows token-exchange errors with no logging — diverges from structured error handling in OAuth2CallbackView"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "Test assertion quality and resilience issue; assertion passes correctly today and no production code is affected.",
+      "body": "Verdict: Confirmed — the index `[2]` is mechanically coupled to a specific HTTP call order, and it CAN silently break. However, the state signature is deterministic, and the index-based pattern is entrenched codebase convention.\n\n### Correction to the Review Prompt's Premise\n\nThe review prompt states call 2 is \"POST to `https://api.github.com/app/installations/{id}/access_tokens`\". **That is incorrect.** Tracing the actual execution flow in `assert_setup_flow`:\n\n| Index | Method | URL | Triggered by |\n|-------|--------|-----|--------------|\n| 0 | POST | `github.com/login/oauth/access_token` | `OAuthLoginView.dispatch` → `safe_urlopen` |\n| 1 | GET | `api.github.com/user` | `OAuthLoginView.dispatch` → `get_user_info` |\n| 2 | **GET** | `api.github.com/app/installations/install_1` | `finish_pipeline` → `build_integration` → `get_installation_info` |\n\nThe POST to `/access_tokens` (stubbed at line 125-129) does **NOT** fire during `assert_setup_flow`. It only fires later when the integration is actually used (e.g., `get_repositories`). The assertion at line 257 still passes because both `/app/installations/{id}` (GET) and `/app/installations/{id}/access_tokens` (POST) use JWT Bearer auth (`Bearer jwt_token_1`), so the header check is coincidentally correct.\n\n### What Makes the Index `[2]` Fragile\n\nThe index depends on exactly three stubbed HTTP calls occurring in this exact sequence during the three test-client GETs in `assert_setup_flow`:\n\n1. `self.client.get(self.init_path)` → 302 redirect, **zero** HTTP calls (test client doesn't follow redirects)\n2. `self.client.get(self.setup_path?code=...&state=...)` → **two** HTTP calls (POST access_token, GET /user), then 302 to `/apps/sentry-test-app` (zero additional HTTP calls)\n3. `self.client.get(self.setup_path?installation_id=...)` → **one** HTTP call (GET /app/installations/install_1)\n\n**Silent breakage scenarios:**\n- Adding any HTTP call in `OAuthLoginView` or `GitHubInstallation.dispatch` (e.g., an additional user info fetch, a webhook check) shifts the index\n- Reordering pipeline steps (`get_pipeline_views` returns `[OAuthLoginView, GitHubInstallation]`) changes which endpoint is called when\n- Adding middleware that makes HTTP calls shifts all indices\n- Adding a new `responses.add` stub that gets called during setup shifts indices\n\n**False positive risk:** If a new call inserted at index 2 also uses `Bearer jwt_token_1` (JWT auth — which is the auth method for all GitHub App endpoints), the assertion **passes against the wrong call** — a silent false positive that masks a real regression.\n\n### State Signature IS Deterministic (Not a Concern)\n\nThe hardcoded state `9cae5e88803f35ed7970fc131e6e65d3` is **stable**. From `base.py:132-133`:\n```python\npipe_ids = [f\"{type(v).__module__}.{type(v).__name__}\" for v in self.pipeline_views]\nself.signature = md5_text(*pipe_ids).hexdigest()\n```\n`get_pipeline_views()` returns `[OAuthLoginView(), GitHubInstallation()]` — pure class FQN strings, no UUIDs, no random values. MD5 is deterministic. The hardcoded state is correct and will not flake. ✓\n\n### Blast Radius\n\n`assert_setup_flow` is called by **14+ tests**: `test_basic_flow`, `test_plugin_migration`, `test_github_installed_on_another_org`, `test_disable_plugin_when_fully_migrated`, all `test_get_repositories_*` tests, all `test_get_stacktrace_link_*` tests, `test_get_message_from_error`, `test_github_prevent_install_until_pending_deletion_is_complete`, and `get_installation_helper` (used by tree and source_url tests). Any silent index shift affects all of them.\n\n### Codebase Convention\n\nGrep across the entire codebase (40 matches in 21 files) confirms **index-based `responses.calls[N]` access is the universal pattern**. No URL-filtering pattern (`[c for c in responses.calls if ...]`) exists anywhere. Most uses are `calls[0]` (unambiguous single-call tests). `calls[2]` in this test is one of the highest indices in the codebase, making it the most fragile instance of an otherwise entrenched convention.\n\n### Recommendation\n\n**Low-Medium severity.** The assertion is correct today. The state signature is deterministic. The risk is future breakage from seemingly unrelated changes, plus the false-positive scenario. Replace with URL-based filtering for resilience. However, note this would deviate from entrenched codebase convention — so it's a judgment call rather than a clear defect.",
+      "confidence": 0.8,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "maintainability",
+      "dimension_name": "Maintainability",
+      "evidence": "The index depends on exactly three stubbed HTTP calls occurring in this exact sequence during the three test-client GETs in `assert_setup_flow`. The POST to `/access_tokens` (stubbed at line 125-129) does NOT fire during `assert_setup_flow`. The assertion at line 257 still passes because both `/app/installations/{id}` (GET) and `/app/installations/{id}/access_tokens` (POST) use JWT Bearer auth (`Bearer jwt_token_1`).",
+      "file_path": "base.py",
+      "id": "f_001",
+      "line_end": 257,
+      "line_start": 257,
+      "score": 0.24,
+      "severity": "suggestion",
+      "suggestion": "installation_calls = [\n    c for c in responses.calls\n    if \"/app/installations/\" in c.request.url and c.request.method == \"GET\"\n]\nassert installation_calls, \"Expected GET /app/installations/ call during setup\"\nassert installation_calls[0].request.headers[\"Authorization\"] == \"Bearer jwt_token_1\"",
+      "tags": [
+        "index-coupling",
+        "test-fragility",
+        "false-positive-risk"
+      ],
+      "title": "`responses.calls[2]` Index Coupling in `assert_setup_flow`"
+    },
+    {
+      "active_multipliers": [],
+      "blocking": false,
+      "blocking_reason": "This is a robustness/maintainability suggestion; the code fails closed safely and the JSON-error scenario is hypothetical with no demonstrated production impact.",
+      "body": "Line 427 unconditionally parses the response body with `dict(parse_qsl(body))`, assuming GitHub returns `application/x-www-form-urlencoded`. The caller passes no `headers` kwarg to `safe_urlopen` (line 423), and `safe_urlopen` defaults `headers=None` (http.py:71), so no `Accept: application/json` header is sent. Per GitHub's docs, `/login/oauth/access_token` returns form-urlencoded by default — so for **successful** responses this works.\n\nHowever, the canonical `OAuth2CallbackView.exchange_token` (oauth2.py:289-291) is Content-Type-aware:\n```python\nif req.headers.get(\"Content-Type\", \"\").startswith(\"application/x-www-form-urlencoded\"):\n    return dict(parse_qsl(body))\nreturn json.loads(body)\n```\n\nThe new code drops this dual-format handling. If GitHub ever returns a JSON error body (e.g. `{\"error\":\"bad_verification_code\"}`) — which can happen if GitHub's response format changes, or if an intermediary/proxy alters the Accept header, or on certain error codes — `parse_qsl` on JSON produces garbage pairs like `('{\"error\":\"bad_verification_code\"}', '')` or empty `[]`. The code fails closed (`\"access_token\" not in payload` → `error()`), which is safe, but **all error detail is lost** — the user gets the generic failure page with no logged error name/description, unlike `OAuth2CallbackView` which surfaces `error_description` via `pipeline.error(data[\"error_description\"])` (oauth2.py:342).\n\nThis creates two divergent token-exchange implementations in the same codebase with different response-format assumptions, increasing maintenance burden and the risk of silent drift.",
+      "confidence": 0.78,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "oauth-token-exchange-parsing",
+      "dimension_name": "OAuth access_token exchange response parsing in OAuthLoginView.dispatch",
+      "evidence": "Step 1: integration.py:423 `safe_urlopen(url=..., data=data)` — no `headers` kwarg passed.\nStep 2: http.py:71 `headers=None` default; http.py:100-101 `if headers: kwargs[\"headers\"] = headers` — so no headers sent to `session.request`.\nStep 3: integration.py:427 `payload = dict(parse_qsl(body))` — unconditionally form-urlencoded parse.\nStep 4: oauth2.py:289-291 canonical pattern checks `req.headers.get(\"Content-Type\")` and branches between `parse_qsl` and `json.loads`.\nStep 5: The new code omits this branch — JSON error responses would yield empty/garbage `payload`, fail closed at line 431, and lose error detail that oauth2.py:339-346 would have surfaced.",
+      "file_path": "src/sentry/integrations/github/integration.py",
+      "id": "f_004",
+      "line_end": 427,
+      "line_start": 427,
+      "score": 0.234,
+      "severity": "suggestion",
+      "suggestion": "Mirror the canonical Content-Type-aware parsing from `OAuth2CallbackView.exchange_token` (oauth2.py:289-291):\n\n```python\nbody = safe_urlread(req)\nif req.headers.get(\"Content-Type\", \"\").startswith(\"application/x-www-form-urlencoded\"):\n    payload = dict(parse_qsl(body.decode(\"utf-8\")))\nelse:\n    payload = json.loads(body)\n```\n\nAlternatively, explicitly send `Accept: application/json` and use `json.loads` uniformly, which is the more modern GitHub API convention and gives structured error bodies. Either way, log the parsed error fields before returning `error()` so operators can diagnose token-exchange failures.",
+      "tags": [
+        "response-parsing",
+        "pattern-divergence",
+        "error-detail-loss",
+        "content-type"
+      ],
+      "title": "Response format assumes form-encoded only — diverges from canonical Content-Type-aware parsing in OAuth2CallbackView"
+    },
+    {
+      "active_multipliers": [
+        "adversary_confirmed"
+      ],
+      "blocking": false,
+      "blocking_reason": "This is a review summary with no specific issue or concrete evidence of any blocking criteria.",
+      "body": "13 findings — 3 high, 7 medium, 3 low.",
+      "confidence": 0.5,
+      "diff_line": null,
+      "diff_side": "RIGHT",
+      "dimension_id": "summary",
+      "dimension_name": "Summary",
+      "evidence": "",
+      "file_path": "",
+      "id": "f_009",
+      "line_end": 0,
+      "line_start": 0,
+      "score": 0.195,
+      "severity": "suggestion",
+      "suggestion": null,
+      "tags": [],
+      "title": "Review Summary"
+    }
+  ]
+}

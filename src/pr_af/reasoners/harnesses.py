@@ -790,6 +790,7 @@ async def review_dimension(
     diff_patches: dict[str, str] | None = None,
     all_dimension_names: list[str] | None = None,
     reviewer_feedback: str = "",
+    primed_code: str = "",
 ) -> dict:
     ctx_files = context_files or []
     risks = risk_surfaces or []
@@ -839,6 +840,27 @@ async def review_dimension(
             else:
                 diff_section = f"## Diff Patches for Target Files\n\n{patches_text}\n\n"
 
+    # Evidence pack: the target files' current content + import context, pre-read so the
+    # reviewer reasons over it instead of cold-navigating the repo over many turns.
+    primed_section = ""
+    if primed_code:
+        if repo_path and len(primed_code) > 6000:
+            pf = _write_context_file(primed_code, "review_dimension_primed_code.md", repo_path)
+            primed_section = (
+                "## Target-File Code (pre-read for you)\n\n"
+                f"The current content of your target files (with line numbers) and their import "
+                f"context is written to: {pf}\nRead that file FIRST — it is the code you would "
+                "otherwise navigate to. Open additional files only if it is insufficient.\n\n"
+            )
+        else:
+            primed_section = (
+                "## Target-File Code (pre-read for you)\n\n"
+                "The current content of your target files (with line numbers) and import context "
+                "is below — this is the code you would otherwise navigate to. Reason over it "
+                "directly; open additional files only if it is insufficient.\n\n"
+                f"{primed_code}\n\n"
+            )
+
     spawn_instruction = ""
     if can_spawn:
         spawn_instruction = (
@@ -870,10 +892,13 @@ async def review_dimension(
         f"{intake_section}"
         f"{dimensions_section}"
         f"{diff_section}"
+        f"{primed_section}"
         f"## How to Review\n\n"
-        f"You have access to the entire repository. READ the actual files, don't just analyze "
-        f"the diff patches. The diff shows you WHAT changed — the repo shows you the FULL "
-        f"context of WHY it matters.\n\n"
+        f"You have full repository access. When a pre-read target-file code section is provided "
+        f"above, reason over it directly and open additional files only when it is insufficient "
+        f"(e.g. to follow a definition or caller it does not contain). When it is not provided, "
+        f"READ the actual files — the diff shows WHAT changed, the repo shows the FULL context "
+        f"of WHY it matters.\n\n"
         f"Do NOT just scan for surface-level issues. Think deeply about what this code DOES:\n\n"
         f"1. **Read the target files thoroughly.** Understand the control flow, data flow, "
         f"and error paths. Pay attention to what happens at boundaries — function entry/exit, "
@@ -1077,6 +1102,49 @@ async def compound_finder_phase(
     )
     parsed = result.parsed if result.parsed else _CompoundResult()
     return {"findings": [finding.model_dump() for finding in parsed.findings]}
+
+
+class _PostWorthinessResult(BaseModel):
+    keep_indices: list[int] = Field(default_factory=list)
+    reasoning: str = ""
+
+
+@router.reasoner()
+async def post_worthiness_gate(findings: list[dict]) -> dict:
+    """Calibrated post-worthiness gate (precision lever; recall-preserving).
+
+    An experienced reviewer decides which findings are genuinely worth posting on
+    the PR. KEEP every concrete, correct, evidenced defect (no count cap); DROP only
+    nitpicks/style/doc and findings whose evidence does not concretely demonstrate a
+    real problem. When unsure, KEEP (favor recall). Emergent — judged per finding from
+    its own evidence, never a bug-type list. Returns 0-based keep indices.
+    """
+
+    if len(findings) <= 1:
+        return {"keep_indices": list(range(len(findings)))}
+    numbered = "\n".join(
+        f"[{i}] ({f.get('severity')}) {f.get('file_path')}:{f.get('line_start')} {f.get('title')}\n"
+        f"    body: {(f.get('body') or '')[:300]}\n    evidence: {(f.get('evidence') or '')[:180]}"
+        for i, f in enumerate(findings)
+    )
+    result = await router.app.harness(
+        "You are an experienced engineer deciding which of an AI reviewer's findings to actually "
+        "POST as comments on a pull request. KEEP every finding that is a genuine, concrete, correct "
+        "defect with clear evidence — a real bug, security, data, or correctness problem. There is NO "
+        "limit: keep as many as are genuinely real. DROP only (a) nitpicks/style/naming/doc/"
+        "test-coverage observations and (b) findings whose evidence does not concretely demonstrate a "
+        "real problem (speculative, unverifiable, already-handled). When genuinely unsure whether "
+        "something is a real bug, KEEP it — favor catching the bug over silence. Judge each on its "
+        "own evidence; do NOT work from a list of bug types.\n\n"
+        f"FINDINGS ({len(findings)}):\n\n{numbered}\n\n"
+        "Return `keep_indices` (0-based) for the findings worth posting, and brief reasoning.",
+        schema=_PostWorthinessResult,
+    )
+    parsed = result.parsed if result.parsed else _PostWorthinessResult(keep_indices=list(range(len(findings))))
+    keep = [i for i in parsed.keep_indices if 0 <= i < len(findings)]
+    if not keep:  # never silence everything on a parse/judgment failure
+        keep = list(range(len(findings)))
+    return {"keep_indices": keep, "reasoning": parsed.reasoning}
 
 
 @router.reasoner()
@@ -1379,6 +1447,217 @@ async def adversary_phase(
     )
     parsed = result.parsed if result.parsed else _AdversaryPhaseResult()
     return {"results": [item.model_dump() for item in parsed.results]}
+
+
+class _DeepenFinding(BaseModel):
+    dimension_id: str = "literal-verify"
+    dimension_name: str = "Literal-Correctness Verifier"
+    file_path: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    severity: Severity = "important"
+    title: str = ""
+    body: str = ""
+    suggestion: str | None = None
+    evidence: str = ""
+    confidence: float = 0.7
+    tags: list[str] = Field(default_factory=list)
+
+
+class _DeepenResult(BaseModel):
+    findings: list[_DeepenFinding] = Field(default_factory=list)
+
+
+@router.reasoner()
+async def deepen_findings(
+    diff_patches: dict[str, str] | None = None,
+    existing_titles: list[str] | None = None,
+    repo_path: str = "",
+    pr_context: str = "",
+) -> dict:
+    """Literal ground-truth verification of the changed code (the meticulous pass).
+
+    A multi-agent architectural review reliably surfaces high-level findings
+    (topology, lifecycle, test gaps, design) but systematically glides over the
+    meticulous line-level check: is the code, AS LITERALLY WRITTEN, correct against
+    the actual definitions of the symbols it depends on? Almost every golden a deep
+    review misses is one such symbol-level assumption violation — a called method
+    that does not exist, an argument that is the wrong variable, a type that is not
+    the assumed subclass, a value dereferenced that can be nil, a comparison whose
+    case/uniqueness/symmetry invariant does not hold, code that will not compile.
+
+    This pass does ONE thing, generally: for the changed code, resolve every external
+    symbol it leans on to its real definition in the repo and verify the assumption
+    the code makes about it actually holds. It is a reasoning DISCIPLINE, not a bug
+    checklist — the categories below are illustrative of the KINDS of ground-truth
+    checks, not an enumeration of bugs to pattern-match.
+    """
+
+    patches = {k: v for k, v in (diff_patches or {}).items() if v}
+    if not patches:
+        return {"findings": []}
+    seen = "; ".join((existing_titles or [])[:40])
+
+    patches_text = "\n\n".join(f"### {p}\n```diff\n{d}\n```" for p, d in list(patches.items())[:20])
+    if len(patches_text) > 9000 and repo_path:
+        fp = _write_context_file(patches_text, "deepen_diff.md", repo_path)
+        diff_ref = f"Changed-code diffs written to: {fp}\nRead it for the full set of hunks."
+    else:
+        diff_ref = "## Changed code (diffs)\n\n" + patches_text
+
+    prompt = (
+        "You are the LITERAL-CORRECTNESS verifier on a review. Other reviewers have already "
+        "covered architecture, design, tests, and systemic concerns. Your job is the opposite "
+        "and complementary one: go line by line through the CHANGED code and verify it is "
+        "literally correct against GROUND TRUTH — the real definitions of every symbol it "
+        "touches. You have full repository access; USE it to resolve definitions, do not guess.\n\n"
+        "## The single discipline\n"
+        "For each changed line, identify every external thing the code DEPENDS ON and RELIES ON "
+        "being true, then open the actual definition and verify the assumption holds. When the "
+        "ground truth contradicts the code's assumption, that is a finding.\n\n"
+        "Be EXHAUSTIVE, not selective. Walk EVERY changed call, argument, assignment, condition, "
+        "and type assumption — one at a time. Emit a finding for EVERY violation you confirm. "
+        "Stopping after the single most salient issue is a FAILURE of this pass; completeness is "
+        "the goal. Two sibling bugs on adjacent lines are TWO findings, not one.\n\n"
+        "Let the specific things to check EMERGE from this code — do NOT work from a remembered "
+        "list of common bug types or categories. For each changed element, ask the question the "
+        "code itself raises: 'what must be true — elsewhere in this codebase, or in the runtime — "
+        "for this exact line to be correct?' Then read the real definition, caller, creation site, "
+        "or surrounding logic and check whether it actually is true. The right questions are "
+        "different for every change; derive them from what the code does, never from memory of "
+        "past bugs. Follow an assumption across files when the answer lives elsewhere — a value "
+        "produced in one place and relied on in another must agree. When the ground truth "
+        "contradicts what the code assumes, that is a finding — whether the violation is mechanical "
+        "(a symbol that does not resolve or behave as used) or a logic invariant the code is "
+        "meant to preserve but does not. State the concrete consequence you can demonstrate.\n\n"
+        "## Output contract\n"
+        f"- Findings already reported by other reviewers (do NOT duplicate): {seen or 'none'}.\n"
+        "- Emit a finding only for a concrete, code-verified literal-correctness violation. Each: "
+        "title, severity, file_path, line_start, line_end, body, evidence (quote the exact code "
+        "AND the conflicting definition you read), suggestion, confidence, tags. severity MUST be "
+        "one of critical/important/suggestion/nitpick.\n"
+        "- Verify every claim by reading the real definition. Do NOT speculate or invent. "
+        "confidence >= 0.6. If the changed code is literally correct, return zero findings.\n\n"
+        + (("## PR Context\n\n" + pr_context + "\n\n") if pr_context else "")
+        + diff_ref
+    )
+    result = await router.app.harness(prompt, schema=_DeepenResult, cwd=repo_path or None)
+    parsed = result.parsed if result.parsed else _DeepenResult()
+    return {"findings": [f.model_dump() for f in parsed.findings]}
+
+
+# ---------------------------------------------------------------------------
+# Consistency-obligation verification (emergent, decomposed deep trace).
+#
+# A bug is almost always a place where the changed code at one location RELIES on
+# something being true at ANOTHER location, and it isn't (a lookup key vs how it
+# is stored; a branch vs its complementary branch; an assumed type vs the real
+# hierarchy; a deref vs a caller that can pass null). A single reviewer facing
+# many such reliances checks each shallowly. So we DECOMPOSE: one agent enumerates
+# the cross-location reliances the diff creates (breadth, emergent — from the code,
+# not a bug list); then ONE focused agent per reliance goes and reads BOTH ends and
+# checks they agree (depth — a narrow scope forces the multi-hop trace the monolith
+# skips). No bug types, no benchmark specifics — pure structural reasoning.
+# ---------------------------------------------------------------------------
+
+
+class _Obligation(BaseModel):
+    id: str = ""
+    where: str = ""        # the changed line/operation that creates the reliance
+    relies_on: str = ""    # the OTHER location/fact to go find and read
+    property: str = ""     # the exact thing that must hold for correctness
+
+
+class _ObligationsResult(BaseModel):
+    obligations: list[_Obligation] = Field(default_factory=list)
+
+
+class _ObligationVerdict(BaseModel):
+    holds: bool = True
+    title: str = ""
+    severity: Severity = "important"
+    file_path: str = ""
+    line_start: int = 0
+    line_end: int = 0
+    body: str = ""
+    evidence: str = ""
+    suggestion: str | None = None
+    confidence: float = 0.7
+
+
+@router.reasoner()
+async def extract_obligations(
+    diff_patches: dict[str, str] | None = None,
+    repo_path: str = "",
+    pr_context: str = "",
+) -> dict:
+    """Enumerate the cross-location consistency obligations the changed code creates."""
+    patches = {k: v for k, v in (diff_patches or {}).items() if v}
+    if not patches:
+        return {"obligations": []}
+    patches_text = "\n\n".join(f"### {p}\n```diff\n{d}\n```" for p, d in list(patches.items())[:20])
+    if len(patches_text) > 9000 and repo_path:
+        fp = _write_context_file(patches_text, "obligations_diff.md", repo_path)
+        diff_ref = f"Changed-code diffs written to: {fp}\nRead it for the full set of hunks."
+    else:
+        diff_ref = "## Changed code (diffs)\n\n" + patches_text
+
+    prompt = (
+        "You map the CONSISTENCY OBLIGATIONS the changed code creates — you do NOT judge them yet.\n\n"
+        "A defect is almost always a place where code at ONE location relies on something being true "
+        "at ANOTHER location, and it isn't. Your job: read the changed code and enumerate every such "
+        "cross-location reliance, so each can be checked by going and reading the other end.\n\n"
+        "For each operation the changed code performs, ask: 'for this to be correct, what must be true "
+        "ELSEWHERE?' — at the definition it calls, the place a value it passes is produced or stored, "
+        "the counterpart of a branch it takes, the real type behind an assumption it makes, or the code "
+        "that consumes what it produces. Each distinct reliance is one obligation.\n\n"
+        "Derive obligations from the STRUCTURE of this specific code — never from a remembered list of "
+        "common bugs. Be exhaustive: every call, argument, branch, type assumption, and produced/consumed "
+        "value is a candidate. Favour load-bearing reliances (security, correctness, data integrity) over "
+        "cosmetic ones. It is fine if most obligations turn out to hold — completeness now matters more.\n\n"
+        "Each obligation has three fields:\n"
+        "- where: the exact changed line/operation that creates the reliance (file + a code snippet).\n"
+        "- relies_on: a concrete description of the OTHER location or fact a verifier must GO FIND and "
+        "read — specific enough to locate it (e.g. 'the method that creates/stores these resources, to "
+        "see which key/owner they are stored under', or 'the sibling branch that handles the opposite "
+        "outcome, to compare how it is treated').\n"
+        "- property: the exact thing that must hold for the changed line to be correct (e.g. 'the lookup "
+        "key here equals the key used when the resource is stored', 'both branches treat their outcome "
+        "with the same level of trust').\n\n"
+        "Return up to 14 obligations, highest-stakes first.\n\n"
+        + (("## PR Context\n\n" + pr_context + "\n\n") if pr_context else "")
+        + diff_ref
+    )
+    result = await router.app.harness(prompt, schema=_ObligationsResult, cwd=repo_path or None)
+    parsed = result.parsed if result.parsed else _ObligationsResult()
+    return {"obligations": [o.model_dump() for o in parsed.obligations]}
+
+
+@router.reasoner()
+async def verify_obligation(obligation: dict, repo_path: str = "") -> dict:
+    """Verify ONE consistency obligation by reading BOTH ends in the repo."""
+    o = _Obligation.model_validate(obligation)
+    prompt = (
+        "You verify ONE consistency obligation, and nothing else. This is your entire job, so do it "
+        "thoroughly: actually GO FIND and READ the other location, do not reason from memory or guess.\n\n"
+        f"## The changed code relies on something elsewhere\n"
+        f"- WHERE (the changed code): {o.where}\n"
+        f"- IT RELIES ON: {o.relies_on}\n"
+        f"- PROPERTY THAT MUST HOLD: {o.property}\n\n"
+        "## What to do\n"
+        "1. Locate the OTHER end described in 'relies on' — search the repository, open the file, read it.\n"
+        "2. Read the changed location too. Compare the two ends.\n"
+        "3. Decide whether the PROPERTY actually holds, citing the exact code at BOTH ends.\n\n"
+        "If the property HOLDS, return holds=true (no finding needed).\n"
+        "If the property does NOT hold — the two ends disagree — return holds=false and fill the finding "
+        "fields: a precise title, severity (critical/important/suggestion/nitpick), file_path + line_start "
+        "of the changed location, body (state both ends explicitly and exactly how they disagree, and the "
+        "concrete consequence that follows), evidence (quote the code from BOTH ends), and a suggestion. "
+        "Only report holds=false if you VERIFIED the disagreement in the real code. confidence >= 0.6."
+    )
+    result = await router.app.harness(prompt, schema=_ObligationVerdict, cwd=repo_path or None)
+    parsed = result.parsed if result.parsed else _ObligationVerdict(holds=True)
+    return parsed.model_dump()
 
 
 @router.reasoner()
