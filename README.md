@@ -45,6 +45,7 @@ Where PR-AF shines:
 | **Known bug recall** | 0.706 golden recall — #1 open source across 42 compared tools. |
 | **More real issues found** | 595 independently valid findings, ~3× more than the leading commercial tools in the adjusted comparison. |
 | **Open + reproducible** | Single open model (`GLM-5.2`), public results, per-PR judge verdicts, and reproduction scripts. |
+| **Self-hosted API** | Run locally with Docker; trigger reviews by CLI, curl, CI, or other agents. |
 | **Model-flexible** | Use cheaper models for regular PRs, GLM-5.2 for open-model CI gates, and Opus-class frontier models for highest-stakes reviews. |
 | **Frontier ceiling** | With Opus-class commercial models, PR-AF tops the benchmark by a wide margin. |
 | **Cost position** | About 10× cheaper per review than closed-source tools. |
