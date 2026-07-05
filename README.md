@@ -25,6 +25,8 @@ Other tools run a single LLM pass over the diff with a fixed checklist. PR-AF **
   <img src="assets/hero.png" alt="PR-AF — open-source agentic PR review" width="100%" />
 </p>
 
+*Benchmark detail: on the 38 runnable Martian Code-Review-Bench PRs, PR-AF with GLM-5.2 reaches 0.706 golden recall and delivers the most valid findings in the adjusted comparison.*
+
 ## One-Call DX
 
 Trigger it with the `af` CLI (requires af ≥ 0.1.87) — it streams live progress and prints the result:
