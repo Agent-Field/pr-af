@@ -2,15 +2,15 @@
 
 PR-AF, running entirely on a single mid-tier **open** model (**GLM-5.2**, `z-ai/glm-5.2` via OpenRouter), was evaluated on Martian's Code-Review-Bench against ~40 commercial reviewers (cubic, qodo, coderabbit, greptile, copilot, devin, …), most of which route to frontier models.
 
-The benchmark's golden comments are a **human-curated subset** of each PR's real issues, so a reviewer that finds *more* real bugs than the humans listed is, under naive scoring, penalised for being thorough. The results below use **honest, leakage-corrected scoring**: a real bug is credited as a real bug, and a *valid* nitpick is credited as valid — applied **uniformly to every tool**. Only genuinely wrong/speculative comments count against a tool.
+The benchmark's golden comments are a **human-curated subset** of each PR's real issues, so a reviewer that finds *more* real bugs than the humans listed is, under naive scoring, penalised for being thorough. The adjusted view below credits real non-golden bugs and valid nitpicks using the same independent-review bar for the compared tools. Only genuinely wrong/speculative comments count against a tool.
 
 ## Headline
 
 - **#1 in real findings delivered** — PR-AF surfaces more genuinely-valid review comments than any tool on the benchmark.
 - **#2 of 42 in golden recall** — it catches the human-flagged bugs at a rate beaten only by cubic-dev, ahead of cubic-v2 and every other tool.
-- **Co-leader on honest F1 (0.82)** — top tier, with a single open model.
+- **Top-tier adjusted F1 (0.82)** — close to the benchmark leaders, with a single open model.
 
-## Honest scoring (real bugs + valid nitpicks credited, substantive goldens)
+## Adjusted scoring (real bugs + valid nitpicks credited, substantive goldens)
 
 | reviewer | precision | recall | F1 |
 |---|---|---|---|
@@ -46,7 +46,7 @@ PR-AF catches the known bugs better than cubic-v2 and every qodo / coderabbit / 
 
 ## Why this matters
 
-- **Single open model.** These results come from GLM-5.2 alone — no frontier-model routing, no proprietary model. The intelligence is in the multi-agent review pipeline, not the base model.
+- **Single open model.** These results come from GLM-5.2 alone — no frontier-model routing, no proprietary model. The result comes from the multi-agent review pipeline, not the base model alone.
 - **Thoroughness.** PR-AF surfaces the most real issues of any reviewer evaluated — including bugs the human reviewers missed.
 - **Strongest on cal.com (0.91 substantive recall)**, with solid results across Keycloak (0.83), Grafana (0.81), and a clear next target in Sentry.
 
@@ -54,4 +54,4 @@ PR-AF catches the known bugs better than cubic-v2 and every qodo / coderabbit / 
 
 - Model: GLM-5.2 for both reasoning (`.harness()`) and classification (`.ai()`); blind review, no access to golden comments.
 - Coverage: 38 of the 50 offline PRs (the other 12 are unrunnable — 10 Discourse rebase-merged commits with no PR number, 2 synthetic Sentry entries).
-- Scoring: an independent judge (`anthropic/claude-sonnet-4.6`) matches comments to goldens; the real-bug / valid-nit credit is applied with the same uniform bar to every reviewer, so the comparison is apples-to-apples. Tool comparison numbers are computed on the identical 38-PR subset.
+- Scoring: an independent judge (`anthropic/claude-sonnet-4.6`) matches comments to goldens; the real-bug / valid-nit credit is applied with the same uniform bar to each compared reviewer. Tool comparison numbers are computed on the identical 38-PR subset.

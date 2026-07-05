@@ -8,7 +8,8 @@ commercial reviewers (cubic, qodo, coderabbit, greptile, …) on, most of which 
 frontier models.
 
 The point: show what the PR-AF multi-agent architecture extracts from one open model on real,
-hard PRs — the intelligence is in the composition, not the base model.
+hard PRs. The benchmark is packaged here as a public, reproducible results bundle: inputs,
+per-PR outputs, aggregate scoreboards, and scripts.
 
 ## Headline
 
@@ -18,19 +19,19 @@ See [`RESULTS.md`](RESULTS.md) for the full results. In short, on the 38 runnabl
   the leading commercial tools.
 - **#2 of 42 in golden recall** (0.706) — beaten only by cubic-dev; ahead of cubic-v2 and every
   qodo / coderabbit / greptile / copilot variant.
-- **Co-leader on honest F1 (0.82)** — top tier, with a single open model.
+- **Top-tier adjusted F1 (0.82)** — close to the benchmark leaders, with a single open model.
 
 ## What's here
 
 | path | contents |
 |---|---|
-| [`RESULTS.md`](RESULTS.md) | The headline results (honest, leakage-corrected scoring). |
+| [`RESULTS.md`](RESULTS.md) | The headline results and adjusted scoring view. |
 | [`scoreboard.md`](scoreboard.md) | Live aggregate recall table, sorted hardest-first. |
-| `scoreboard.jsonl` | Machine-readable, one line per scored problem. |
+| `scoreboard.jsonl` | Machine-readable final scoreboard, one scored row per runnable problem. |
 | `problems.json` | The ranked worklist: 50 PRs + golden comments + difficulty scores. |
 | `results/<id>.json` | Per-problem detail: the PR, its goldens, **every** PR-AF finding (exact and full — no truncation), and the judge's per-golden HIT/MISS verdict with reasons. |
-| `analysis/` | Secondary views: all-golden leaderboard standing and substantive-golden scoreboard. |
-| `scripts/` | Reproduction: node launcher, campaign runner, ensemble escalation, scoring. See [`scripts/README.md`](scripts/README.md). |
+| `analysis/` | Secondary views: leaderboard standing and substantive-golden scoreboard. |
+| `scripts/` | Reproduction: local runner launcher, campaign runner, ensemble escalation, scoring. See [`scripts/README.md`](scripts/README.md). |
 
 ## Methodology
 
@@ -44,15 +45,15 @@ See [`RESULTS.md`](RESULTS.md) for the full results. In short, on the 38 runnabl
 - **Scoring.** An independent judge (`anthropic/claude-sonnet-4.6`) decides, per golden, whether
   any PR-AF finding identifies the same underlying issue (same location + same root cause).
   `scoreboard.md` is the severity-agnostic recall view; `RESULTS.md` adds the honest precision/F1
-  view that credits real non-golden bugs uniformly across all tools.
+  view that credits real non-golden bugs uniformly across the compared tools.
 
 ## Reproduce
 
-See [`scripts/README.md`](scripts/README.md). From the repo root (`examples/pr-af`):
+See [`scripts/README.md`](scripts/README.md). From the repo root:
 
 ```bash
-bash benchmark/martian-code-review-bench/scripts/run_node.sh           # node, pinned to GLM-5.2
-uv run python benchmark/martian-code-review-bench/scripts/campaign.py  # fire + poll + judge + score
+bash benchmark/martian-code-review-bench/scripts/run_node.sh           # local runner, pinned to GLM-5.2
+uv run python benchmark/martian-code-review-bench/scripts/campaign.py  # run + poll + judge + score
 ```
 
 ## Caveats

@@ -12,7 +12,7 @@ Writes the updated, EXACT (untrimmed) result back to
 benchmark/.../results/<id>.json with baseline_recall + ensemble_recall, and
 appends an `ensemble` row to scoreboard.jsonl.
 
-Run only when campaign.py has printed "[campaign] done" (it shares the node's
+Run only when campaign.py has printed "[campaign] done" (it shares the runner's
 per-repo checkout dir; overlapping same-repo reviews would race).
 """
 from __future__ import annotations
@@ -21,9 +21,8 @@ import asyncio
 import json
 import os
 
+import campaign  # reuse fire/poll/judge/_repo_lock + paths
 import httpx
-
-import campaign as C  # reuse fire/poll/judge/_repo_lock + paths
 
 ENSEMBLE_PASSES = int(os.getenv("ENSEMBLE_PASSES", "2"))   # extra passes beyond baseline
 CONCURRENCY = int(os.getenv("ENSEMBLE_CONCURRENCY", "3"))
@@ -41,7 +40,7 @@ def _dedup_exact(findings: list[dict]) -> list[dict]:
 
 
 def _baseline_findings(pid: str) -> list[dict]:
-    run_file = C.RUNS / f"{pid.replace('/', '_')}.json"
+    run_file = campaign.RUNS / f"{pid.replace('/', '_')}.json"
     if not run_file.exists():
         return []
     details = json.loads(run_file.read_text())
@@ -50,14 +49,14 @@ def _baseline_findings(pid: str) -> list[dict]:
 
 async def _extra_pass(client: httpx.AsyncClient, prob: dict, k: int) -> list[dict]:
     pid = prob["id"]
-    cache = C.RUNS / f"{pid.replace('/', '_')}__ens{k}.json"
+    cache = campaign.RUNS / f"{pid.replace('/', '_')}__ens{k}.json"
     if cache.exists():
         details = json.loads(cache.read_text())
     else:
-        async with C._repo_lock(prob["repo"]):
-            eid = await C.fire(client, prob["pr_url"])
+        async with campaign._repo_lock(prob["repo"]):
+            eid = await campaign.fire(client, prob["pr_url"])
             print(f"[{pid}] ensemble pass {k} fired {eid}", flush=True)
-            details = await C.poll(client, eid, f"{pid}~ens{k}")
+            details = await campaign.poll(client, eid, f"{pid}~ens{k}")
             cache.write_text(json.dumps(details, default=str))
     if details.get("status") not in ("succeeded", "completed"):
         return []
@@ -69,13 +68,13 @@ async def escalate(client: httpx.AsyncClient, sem: asyncio.Semaphore, prob: dict
     async with sem:
         passes = await asyncio.gather(*[_extra_pass(client, prob, k) for k in range(1, ENSEMBLE_PASSES + 1)])
     union = _dedup_exact(_baseline_findings(pid) + [f for p in passes for f in p])
-    verdict = await C.judge(client, prob["goldens"], union)
-    res_file = C.RESULTS_DIR / f"{pid.replace('/', '_')}.json"
+    verdict = await campaign.judge(client, prob["goldens"], union)
+    res_file = campaign.RESULTS_DIR / f"{pid.replace('/', '_')}.json"
     doc = json.loads(res_file.read_text()) if res_file.exists() else {"id": pid, "repo": prob["repo"]}
     doc.update({
         "pr_url": prob["pr_url"],
-        "review_model": C.REVIEW_MODEL,
-        "judge_model": C.JUDGE_MODEL,
+        "review_model": campaign.REVIEW_MODEL,
+        "judge_model": campaign.JUDGE_MODEL,
         "difficulty_score": prob.get("difficulty_score"),
         "baseline_recall": baseline_recall,
         "ensemble_passes": ENSEMBLE_PASSES + 1,
@@ -88,7 +87,7 @@ async def escalate(client: httpx.AsyncClient, sem: asyncio.Semaphore, prob: dict
         "findings": union,  # exact, untrimmed union
     })
     res_file.write_text(json.dumps(doc, indent=2, default=str))
-    C._record({"id": pid, "repo": prob["repo"], "status": "scored",
+    campaign._record({"id": pid, "repo": prob["repo"], "status": "scored",
                "difficulty": prob.get("difficulty_score"), "n_goldens": verdict["total"],
                "n_findings": len(union), "hits": verdict["hits"], "recall": verdict["recall"],
                "ensemble": True, "baseline_recall": baseline_recall,
@@ -100,8 +99,8 @@ async def escalate(client: httpx.AsyncClient, sem: asyncio.Semaphore, prob: dict
 
 
 async def main() -> None:
-    problems = {p["id"]: p for p in json.loads(C.PROBLEMS.read_text())}
-    rows = [json.loads(l) for l in C.SCORE_JSONL.read_text().splitlines() if l.strip()]
+    problems = {p["id"]: p for p in json.loads(campaign.PROBLEMS.read_text())}
+    rows = [json.loads(line) for line in campaign.SCORE_JSONL.read_text().splitlines() if line.strip()]
     # latest baseline (non-ensemble) row per id
     baseline: dict[str, dict] = {}
     for r in rows:

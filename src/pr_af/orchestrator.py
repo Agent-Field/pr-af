@@ -34,10 +34,8 @@ from .reasoners.harnesses import (
     compound_dedup_phase,
     compound_finder_phase,
     coverage_gate,
-    deepen_findings,
     evidence_verifier,
     extract_obligations,
-    verify_obligation,
     intake_phase,
     meta_mechanical,
     meta_semantic,
@@ -45,6 +43,7 @@ from .reasoners.harnesses import (
     planning_phase,  # Keep for backward compat
     post_worthiness_gate,
     review_dimension,
+    verify_obligation,
 )
 from .schemas.input import ChangedFile, GitHubPRData, ReviewInput
 from .schemas.output import (

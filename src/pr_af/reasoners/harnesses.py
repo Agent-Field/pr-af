@@ -1119,7 +1119,6 @@ async def post_worthiness_gate(findings: list[dict]) -> dict:
     real problem. When unsure, KEEP (favor recall). Emergent — judged per finding from
     its own evidence, never a bug-type list. Returns 0-based keep indices.
     """
-    import json as _json
 
     if len(findings) <= 1:
         return {"keep_indices": list(range(len(findings)))}
@@ -1493,7 +1492,6 @@ async def deepen_findings(
     checklist — the categories below are illustrative of the KINDS of ground-truth
     checks, not an enumeration of bugs to pattern-match.
     """
-    import json as _json
 
     patches = {k: v for k, v in (diff_patches or {}).items() if v}
     if not patches:

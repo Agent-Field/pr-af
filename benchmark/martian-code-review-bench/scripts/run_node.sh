@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Launch the PR-AF node with the whole pipeline pinned to GLM-5.2 via OpenRouter.
-# Harness (opencode) needs the `openrouter/` prefix; .ai() (direct OpenRouter API) needs the bare slug.
+# Launch the local PR-AF runner with the whole pipeline pinned to GLM-5.2 via OpenRouter.
+# Both harness and .ai() model names use the OpenRouter-prefixed model id.
 set -euo pipefail
 # scripts/ -> martian-code-review-bench -> benchmark -> pr-af repo root
 cd "$(dirname "$0")/../../.."
 
-# Load OPENROUTER_API_KEY etc. from .env, then override the model + budget knobs.
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
+# Load OPENROUTER_API_KEY etc. from .env when present, then override the model + budget knobs.
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
 
 export NODE_ID=pr-af
 export AGENTFIELD_SERVER="${AGENTFIELD_SERVER:-http://localhost:8080}"
@@ -35,7 +37,7 @@ export AGENTFIELD_OPENCODE_REUSE_DATA_DIR=true
 # don't queue during a deep review. Cost is no object here.
 export OPENCODE_MAX_CONCURRENT="${OPENCODE_MAX_CONCURRENT:-24}"
 
-# Authenticated GitHub token (from gh CLI) so fetch_pr + clone aren't capped at
+# Authenticated GitHub token (from gh CLI) so fetch_pr + clone are not capped at
 # the 60 req/hr unauthenticated limit during a 38-PR campaign.
 if [ -z "${GH_TOKEN:-}" ]; then
   export GH_TOKEN="$(gh auth token 2>/dev/null || true)"

@@ -1,12 +1,12 @@
-# Leaderboard standing — all-golden recall on the 38 runnable PRs
+# Leaderboard standing — golden recall on the 38 runnable PRs
 
-GLM-5.2 + PR-AF: 69/102 = 0.676 all-golden recall · #3 of 42
+GLM-5.2 + PR-AF: 72/102 = 0.706 golden recall · #2 of 42
 
 | # | tool | recall |
 |---|---|---|
 | 1 | cubic-dev | 0.741 |
-| 2 | cubic-v2 | 0.699 |
-| 3 | GLM-5.2 + PR-AF **(us)** | 0.676 |
+| 2 | GLM-5.2 + PR-AF | 0.706 |
+| 3 | cubic-v2 | 0.699 |
 | 4 | qodo-extended-summary | 0.645 |
 | 5 | coderabbit | 0.621 |
 | 6 | augment | 0.606 |

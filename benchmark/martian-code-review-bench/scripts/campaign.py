@@ -2,12 +2,12 @@
 """Self-driving Martian Code-Review-Bench campaign for GLM-5.2 + PR-AF.
 
 For each runnable problem (hardest-first), fire a blind deep review against the
-PR-AF node, poll to completion, then LLM-judge the findings against the golden
+PR-AF runner, poll to completion, then LLM-judge the findings against the golden
 comments (RECALL only — severity labels ignored, per the goal: a HIT = the bug
 was FOUND). Writes an incremental scoreboard. Resumable: a problem whose raw run
 already exists in runs/<id>.json is re-judged, not re-run.
 
-Concurrency-limited so we don't thrash the single node / opencode semaphore.
+Concurrency-limited so we do not thrash the local runner / opencode semaphore.
 Cost is no object; quality (recall) is the metric.
 """
 from __future__ import annotations
@@ -52,7 +52,7 @@ POLL_TIMEOUT_MIN = 80
 
 
 # --------------------------------------------------------------------------- #
-# PR-AF node: fire + poll
+# PR-AF runner: fire + poll
 # --------------------------------------------------------------------------- #
 async def fire(client: httpx.AsyncClient, pr_url: str) -> str:
     body = {
@@ -162,7 +162,7 @@ async def judge(client: httpx.AsyncClient, goldens: list[dict], findings: list[d
 # --------------------------------------------------------------------------- #
 # Per-problem pipeline
 # --------------------------------------------------------------------------- #
-# One review per repo at a time: the node clones each repo into a single shared
+# One review per repo at a time: the runner clones each repo into a single shared
 # PR_AF_WORKDIR/<repo> dir and does `git checkout -B pr-review FETCH_HEAD` there.
 # Two concurrent same-repo reviews would clobber each other's checkout and review
 # the wrong tree. Hold the repo lock for the whole fire+poll (the reviewers read
@@ -220,17 +220,16 @@ async def process(client: httpx.AsyncClient, sem: asyncio.Semaphore, prob: dict)
         details = json.loads(run_file.read_text())
         print(f"[{pid}] using cached run", flush=True)
     else:
-        async with _repo_lock(prob["repo"]):
-            async with sem:
-                try:
-                    eid = await fire(client, prob["pr_url"])
-                    print(f"[{pid}] fired {eid}", flush=True)
-                    details = await poll(client, eid, pid)
-                except Exception as exc:  # noqa: BLE001
-                    _record({"id": pid, "repo": prob["repo"], "status": "fire_error",
-                             "error": repr(exc)[:300], "difficulty": prob.get("difficulty_score"),
-                             "n_goldens": len(prob["goldens"]), "hits": 0, "recall": 0.0})
-                    return
+        async with _repo_lock(prob["repo"]), sem:
+            try:
+                eid = await fire(client, prob["pr_url"])
+                print(f"[{pid}] fired {eid}", flush=True)
+                details = await poll(client, eid, pid)
+            except Exception as exc:  # noqa: BLE001
+                _record({"id": pid, "repo": prob["repo"], "status": "fire_error",
+                         "error": repr(exc)[:300], "difficulty": prob.get("difficulty_score"),
+                         "n_goldens": len(prob["goldens"]), "hits": 0, "recall": 0.0})
+                return
         # Cache ONLY successful runs so a transient failure retries next time.
         if details.get("status") in ("succeeded", "completed") and isinstance(details.get("output_data"), dict):
             run_file.write_text(json.dumps(details, default=str))
@@ -306,7 +305,7 @@ def _record(rec: dict) -> None:
 
 
 def _render() -> None:
-    raw = [json.loads(l) for l in SCORE_JSONL.read_text().splitlines() if l.strip()]
+    raw = [json.loads(line) for line in SCORE_JSONL.read_text().splitlines() if line.strip()]
     # Dedup by id: a scored row always wins over a failed one; later wins over earlier.
     by_id: dict[str, dict] = {}
     for r in raw:
