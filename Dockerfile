@@ -52,13 +52,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     chown -R praf:praf /app /workspaces /home/praf && \
     rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /home/praf/.config/opencode && \
-    echo '{"$schema":"https://opencode.ai/config.json","model":"openrouter/moonshotai/kimi-k2.5","small_model":"openrouter/moonshotai/kimi-k2.5","provider":{"openrouter":{"options":{"apiKey":"{env:OPENROUTER_API_KEY}"},"models":{"moonshotai/kimi-k2.5":{}}}}}' \
-    > /home/praf/.config/opencode/opencode.json && \
-    chown -R praf:praf /home/praf/.config
-
 COPY --from=builder /install /usr/local
 COPY src/ /app/src/
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER praf
 
@@ -67,4 +64,5 @@ EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8004/health || exit 1
 
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "-m", "pr_af.app"]
