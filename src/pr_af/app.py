@@ -378,7 +378,12 @@ app.include_router(reasoner_router)
 
 
 def main() -> None:
-    app.run(port=8004, host="0.0.0.0")
+    # Honor the PORT injected by the AgentField CLI/runner (`af run` allocates a
+    # free port and passes it via PORT); fall back to 8004 when launched
+    # standalone. Previously this was hardcoded to 8004, which the SDK treats as
+    # an explicit override — so `af run pr-af` bound 8004 while the CLI polled its
+    # assigned port, and the readiness check timed out.
+    app.run(port=int(os.getenv("PORT", "8004")), host="0.0.0.0")
 
 
 if __name__ == "__main__":
