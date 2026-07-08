@@ -260,6 +260,12 @@ jobs:
 *Note: PR-AF runs a comprehensive parallel pipeline. Reviews typically take 35-50 minutes depending on PR complexity.*
 
 ---
+## From the AgentField AF Ecosystem
+
+PR-AF is one example of a larger AgentField ecosystem for building autonomous, agent-native systems.
+
+* **[SWE-AF](http://www.agentfield.ai/github/swe-af)**: autonomous software factory for production ready PR
+* **[SEC-AF](http://www.agentfield.ai/github/sec-af)**: autonomous security factory for code security review, vulnerability investigation, and evidence-grounded remediation.
 
 ## From the AgentField Blog
 
