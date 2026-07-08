@@ -190,6 +190,23 @@ There are excellent AI code review tools on the market. PR-AF is not designed to
 
 ## Quick Start
 
+### Install into AgentField (`af install`)
+
+Already running an [AgentField](https://github.com/Agent-Field/agentfield) control plane? Install PR-AF straight from GitHub — no clone, no local setup:
+
+```bash
+af install https://github.com/Agent-Field/pr-af
+af run pr-af
+```
+
+`af install` clones the repo, provisions an isolated Python environment, and registers the `pr-af` node with your control plane. On first `af run` you're prompted for the required secrets — `OPENROUTER_API_KEY` and `GH_TOKEN` — which are stored encrypted and reused across every node, so you enter each only once. Then review a PR:
+
+```bash
+af call pr-af.review --in '{"pr_url": "https://github.com/owner/repo/pull/123"}'
+```
+
+New to AgentField? Install the control plane first with `curl -fsSL https://agentfield.ai/install.sh | bash`, or use one of the options below.
+
 ### Deploy with Railway (fastest)
 
 [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/pr-af)
