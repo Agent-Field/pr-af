@@ -205,9 +205,27 @@ af run pr-af
 af call pr-af.review --in '{"pr_url": "https://github.com/owner/repo/pull/123"}'
 ```
 
-New to AgentField? Install the control plane first with `curl -fsSL https://agentfield.ai/install.sh | bash`, or use the Docker option below.
+New to AgentField? Install the control plane first with `curl -fsSL https://agentfield.ai/install.sh | bash`, or use one of the options below.
 
-### Local (Docker Compose)
+### Deploy with Railway (fastest)
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/pr-af)
+
+One click deploys PR-AF + the AgentField control plane + PostgreSQL. Set two environment variables in Railway:
+
+- `OPENROUTER_API_KEY` — your [OpenRouter](https://openrouter.ai/keys) key (routes to the review models)
+- `GH_TOKEN` — GitHub personal access token with `repo` scope, for reading PRs and posting reviews
+
+Once deployed, trigger a review against the control plane (the public endpoint requires the `X-API-Key` header set to your `AGENTFIELD_API_KEY`):
+
+```bash
+curl -X POST https://<control-plane>.up.railway.app/api/v1/execute/async/pr-af.review \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <AGENTFIELD_API_KEY>" \
+  -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
+```
+
+### Run locally (Docker Compose)
 
 ```bash
 git clone https://github.com/Agent-Field/pr-af.git && cd pr-af
