@@ -27,6 +27,8 @@ RUN pip install --no-cache-dir --prefix=/install \
 
 FROM python:3.11-slim AS runtime
 
+ARG OPENCODE_VERSION=1.17.15
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AGENTFIELD_SERVER=http://agentfield:8080 \
@@ -47,7 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git && \
     groupadd --gid 10001 praf && \
     useradd --uid 10001 --gid praf --create-home --home-dir /home/praf --shell /bin/sh praf && \
-    su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash" && \
+    su -s /bin/sh praf -c "curl -fsSL https://opencode.ai/install | bash -s -- --version ${OPENCODE_VERSION} --no-modify-path" && \
     mkdir -p /workspaces /home/praf/.local/share && \
     chown -R praf:praf /app /workspaces /home/praf && \
     rm -rf /var/lib/apt/lists/*
