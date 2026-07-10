@@ -1,0 +1,88 @@
+## 🔴 PR-AF Review — **Merge Blocked — Must-Fix Found**
+
+> 🚫 **Merge blocked.** 1 must-fix issue found by automated review.
+
+*Automated multi-agent code review · [PR-AF](https://github.com/Agent-Field/pr-af) built with [AgentField](https://github.com/Agent-Field/agentfield)*
+
+> **3 findings** · 🚫 1 blocking · 💬 2 advisory · 🔴 1 critical · 🟠 1 important · 🔵 0 suggestions · ⚪ 1 nitpicks
+
+<details>
+<summary><b>PR Overview</b></summary>
+
+Adds a caching layer to the API.
+
+</details>
+
+### Key Findings
+
+**1 issue(s) should be addressed before merge:**
+
+- 🔴 **Null dereference** (`src/a.py:10`) — The value can be None. Gate: Crashes on null input.
+
+**2 advisory finding(s) surfaced as non-blocking:**
+
+- 🟠 Quadratic loop (`src/b.py:20`)
+- ⚪ Typo in comment
+
+**Files with findings:** `src/a.py`, `src/b.py`
+
+<details>
+<summary><b>All Findings by Severity</b></summary>
+
+#### 🔴 Critical (1)
+
+- **Null dereference** `src/a.py:10`
+
+#### 🟠 Important (1)
+
+- **Quadratic loop** `src/b.py:20`
+
+#### ⚪ Nitpick (1)
+
+- **Typo in comment** 
+
+</details>
+
+<details>
+<summary><b>Review Process Details</b></summary>
+
+**Dimensions Analyzed (2):**
+
+- **Security** — 1 file(s)
+- **Performance** — 2 file(s)
+
+**Meta-Dimension Lenses (2):**
+
+- **Semantic** — 2 dimension(s), 80% coverage confidence
+- **Mechanical** — 1 dimension(s), 60% coverage confidence
+
+**Cross-Reference & Adversary Analysis:**
+
+- **1** compound finding(s) synthesized
+- **3** finding(s) adversarially tested: 2 confirmed, 1 challenged
+
+</details>
+
+<details>
+<summary><b>Pipeline Stats</b></summary>
+
+| Metric | Value |
+|--------|-------|
+| Duration | 12.3s |
+| Agent invocations | 7 |
+| Coverage iterations | 1 |
+| Estimated cost | N/A (provider does not report cost) |
+| Budget exhausted | No |
+| PR type | feature |
+| Complexity | standard |
+
+</details>
+
+Review ID: `rev_abc123def456`
+
+<br>
+<div align="right">
+  <a href="https://github.com/Agent-Field/pr-af">
+    <img src="https://img.shields.io/badge/Powered_by-AgentField-6366f1?style=flat-square&logo=github" alt="AgentField PR-AF"/>
+  </a>
+</div>
