@@ -6,3 +6,6 @@ go.work.sum
 
 # Compiled binaries.
 bin/
+
+# stray single-package build artifact (go build ./test/mockcli)
+/mockcli
