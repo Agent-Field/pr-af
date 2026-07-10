@@ -1,0 +1,8 @@
+# Local Go workspace used during SDK-parity development to resolve the
+# agentfield Go SDK to a local worktree. Must NOT be committed — CI/Docker rely
+# on the real versioned require in go.mod (no replace directive) instead.
+go.work
+go.work.sum
+
+# Compiled binaries.
+bin/
