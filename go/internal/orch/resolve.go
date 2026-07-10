@@ -206,7 +206,7 @@ func computeRepoDiff(ctx context.Context, repoPath, baseRef, headRef string) (st
 		if msg == "" {
 			msg = "Failed to compute git diff"
 		}
-		return "", fmt.Errorf("%w: %s", ErrBadInput, msg)
+		return "", badInput(msg)
 	}
 	return stdout, nil
 }
