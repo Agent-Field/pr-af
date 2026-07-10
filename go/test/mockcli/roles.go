@@ -23,6 +23,18 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
+// strPtr returns a pointer to s.
+//
+// IMPORTANT (learned from e2e run 20260710-154635): the harness runner validates
+// the output file against the invopop-reflected schema, which marks EVERY struct
+// field — including *string pointers — as REQUIRED with a non-nullable type
+// ("suggestion": {"type":"string"}). A JSON null OR an omitted key both FAIL
+// validation, which triggers the runner's schema-retry loop and (before the
+// retry-role fix in main.go) let a followup invocation clobber the good output
+// with {}. So every optional pointer field the mock emits must carry a real
+// string value.
+func strPtr(s string) *string { return &s }
+
 // defaultBudget mirrors the pydantic BudgetAllocation defaults the harness would
 // otherwise seed, so an emitted ReviewDimension carries a realistic budget.
 func defaultBudget() schemas.BudgetAllocation {
@@ -122,7 +134,7 @@ func roleReviewDimension(prompt string, sc Scenario) any {
 			Severity:      schemas.Severity(sev),
 			Title:         fmt.Sprintf("Mock finding %d in %s", i+1, target),
 			Body:          fmt.Sprintf("**Mock %s finding**: the added code in `%s` needs attention.", sev, target),
-			Suggestion:    nil,
+			Suggestion:    strPtr(fmt.Sprintf("Mock suggestion %d: bound the loop in %s with an explicit retry counter.", i+1, target)),
 			Evidence:      fmt.Sprintf("Step 1: %s line %d introduces new behavior. Step 2: it is not guarded. Step 3: this can fail.", target, line),
 			Confidence:    sc.Confidence,
 			Tags:          []string{"correctness"},
@@ -186,7 +198,10 @@ func roleAdversary(prompt string, sc Scenario) any {
 			Verdict:            verdict,
 			Reason:             reason,
 			SeverityAdjustment: "none",
-			HiddenTrap:         nil,
+			// Present-but-empty: the schema requires the key with a string type
+			// (see strPtr doc); scoring only reads it when verdict=="missed_trap"
+			// AND it is non-empty, so "" is inert here.
+			HiddenTrap: strPtr(""),
 		})
 	}
 	logInvocation("adversary_detail", map[string]any{"confirmed": len(results)})
@@ -252,7 +267,8 @@ type mockObligationVerdict struct {
 }
 
 func roleVerifyObligation() any {
-	// Obligation holds => no new consistency finding is produced.
+	// Obligation holds => no new consistency finding is produced. Suggestion is
+	// present-but-empty (schema requires the key with a string type, see strPtr).
 	return mockObligationVerdict{
 		Holds:      true,
 		Title:      "",
@@ -262,7 +278,7 @@ func roleVerifyObligation() any {
 		LineEnd:    0,
 		Body:       "",
 		Evidence:   "Mock verifier: read the other location; the obligation holds.",
-		Suggestion: nil,
+		Suggestion: strPtr(""),
 		Confidence: 0.7,
 	}
 }

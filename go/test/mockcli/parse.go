@@ -21,8 +21,12 @@ import (
 var (
 	// reOutputPath matches the OutputPath(dir) the harness suffix names. Backtick
 	// and quote are excluded so a fenced/quoted mention does not swallow trailing
-	// punctuation.
-	reOutputPath = regexp.MustCompile("([^\\s\"'`]+\\.agentfield_output\\.json)")
+	// punctuation. The prefix is `*` (not `+`): calls made with an empty Cwd
+	// (intake fallback, dedup/worthiness gates) get the RELATIVE path
+	// ".agentfield_output.json" (OutputPath(".")), which has no prefix characters
+	// at all — a `+` here silently drops the write for those reasoners (root
+	// cause of the intake retries in e2e runs 20260710-154635/-160248).
+	reOutputPath = regexp.MustCompile("([^\\s\"'`]*\\.agentfield_output\\.json)")
 
 	// reTargetFiles pulls the review_dimension "**Target files** (read and analyze
 	// these): a, b" line — the files the emitted findings are anchored to.
@@ -64,6 +68,32 @@ func promptFromArgs(argv []string) string {
 // told the agent to write.
 func outputPathFrom(prompt string) string {
 	return firstGroup(reOutputPath, prompt)
+}
+
+// promptHead returns the first n runes of the prompt's first non-empty line —
+// enough to identify the reasoner in the invocation log without bloating it.
+func promptHead(prompt string, n int) string {
+	for _, line := range strings.Split(prompt, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		r := []rune(line)
+		if len(r) > n {
+			return string(r[:n])
+		}
+		return line
+	}
+	return ""
+}
+
+// reRetryError pulls the "Error: <diagnosis>" line the runner embeds in its
+// schema-retry followup prompt (BuildFollowupPrompt) — it carries the reason the
+// PREVIOUS attempt failed validation, which is gold for diagnosing runs.
+var reRetryError = regexp.MustCompile(`(?m)^Error:\s*(.+)$`)
+
+func retryErrorFrom(prompt string) string {
+	return firstGroup(reRetryError, prompt)
 }
 
 // targetFilesFrom parses the review_dimension "**Target files** ...: a, b" line

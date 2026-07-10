@@ -57,6 +57,16 @@ var roleMatchers = []struct{ substr, role string }{
 }
 
 func detectRole(prompt string) string {
+	// The runner's schema-retry followups (BuildFollowupPrompt /
+	// BuildIncrementalFollowup, sdk harness/schema.go) are sent STANDALONE — they
+	// do not contain the original reasoner prompt — so they can never match a
+	// role. Detect them explicitly: the mock must NOT treat a retry as an unknown
+	// fresh call and overwrite the (possibly good) output file with {}. Exactly
+	// that clobbering produced the 0-finding review in e2e run 20260710-154635.
+	if strings.Contains(prompt, "PREVIOUS ATTEMPT FAILED") ||
+		strings.Contains(prompt, "PARTIAL OUTPUT NEEDS FIXES") {
+		return "retry"
+	}
 	for _, m := range roleMatchers {
 		if strings.Contains(prompt, m.substr) {
 			return m.role
@@ -78,24 +88,41 @@ func main() {
 	sc := loadScenario()
 	role := detectRole(prompt)
 
-	value := dispatch(role, prompt, sc)
+	// Every invocation logs the prompt head (and, for retries, the runner's
+	// embedded Error diagnosis) so a failing run is diagnosable from
+	// invocations.jsonl alone.
+	extra := map[string]any{"head": promptHead(prompt, 120)}
 
-	// Write the schema-valid JSON to the harness output file (.agentfield_output
-	// .json), named in the prompt's OUTPUT REQUIREMENTS suffix.
-	outPath := outputPathFrom(prompt)
-	if outPath != "" {
-		if b, err := json.Marshal(value); err == nil {
-			if err := os.WriteFile(outPath, b, 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "mockcli: write %s (role %s): %v\n", outPath, role, err)
+	switch role {
+	case "retry":
+		// A schema-retry followup. Whatever is (or isn't) in the output file is
+		// the previous attempt's state — leave it untouched. Overwriting here is
+		// what destroyed the good review_dimension output in the failing run.
+		extra["diagnosis"] = retryErrorFrom(prompt)
+	case "unknown":
+		// Do not write anything: a missing output file makes the runner report
+		// "The output file was NOT created" and eventually seed defaults, which
+		// is strictly safer than clobbering a shared output path with {}.
+		fmt.Fprintf(os.Stderr, "mockcli: unknown role for prompt head %q\n", promptHead(prompt, 120))
+	default:
+		value := dispatch(role, prompt, sc)
+		outPath := outputPathFrom(prompt)
+		if outPath != "" {
+			if b, err := json.Marshal(value); err == nil {
+				if err := os.WriteFile(outPath, b, 0o644); err != nil {
+					fmt.Fprintf(os.Stderr, "mockcli: write %s (role %s): %v\n", outPath, role, err)
+					extra["write_error"] = err.Error()
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "mockcli: marshal role %s: %v\n", role, err)
 			}
 		} else {
-			fmt.Fprintf(os.Stderr, "mockcli: marshal role %s: %v\n", role, err)
+			fmt.Fprintf(os.Stderr, "mockcli: no output path found for role %s\n", role)
+			extra["write_error"] = "no output path in prompt"
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "mockcli: no output path found for role %s\n", role)
 	}
 
-	logInvocation(role, nil)
+	logInvocation(role, extra)
 
 	// Emit the opencode JSON-stream result event the provider parses
 	// (extractOpenCodeFinalText handles `type:"result"`), then exit 0.
@@ -142,8 +169,8 @@ func dispatch(role, prompt string, sc Scenario) any {
 	case "planning":
 		return rolePlanning()
 	default:
-		// Unknown prompt: emit an empty object. The harness will fall back to the
-		// reasoner's seeded default, and the invocation is logged for diagnosis.
+		// Unreachable from main (retry/unknown are handled before dispatch);
+		// defensive empty object for any future call site.
 		return map[string]any{}
 	}
 }

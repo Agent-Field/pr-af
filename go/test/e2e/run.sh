@@ -172,7 +172,11 @@ ok "control plane healthy ($CP_URL)"
 #    (PR_AF_OPENCODE_BIN points the harness straight at the shim; PATH is belt
 #    and suspenders). NODE_ID=pr-af-go opts into the Go sibling identity.
 # ---------------------------------------------------------------------------
-log "starting pr-af node on :$NODE_PORT (shim=$SHIM/opencode)"
+log "starting pr-af node on :$NODE_PORT (shim=$SHIM/opencode, cwd=$RUN_DIR)"
+# cwd matters: harness calls made with an empty Cwd (intake fallback, dedup /
+# worthiness gates) resolve their .agentfield_output.json RELATIVE to the node's
+# cwd, so the node must run from a known-writable directory — the run dir.
+cd "$RUN_DIR"
 PATH="$SHIM:$PATH" \
   AGENTFIELD_SERVER="$CP_URL" \
   AGENT_CALLBACK_URL="$NODE_URL" \
@@ -186,6 +190,7 @@ PATH="$SHIM:$PATH" \
   GH_TOKEN="" \
   setsid nohup "$RUN_DIR/pr-af" > "$RUN_DIR/node.log" 2>&1 &
 NODE_PID=$!
+cd "$HERE"
 
 for _ in $(seq 1 60); do
   curl -sf --connect-timeout 3 -m 8 "$NODE_URL/health" >/dev/null 2>&1 && break
@@ -193,12 +198,15 @@ for _ in $(seq 1 60); do
 done
 curl -sf --connect-timeout 3 -m 8 "$NODE_URL/health" >/dev/null 2>&1 \
   || { err "node did not come up (see $RUN_DIR/node.log)"; exit 1; }
-# Wait until the CP knows the node's reasoners.
+# Wait until the CP knows the node's reasoners. This CP exposes the reasoner
+# surface at /api/v1/discovery/capabilities (there is no /api/v1/nodes/{id}).
 for _ in $(seq 1 30); do
-  RC="$(curl -s --connect-timeout 3 -m 30 "$CP_URL/api/v1/nodes/$NODE_ID" | grep -c review_dimension || true)"
+  RC="$(curl -s --connect-timeout 3 -m 30 "$CP_URL/api/v1/discovery/capabilities?limit=500" \
+        | grep -c "\"agent_id\":\"$NODE_ID\"" || true)"
   [[ "$RC" -ge 1 ]] && break
   sleep 1
 done
+[[ "${RC:-0}" -ge 1 ]] || { err "node never appeared in CP capabilities (see $RUN_DIR/node.log)"; exit 1; }
 ok "pr-af-go node registered (pid $NODE_PID)"
 
 # ---------------------------------------------------------------------------
@@ -259,6 +267,12 @@ BL="$(cat /tmp/.praf_e2e_bodylen 2>/dev/null || echo 0)"
 # (d) expected phases fired (from the mock invocation log)
 LOG="$STATE/invocations.jsonl"
 if [[ -f "$LOG" ]]; then
+  # These are the roles the shim actually records once findings flow: anatomy,
+  # at least one meta lens, review_dimension, and the layer pair evidence_verifier
+  # + adversary (which only fire when review_dimension produced findings — the
+  # regression that run 20260710-154635 caught). Roles like compound_finder /
+  # verify_obligation / post_worthiness are scenario- or config-dependent, so
+  # they are reported but not asserted.
   python3 - "$LOG" <<'PY' >/dev/null 2>&1
 import json,sys
 roles={json.loads(l)["role"] for l in open(sys.argv[1]) if l.strip()}
@@ -266,9 +280,14 @@ need_any_meta = roles & {"meta_semantic","meta_mechanical","meta_systemic"}
 assert "anatomy" in roles, roles
 assert need_any_meta, roles
 assert "review_dimension" in roles, roles
+assert "evidence_verifier" in roles, roles
 assert "adversary" in roles, roles
 PY
-  assert $? "expected harness phases fired: anatomy, meta_*, review_dimension, adversary"
+  assert $? "expected harness phases fired: anatomy, meta_*, review_dimension, evidence_verifier, adversary"
+  ROLE_COUNTS="$(python3 -c 'import json,sys,collections
+c=collections.Counter(json.loads(l)["role"] for l in open(sys.argv[1]) if l.strip())
+print(dict(c))' "$LOG" 2>/dev/null)"
+  log "shim role counts: ${ROLE_COUNTS:-<unavailable>}"
 else
   err "no invocation log at $LOG"; ASSERT_FAILS=$((ASSERT_FAILS+1))
 fi
