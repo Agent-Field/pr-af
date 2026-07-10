@@ -34,7 +34,10 @@ func TestWallClockBudgetTrips(t *testing.T) {
 	// Production builds config via FromInput, which resolves the effective
 	// duration cap to 300s (ResolveBudgetCaps default) — not the 1800s raw
 	// BudgetConfig default that DefaultReviewConfig() carries.
-	cfg := config.ReviewConfig{}.FromInput(schemas.ReviewInput{})
+	cfg, cfgErr := config.ReviewConfig{}.FromInput(schemas.ReviewInput{})
+	if cfgErr != nil {
+		t.Fatalf("FromInput: %v", cfgErr)
+	}
 	o := New(Deps{App: &fakeApp{}}, schemas.ReviewInput{}, cfg)
 	o.clock = func() time.Duration { return 10 * time.Second }
 	if o.budgetOrTimeoutExhausted("review") {

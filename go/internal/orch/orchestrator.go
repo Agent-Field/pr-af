@@ -288,7 +288,7 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 			PRMeta:          o.prMeta(),
 			RevisionIter:    revisionIter,
 			RevisionHistory: revisionHistory,
-			Metadata:        o.hitlMetadata(),
+			Metadata:        o.hitlMetadata(ctx),
 		})
 
 		if decision.IsPost() {
@@ -410,15 +410,15 @@ func (o *Orchestrator) mergeFeedback(revisionHistory []string) string {
 	return strings.Join(items, " | ")
 }
 
-// hitlMetadata ports _hitl_metadata (camelCase). executionId cannot be read from
-// ctx (the SDK's execution context accessor is unexported), so it is emitted as
-// "" — matching Python's fallback when app.ctx is None.
-func (o *Orchestrator) hitlMetadata() map[string]any {
+// hitlMetadata ports _hitl_metadata (camelCase). executionId comes from the
+// SDK's exported execution-context accessor — an empty string when the ctx
+// carries no execution (matching Python's fallback when app.ctx is None).
+func (o *Orchestrator) hitlMetadata(ctx context.Context) map[string]any {
 	return map[string]any{
 		"prLabel":     o.prLabel(),
 		"prUrl":       strp(o.input.PrURL),
 		"reviewId":    o.reviewID,
-		"executionId": "",
+		"executionId": agent.ExecutionContextFrom(ctx).ExecutionID,
 	}
 }
 

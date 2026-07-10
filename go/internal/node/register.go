@@ -119,7 +119,12 @@ func (n *Node) reviewHandler(ctx context.Context, input map[string]any) (any, er
 		in.RepoPath = &resolved
 	}
 
-	cfg := config.ReviewConfig{}.FromInput(in)
+	cfg, err := config.ReviewConfig{}.FromInput(in)
+	if err != nil {
+		// A malformed PR_AF_MAX_COST_USD / PR_AF_MAX_DURATION_SECONDS raises
+		// ValueError inside Python's review() -> HTTP 400 with the raw message.
+		return nil, &agent.ExecuteError{StatusCode: http.StatusBadRequest, Message: err.Error()}
+	}
 
 	deps := orch.Deps{
 		App:              n.reviewApp,

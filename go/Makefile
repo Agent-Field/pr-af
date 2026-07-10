@@ -45,9 +45,10 @@ run:
 # Override the image tag with: make docker-build IMAGE=myrepo/pr-af-go:dev
 IMAGE ?= pr-af-go:latest
 
-# Build the multi-stage Go image from this go/ directory.
+# Build the multi-stage Go image. The Dockerfile expects the REPO ROOT as the
+# build context (it COPYs go/go.mod, go/ ...), so the context is the parent dir.
 docker-build:
-	docker build -f Dockerfile -t $(IMAGE) .
+	docker build -f Dockerfile -t $(IMAGE) ..
 
 # Bring up the Go node (pr-af-go:8007) as an ADD-ON to the Python stack. Start
 # the Python stack first (`docker compose up` — it owns the control plane +

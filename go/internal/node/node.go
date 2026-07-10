@@ -118,7 +118,12 @@ func BuildAgent(defaultNodeID, defaultPort, description string) (*Node, error) {
 	token := os.Getenv("AGENTFIELD_API_KEY")
 	port := envOr("PORT", defaultPort)
 
-	aiConf := config.AIConfigFromEnv()
+	aiConf, err := config.AIConfigFromEnv()
+	if err != nil {
+		// Python constructs AIIntegrationConfig at module import, so a malformed
+		// numeric env var (e.g. PR_AF_MAX_TURNS=abc) crashes the node at boot.
+		return nil, err
+	}
 
 	cfg := agent.Config{
 		NodeID:        nodeID,

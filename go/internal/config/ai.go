@@ -5,6 +5,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,19 +31,38 @@ type AIIntegrationConfig struct {
 
 // AIConfigFromEnv resolves the AI integration config from the environment
 // (config.py AIIntegrationConfig.from_env / its default_factory lambdas).
-func AIConfigFromEnv() AIIntegrationConfig {
+// A malformed numeric env value is an error, matching Python where the
+// default_factory's int()/float() raises at model construction (which happens
+// at module import in app.py — i.e. the node fails to boot).
+func AIConfigFromEnv() (AIIntegrationConfig, error) {
+	maxTurns, err := intEnv("PR_AF_MAX_TURNS", 50)
+	if err != nil {
+		return AIIntegrationConfig{}, err
+	}
+	maxRetries, err := intEnv("PR_AF_AI_MAX_RETRIES", 3)
+	if err != nil {
+		return AIIntegrationConfig{}, err
+	}
+	initialBackoff, err := floatEnv("PR_AF_AI_INITIAL_BACKOFF_SECONDS", 2.0)
+	if err != nil {
+		return AIIntegrationConfig{}, err
+	}
+	maxBackoff, err := floatEnv("PR_AF_AI_MAX_BACKOFF_SECONDS", 8.0)
+	if err != nil {
+		return AIIntegrationConfig{}, err
+	}
 	return AIIntegrationConfig{
 		Provider:     strEnv("PR_AF_PROVIDER", "opencode"),
 		HarnessModel: strEnv("PR_AF_MODEL", "minimax/minimax-m2.5"),
 		// AI_MODEL falls back to PR_AF_MODEL, then to the code default.
 		AIModel:               strEnv("PR_AF_AI_MODEL", strEnv("PR_AF_MODEL", "minimax/minimax-m2.5")),
-		MaxTurns:              intEnv("PR_AF_MAX_TURNS", 50),
-		MaxRetries:            intEnv("PR_AF_AI_MAX_RETRIES", 3),
-		InitialBackoffSeconds: floatEnv("PR_AF_AI_INITIAL_BACKOFF_SECONDS", 2.0),
-		MaxBackoffSeconds:     floatEnv("PR_AF_AI_MAX_BACKOFF_SECONDS", 8.0),
+		MaxTurns:              maxTurns,
+		MaxRetries:            maxRetries,
+		InitialBackoffSeconds: initialBackoff,
+		MaxBackoffSeconds:     maxBackoff,
 		OpencodeBin:           strEnv("PR_AF_OPENCODE_BIN", "opencode"),
 		OpencodeServer:        lookupPtr("PR_AF_OPENCODE_SERVER"),
-	}
+	}, nil
 }
 
 // ProviderEnv builds the subprocess environment forwarded to the opencode
@@ -81,33 +101,34 @@ func strEnv(key, def string) string {
 	return def
 }
 
-// intEnv parses key as an int, falling back to def when unset or unparseable.
-func intEnv(key string, def int) int {
+// intEnv parses key as an int, falling back to def when unset. A set-but-
+// malformed value is an error with Python's int() message shape — Python's
+// int(os.getenv(...)) raises, it never silently defaults.
+func intEnv(key string, def int) (int, error) {
 	v, ok := os.LookupEnv(key)
 	if !ok {
-		return def
+		return def, nil
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("invalid literal for int() with base 10: '%s'", v)
 	}
-	return n
+	return n, nil
 }
 
-// floatEnv parses key as a float64, falling back to def when unset or
-// unparseable. (Python's float(os.getenv(...)) would raise on a bad value; the
-// (float64,int)-returning ResolveBudgetCaps signature has no error channel, so
-// we fall back instead of panicking.)
-func floatEnv(key string, def float64) float64 {
+// floatEnv parses key as a float64, falling back to def when unset. A set-but-
+// malformed value is an error with Python's float() message shape — Python's
+// float(os.getenv(...)) raises, it never silently defaults.
+func floatEnv(key string, def float64) (float64, error) {
 	v, ok := os.LookupEnv(key)
 	if !ok {
-		return def
+		return def, nil
 	}
 	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 	if err != nil {
-		return def
+		return 0, fmt.Errorf("could not convert string to float: '%s'", v)
 	}
-	return f
+	return f, nil
 }
 
 // lookupPtr returns a pointer to the env value when the key is present (even if

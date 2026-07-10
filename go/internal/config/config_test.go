@@ -45,6 +45,26 @@ func ptrI(i int) *int         { return &i }
 // V7 — Budget cap resolution: explicit arg wins > env > defaults (2.0/300).
 // ---------------------------------------------------------------------------
 
+// mustAIConfig / mustFromInput unwrap the error-returning constructors for
+// tests whose env is known-wellformed.
+func mustAIConfig(t *testing.T) AIIntegrationConfig {
+	t.Helper()
+	c, err := AIConfigFromEnv()
+	if err != nil {
+		t.Fatalf("AIConfigFromEnv: %v", err)
+	}
+	return c
+}
+
+func mustFromInput(t *testing.T, in schemas.ReviewInput) ReviewConfig {
+	t.Helper()
+	c, err := ReviewConfig{}.FromInput(in)
+	if err != nil {
+		t.Fatalf("FromInput: %v", err)
+	}
+	return c
+}
+
 func TestResolveBudgetCapsCascade(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -61,7 +81,6 @@ func TestResolveBudgetCapsCascade(t *testing.T) {
 		{"explicit arg wins over defaults", ptrF(1.25), ptrI(90), "", "", 1.25, 90},
 		{"mixed: explicit cost, env duration", ptrF(9.0), nil, "3.3", "450", 9.0, 450},
 		{"mixed: env cost, explicit duration", nil, ptrI(77), "3.3", "450", 3.3, 77},
-		{"unparseable env falls back to default", nil, nil, "abc", "xyz", 2.0, 300},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -72,12 +91,40 @@ func TestResolveBudgetCapsCascade(t *testing.T) {
 			if c.envDur != "" {
 				t.Setenv("PR_AF_MAX_DURATION_SECONDS", c.envDur)
 			}
-			gotCost, gotDur := ResolveBudgetCaps(c.argCost, c.argDur)
+			gotCost, gotDur, err := ResolveBudgetCaps(c.argCost, c.argDur)
+			if err != nil {
+				t.Fatalf("ResolveBudgetCaps: %v", err)
+			}
 			if gotCost != c.wantCost || gotDur != c.wantDur {
 				t.Errorf("ResolveBudgetCaps = (%v, %d), want (%v, %d)", gotCost, gotDur, c.wantCost, c.wantDur)
 			}
 		})
 	}
+
+	// Malformed env raises, exactly like Python's float()/int() inside
+	// _resolve_budget_caps (ValueError -> HTTP 400 at the node layer), with
+	// Python's message shape. It must NOT silently fall back to the default.
+	t.Run("unparseable env is an error with the Python message", func(t *testing.T) {
+		clearConfigEnv(t)
+		t.Setenv("PR_AF_MAX_COST_USD", "abc")
+		_, _, err := ResolveBudgetCaps(nil, nil)
+		if err == nil || err.Error() != "could not convert string to float: 'abc'" {
+			t.Fatalf("cost err = %v, want Python float() message", err)
+		}
+		clearConfigEnv(t)
+		t.Setenv("PR_AF_MAX_DURATION_SECONDS", "xyz")
+		_, _, err = ResolveBudgetCaps(nil, nil)
+		if err == nil || err.Error() != "invalid literal for int() with base 10: 'xyz'" {
+			t.Fatalf("duration err = %v, want Python int() message", err)
+		}
+		// And the boot-time path: a malformed PR_AF_MAX_TURNS fails
+		// AIConfigFromEnv (Python crashes at import).
+		clearConfigEnv(t)
+		t.Setenv("PR_AF_MAX_TURNS", "many")
+		if _, err := AIConfigFromEnv(); err == nil {
+			t.Fatal("AIConfigFromEnv with PR_AF_MAX_TURNS=many: want error, got nil")
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +133,7 @@ func TestResolveBudgetCapsCascade(t *testing.T) {
 
 func TestAIConfigFromEnvDefaults(t *testing.T) {
 	clearConfigEnv(t)
-	c := AIConfigFromEnv()
+	c := mustAIConfig(t)
 	if c.Provider != "opencode" {
 		t.Errorf("Provider = %q, want opencode", c.Provider)
 	}
@@ -123,7 +170,7 @@ func TestAIConfigFromEnvOverrides(t *testing.T) {
 	t.Setenv("PR_AF_OPENCODE_BIN", "/usr/bin/opencode")
 	t.Setenv("PR_AF_OPENCODE_SERVER", "http://localhost:9000")
 
-	c := AIConfigFromEnv()
+	c := mustAIConfig(t)
 	if c.Provider != "claude-code" {
 		t.Errorf("Provider = %q", c.Provider)
 	}
@@ -146,7 +193,7 @@ func TestAIConfigFromEnvOverrides(t *testing.T) {
 
 	// PR_AF_AI_MODEL, when set, wins over PR_AF_MODEL for AIModel only.
 	t.Setenv("PR_AF_AI_MODEL", "anthropic/claude-x")
-	c2 := AIConfigFromEnv()
+	c2 := mustAIConfig(t)
 	if c2.AIModel != "anthropic/claude-x" {
 		t.Errorf("AIModel = %q, want anthropic/claude-x", c2.AIModel)
 	}
@@ -162,7 +209,7 @@ func TestProviderEnv(t *testing.T) {
 	t.Setenv("GH_TOKEN", "gh-tok")
 	t.Setenv("XDG_DATA_HOME", xdg)
 
-	env := AIConfigFromEnv().ProviderEnv()
+	env := mustAIConfig(t).ProviderEnv()
 	if env["OPENROUTER_API_KEY"] != "or-key" {
 		t.Errorf("OPENROUTER_API_KEY = %q", env["OPENROUTER_API_KEY"])
 	}
@@ -181,7 +228,7 @@ func TestProviderEnv(t *testing.T) {
 	// it.
 	t.Setenv("XDG_DATA_HOME", "")
 	_ = os.Unsetenv("XDG_DATA_HOME")
-	env2 := AIConfigFromEnv().ProviderEnv()
+	env2 := mustAIConfig(t).ProviderEnv()
 	wantXDG := filepath.Join(os.TempDir(), "opencode-shared-data")
 	if env2["XDG_DATA_HOME"] != wantXDG {
 		t.Errorf("fallback XDG_DATA_HOME = %q, want %q", env2["XDG_DATA_HOME"], wantXDG)
@@ -353,7 +400,7 @@ func TestFromInputBudgetCapsResolvedToPerCallDefault(t *testing.T) {
 	// per-call duration to 300 (the resolved default) — NOT the 1800 BudgetConfig
 	// default, which Python always overwrites.
 	clearConfigEnv(t)
-	c := ReviewConfig{}.FromInput(schemas.ReviewInput{MaxReviewDepth: 2})
+	c := mustFromInput(t, schemas.ReviewInput{MaxReviewDepth: 2})
 	if c.Budget.MaxCostUSD != 2.0 {
 		t.Errorf("MaxCostUSD = %v, want 2.0", c.Budget.MaxCostUSD)
 	}
@@ -375,7 +422,7 @@ func TestFromInputMergeSemantics(t *testing.T) {
 		Hints:                  []string{"be strict", "check nil derefs"},
 		SuggestionMode:         "code",
 	}
-	c := ReviewConfig{}.FromInput(in)
+	c := mustFromInput(t, in)
 
 	if c.Budget.MaxCostUSD != 7.5 || c.Budget.MaxDurationSeconds != 150 {
 		t.Errorf("explicit caps = %v/%d, want 7.5/150", c.Budget.MaxCostUSD, c.Budget.MaxDurationSeconds)
@@ -419,7 +466,7 @@ func TestFromInputReviewDepthClampVariants(t *testing.T) {
 	for _, tc := range []struct{ in, want int }{
 		{1, 1}, {2, 2}, {3, 3}, {4, 3}, {99, 3},
 	} {
-		c := ReviewConfig{}.FromInput(schemas.ReviewInput{MaxReviewDepth: tc.in})
+		c := mustFromInput(t, schemas.ReviewInput{MaxReviewDepth: tc.in})
 		if c.Budget.MaxReviewDepth != tc.want {
 			t.Errorf("FromInput MaxReviewDepth(%d) = %d, want %d", tc.in, c.Budget.MaxReviewDepth, tc.want)
 		}
@@ -429,7 +476,7 @@ func TestFromInputReviewDepthClampVariants(t *testing.T) {
 func TestFromInputEmptyOverridesKeepDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	// Empty hints / suggestion_mode leave the defaults intact.
-	c := ReviewConfig{}.FromInput(schemas.ReviewInput{MaxReviewDepth: 2, Hints: nil, SuggestionMode: ""})
+	c := mustFromInput(t, schemas.ReviewInput{MaxReviewDepth: 2, Hints: nil, SuggestionMode: ""})
 	if len(c.Hints) != 0 {
 		t.Errorf("Hints = %v, want empty (unchanged)", c.Hints)
 	}

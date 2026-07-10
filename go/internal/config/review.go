@@ -123,10 +123,13 @@ func DefaultReviewConfig() ReviewConfig {
 // ReviewInput carries these as *float64 / *int, so FromInput runs the same
 // ResolveBudgetCaps cascade (explicit > env > 2.0/300) to reproduce that
 // effective value exactly.
-func (ReviewConfig) FromInput(in schemas.ReviewInput) ReviewConfig {
+func (ReviewConfig) FromInput(in schemas.ReviewInput) (ReviewConfig, error) {
 	c := DefaultReviewConfig()
 
-	cost, dur := ResolveBudgetCaps(in.MaxCostUSD, in.MaxDurationSeconds)
+	cost, dur, err := ResolveBudgetCaps(in.MaxCostUSD, in.MaxDurationSeconds)
+	if err != nil {
+		return ReviewConfig{}, err
+	}
 	c.Budget.MaxCostUSD = cost
 	c.Budget.MaxDurationSeconds = dur
 
@@ -159,7 +162,7 @@ func (ReviewConfig) FromInput(in schemas.ReviewInput) ReviewConfig {
 		c.Comments.SuggestionMode = in.SuggestionMode
 	}
 
-	return c
+	return c, nil
 }
 
 // unionSorted returns the deduplicated union of a and b. Python uses

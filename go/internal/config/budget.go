@@ -75,19 +75,27 @@ func evidencePackDefault() bool {
 // ResolveBudgetCaps ports app.py:62-77 _resolve_budget_caps. An explicit
 // argument always wins; when nil, the PR_AF_MAX_COST_USD / PR_AF_MAX_DURATION_
 // SECONDS env vars are consulted; finally the historical defaults 2.0 / 300.
-func ResolveBudgetCaps(maxCostUSD *float64, maxDurationSeconds *int) (float64, int) {
+// A malformed env value is an error (Python's float()/int() raises inside
+// review(), where the ValueError class maps to HTTP 400).
+func ResolveBudgetCaps(maxCostUSD *float64, maxDurationSeconds *int) (float64, int, error) {
 	cost := 2.0
 	if maxCostUSD != nil {
 		cost = *maxCostUSD
 	} else {
-		cost = floatEnv("PR_AF_MAX_COST_USD", 2.0)
+		var err error
+		if cost, err = floatEnv("PR_AF_MAX_COST_USD", 2.0); err != nil {
+			return 0, 0, err
+		}
 	}
 
 	dur := 300
 	if maxDurationSeconds != nil {
 		dur = *maxDurationSeconds
 	} else {
-		dur = intEnv("PR_AF_MAX_DURATION_SECONDS", 300)
+		var err error
+		if dur, err = intEnv("PR_AF_MAX_DURATION_SECONDS", 300); err != nil {
+			return 0, 0, err
+		}
 	}
-	return cost, dur
+	return cost, dur, nil
 }
