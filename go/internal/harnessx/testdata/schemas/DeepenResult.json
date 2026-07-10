@@ -1,0 +1,90 @@
+{
+  "$defs": {
+    "_DeepenFinding": {
+      "properties": {
+        "body": {
+          "default": "",
+          "title": "Body",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.7,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "dimension_id": {
+          "default": "literal-verify",
+          "title": "Dimension Id",
+          "type": "string"
+        },
+        "dimension_name": {
+          "default": "Literal-Correctness Verifier",
+          "title": "Dimension Name",
+          "type": "string"
+        },
+        "evidence": {
+          "default": "",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "file_path": {
+          "default": "",
+          "title": "File Path",
+          "type": "string"
+        },
+        "line_end": {
+          "default": 0,
+          "title": "Line End",
+          "type": "integer"
+        },
+        "line_start": {
+          "default": 0,
+          "title": "Line Start",
+          "type": "integer"
+        },
+        "severity": {
+          "default": "important",
+          "title": "Severity",
+          "type": "string"
+        },
+        "suggestion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggestion"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "_DeepenFinding",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/_DeepenFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    }
+  },
+  "title": "_DeepenResult",
+  "type": "object"
+}

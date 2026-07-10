@@ -1,0 +1,58 @@
+{
+  "description": "Phase 1 output. Hybrid \u2014 structured fields for routing, pr_summary string for LLM context.",
+  "properties": {
+    "ai_generated": {
+      "title": "Ai Generated",
+      "type": "number"
+    },
+    "areas_touched": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Areas Touched",
+      "type": "array"
+    },
+    "complexity": {
+      "title": "Complexity",
+      "type": "string"
+    },
+    "languages": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Languages",
+      "type": "array"
+    },
+    "pr_summary": {
+      "title": "Pr Summary",
+      "type": "string"
+    },
+    "pr_type": {
+      "title": "Pr Type",
+      "type": "string"
+    },
+    "review_depth": {
+      "title": "Review Depth",
+      "type": "string"
+    },
+    "risk_signals": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risk Signals",
+      "type": "array"
+    }
+  },
+  "required": [
+    "pr_type",
+    "complexity",
+    "languages",
+    "areas_touched",
+    "risk_signals",
+    "ai_generated",
+    "review_depth",
+    "pr_summary"
+  ],
+  "title": "IntakeResult",
+  "type": "object"
+}

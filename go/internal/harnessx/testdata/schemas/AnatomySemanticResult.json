@@ -1,0 +1,37 @@
+{
+  "properties": {
+    "context_notes": {
+      "default": "",
+      "title": "Context Notes",
+      "type": "string"
+    },
+    "intent_gaps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Intent Gaps",
+      "type": "array"
+    },
+    "pr_narrative": {
+      "default": "",
+      "title": "Pr Narrative",
+      "type": "string"
+    },
+    "risk_surfaces": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risk Surfaces",
+      "type": "array"
+    },
+    "unrelated_changes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Unrelated Changes",
+      "type": "array"
+    }
+  },
+  "title": "_AnatomySemanticResult",
+  "type": "object"
+}

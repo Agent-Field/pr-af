@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "ReviewFinding": {
+      "description": "Emitted to findings queue as reviewers work.",
+      "properties": {
+        "body": {
+          "title": "Body",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.5,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "dimension_id": {
+          "title": "Dimension Id",
+          "type": "string"
+        },
+        "dimension_name": {
+          "title": "Dimension Name",
+          "type": "string"
+        },
+        "evidence": {
+          "default": "",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "file_path": {
+          "title": "File Path",
+          "type": "string"
+        },
+        "hunk_context": {
+          "default": "",
+          "title": "Hunk Context",
+          "type": "string"
+        },
+        "line_end": {
+          "title": "Line End",
+          "type": "integer"
+        },
+        "line_start": {
+          "title": "Line Start",
+          "type": "integer"
+        },
+        "severity": {
+          "title": "Severity",
+          "type": "string"
+        },
+        "suggestion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggestion"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dimension_id",
+        "dimension_name",
+        "file_path",
+        "line_start",
+        "line_end",
+        "severity",
+        "title",
+        "body"
+      ],
+      "title": "ReviewFinding",
+      "type": "object"
+    },
+    "_SubReviewRequest": {
+      "properties": {
+        "context_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Files",
+          "type": "array"
+        },
+        "priority": {
+          "default": 1,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "review_prompt": {
+          "default": "",
+          "title": "Review Prompt",
+          "type": "string"
+        },
+        "target_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Files",
+          "type": "array"
+        }
+      },
+      "title": "_SubReviewRequest",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/ReviewFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "sub_reviews": {
+      "items": {
+        "$ref": "#/$defs/_SubReviewRequest"
+      },
+      "title": "Sub Reviews",
+      "type": "array"
+    }
+  },
+  "title": "_ReviewFindingsResult",
+  "type": "object"
+}

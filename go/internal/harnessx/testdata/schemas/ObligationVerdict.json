@@ -1,0 +1,63 @@
+{
+  "properties": {
+    "body": {
+      "default": "",
+      "title": "Body",
+      "type": "string"
+    },
+    "confidence": {
+      "default": 0.7,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "evidence": {
+      "default": "",
+      "title": "Evidence",
+      "type": "string"
+    },
+    "file_path": {
+      "default": "",
+      "title": "File Path",
+      "type": "string"
+    },
+    "holds": {
+      "default": true,
+      "title": "Holds",
+      "type": "boolean"
+    },
+    "line_end": {
+      "default": 0,
+      "title": "Line End",
+      "type": "integer"
+    },
+    "line_start": {
+      "default": 0,
+      "title": "Line Start",
+      "type": "integer"
+    },
+    "severity": {
+      "default": "important",
+      "title": "Severity",
+      "type": "string"
+    },
+    "suggestion": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Suggestion"
+    },
+    "title": {
+      "default": "",
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "title": "_ObligationVerdict",
+  "type": "object"
+}
