@@ -1,0 +1,5 @@
+Rewrite this PR review comment to be concise and developer-focused.
+
+> [!CAUTION] **Must-fix before merge.**
+
+The retry loop never terminates. See `client.py:10`.

@@ -1,0 +1,1 @@
+Analyze the coverage state and return the structured result.

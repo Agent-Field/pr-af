@@ -1,0 +1,3 @@
+Rewrite this PR review comment to be concise and developer-focused.
+
+Minor: rename `x` to `retries`.

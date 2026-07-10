@@ -1,0 +1,3 @@
+Classify this pull request from metadata and diff footprint.
+
+{"title": "Add retry logic to HTTP client", "description": "Wraps the client in a retry decorator with exponential backoff.\nCloses #42.", "labels": ["enhancement", "backend"], "author": "alice", "files_changed": 4, "languages": ["markdown", "python", "typescript"], "commit_messages": ["feat: add retry", "test: cover retry", "docs: note retry", "chore: lint", "fix: typo"]}
