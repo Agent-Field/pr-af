@@ -82,3 +82,16 @@ func TestBuildAgentWithLLMKey(t *testing.T) {
 		t.Fatal("nil App")
 	}
 }
+
+// The .ai() path must receive the OpenRouter API model ID, with LiteLLM's
+// "openrouter/" routing prefix stripped — Python consumes that prefix in
+// LiteLLM, so a prefixed PR_AF_MODEL (the deploy default) must not reach the
+// OpenRouter API verbatim. Unprefixed models pass through untouched.
+func TestAIModelForAPIStripsOpenRouterRoutingPrefix(t *testing.T) {
+	if got := aiModelForAPI("openrouter/moonshotai/kimi-k2.5"); got != "moonshotai/kimi-k2.5" {
+		t.Errorf("prefixed: got %q, want moonshotai/kimi-k2.5", got)
+	}
+	if got := aiModelForAPI("minimax/minimax-m2.5"); got != "minimax/minimax-m2.5" {
+		t.Errorf("unprefixed: got %q, want unchanged", got)
+	}
+}

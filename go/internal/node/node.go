@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -143,8 +144,15 @@ func BuildAgent(defaultNodeID, defaultPort, description string) (*Node, error) {
 		},
 	}
 	if apiKey := os.Getenv("OPENROUTER_API_KEY"); apiKey != "" {
+		// Python's .ai() path runs through LiteLLM, which CONSUMES a leading
+		// "openrouter/" as its routing prefix before calling the OpenRouter API.
+		// The Go SDK's ai client posts the model string verbatim to BaseURL, and
+		// OpenRouter rejects "openrouter/moonshotai/..." as an invalid model ID —
+		// so strip the routing prefix here to reach the same model Python does.
+		// The HARNESS model keeps the prefix (opencode's config wants it; the
+		// entrypoint derives its model key by stripping it there too).
 		cfg.AIConfig = &ai.Config{
-			Model:   aiConf.AIModel,
+			Model:   aiModelForAPI(aiConf.AIModel),
 			APIKey:  apiKey,
 			BaseURL: "https://openrouter.ai/api/v1",
 		}
@@ -226,4 +234,15 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// aiModelForAPI converts the configured AI model into the model ID the
+// OpenRouter API expects. Python's .ai() path runs through LiteLLM, which
+// CONSUMES a leading "openrouter/" as its routing prefix before calling the
+// OpenRouter API; the Go SDK's ai client posts the model string verbatim to
+// BaseURL, where "openrouter/moonshotai/..." is an invalid model ID. Stripping
+// the routing prefix reaches the same model Python does. The HARNESS model is
+// untouched (opencode's config expects the prefixed form).
+func aiModelForAPI(model string) string {
+	return strings.TrimPrefix(model, "openrouter/")
 }
