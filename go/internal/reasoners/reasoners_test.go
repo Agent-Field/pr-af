@@ -3,6 +3,7 @@ package reasoners
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
@@ -889,4 +890,79 @@ func TestHarnessErrorPropagates(t *testing.T) {
 	if _, err := VerifyObligation(context.Background(), deps, VerifyObligationInput{Obligation: map[string]any{}}); err == nil {
 		t.Fatal("verify_obligation: want error")
 	}
+}
+
+// fakeAISeq scripts a SEQUENCE of .ai() responses (one per call), for the
+// parse-retry contract of aiStructured.
+type fakeAISeq struct {
+	texts []string
+	err   error
+	calls int
+}
+
+func (f *fakeAISeq) AI(_ context.Context, _ string, _ ...ai.Option) (*ai.Response, error) {
+	f.calls++
+	if f.err != nil {
+		return nil, f.err
+	}
+	i := f.calls - 1
+	if i >= len(f.texts) {
+		i = len(f.texts) - 1
+	}
+	return &ai.Response{Choices: []ai.Choice{{Message: ai.Message{Role: "assistant", Content: []ai.ContentPart{{Type: "text", Text: f.texts[i]}}}}}}, nil
+}
+
+// aiStructured mirrors the Python SDK's structured-parse tolerance
+// (agent_ai.py:806-846): direct parse, then greedy {...} extraction over
+// fenced/prose output, then whole-call retries up to max_parse_retries=2.
+func TestAIStructuredParseToleranceMirrorsPython(t *testing.T) {
+	type gate struct {
+		PrType    string `json:"pr_type"`
+		Confident bool   `json:"confident"`
+	}
+
+	t.Run("fenced JSON extracted on the first call, no retry", func(t *testing.T) {
+		f := &fakeAISeq{texts: []string{"```json\n{\"pr_type\":\"feature\",\"confident\":true}\n```"}}
+		var g gate
+		if err := aiStructured(context.Background(), f, "p", "s", gate{}, &g); err != nil {
+			t.Fatalf("aiStructured: %v", err)
+		}
+		if f.calls != 1 || g.PrType != "feature" || !g.Confident {
+			t.Fatalf("calls=%d gate=%+v, want 1 call and parsed fields", f.calls, g)
+		}
+	})
+
+	t.Run("malformed first response retries the LLM call", func(t *testing.T) {
+		f := &fakeAISeq{texts: []string{"sorry, no data", `{"pr_type":"fix","confident":false}`}}
+		var g gate
+		if err := aiStructured(context.Background(), f, "p", "s", gate{}, &g); err != nil {
+			t.Fatalf("aiStructured: %v", err)
+		}
+		if f.calls != 2 || g.PrType != "fix" {
+			t.Fatalf("calls=%d gate=%+v, want 2 calls and second parse", f.calls, g)
+		}
+	})
+
+	t.Run("all attempts malformed -> 3 calls and the Python error string", func(t *testing.T) {
+		f := &fakeAISeq{texts: []string{"garbage"}}
+		var g gate
+		err := aiStructured(context.Background(), f, "p", "s", gate{}, &g)
+		if err == nil || !strings.HasPrefix(err.Error(), "Could not parse structured response: ") {
+			t.Fatalf("err = %v, want Could-not-parse prefix", err)
+		}
+		if f.calls != 3 {
+			t.Fatalf("calls = %d, want 3 (initial + max_parse_retries=2)", f.calls)
+		}
+	})
+
+	t.Run("API error is not parse-retried", func(t *testing.T) {
+		f := &fakeAISeq{err: errors.New("boom")}
+		var g gate
+		if err := aiStructured(context.Background(), f, "p", "s", gate{}, &g); err == nil || err.Error() != "boom" {
+			t.Fatalf("err = %v, want boom", err)
+		}
+		if f.calls != 1 {
+			t.Fatalf("calls = %d, want 1", f.calls)
+		}
+	})
 }

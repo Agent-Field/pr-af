@@ -25,6 +25,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
+	"strings"
 
 	"github.com/Agent-Field/agentfield/sdk/go/agent"
 	"github.com/Agent-Field/agentfield/sdk/go/ai"
@@ -54,19 +56,51 @@ type Deps struct {
 	AI      AICaller
 }
 
+// maxParseRetries mirrors the Python SDK's max_parse_retries=2
+// (agent_ai.py:747): a malformed structured response re-invokes the LLM up to
+// two more times before the parse error surfaces.
+const maxParseRetries = 2
+
 // aiStructured mirrors Python's `await router.app.ai(prompt, system=...,
-// schema=Model)`: one chat call with a structured-output schema, decoded into
-// dest. schemaSample is a zero value of the schema struct (the Go analogue of
-// passing the pydantic class).
+// schema=Model)`: a chat call with a structured-output schema, decoded into
+// dest with the Python SDK's parse tolerance (agent_ai.py:806-846) — direct
+// JSON parse, then a greedy first-'{'-to-last-'}' extraction (Python's
+// re.search(r"\{.*\}", text, re.DOTALL) over fenced/prose output), then a
+// fresh LLM call, up to maxParseRetries times. Transport/API errors are NOT
+// retried here (Python retries only "Could not parse structured response").
+// Each attempt decodes into a fresh instance so a failed attempt's partial
+// fill never bleeds into the next one. schemaSample is a zero value of the
+// schema struct (the Go analogue of passing the pydantic class).
 func aiStructured(ctx context.Context, caller AICaller, prompt, system string, schemaSample any, dest any) error {
 	if caller == nil {
 		return fmt.Errorf("reasoners: AI seam is nil")
 	}
-	resp, err := caller.AI(ctx, prompt, ai.WithSystem(system), ai.WithSchema(schemaSample))
-	if err != nil {
-		return err
+	destV := reflect.ValueOf(dest)
+	if destV.Kind() != reflect.Pointer || destV.IsNil() {
+		return fmt.Errorf("reasoners: aiStructured dest must be a non-nil pointer, got %T", dest)
 	}
-	return resp.Into(dest)
+	var lastErr error
+	for attempt := 0; attempt <= maxParseRetries; attempt++ {
+		resp, err := caller.AI(ctx, prompt, ai.WithSystem(system), ai.WithSchema(schemaSample))
+		if err != nil {
+			return err
+		}
+		text := resp.Text()
+		fresh := reflect.New(destV.Type().Elem())
+		if err := json.Unmarshal([]byte(text), fresh.Interface()); err == nil {
+			destV.Elem().Set(fresh.Elem())
+			return nil
+		}
+		if start, end := strings.Index(text, "{"), strings.LastIndex(text, "}"); start >= 0 && end > start {
+			fresh = reflect.New(destV.Type().Elem())
+			if err := json.Unmarshal([]byte(text[start:end+1]), fresh.Interface()); err == nil {
+				destV.Elem().Set(fresh.Elem())
+				return nil
+			}
+		}
+		lastErr = fmt.Errorf("Could not parse structured response: %s", text)
+	}
+	return lastErr
 }
 
 // dumpMap is the Go analogue of pydantic model_dump(): a JSON round trip that
