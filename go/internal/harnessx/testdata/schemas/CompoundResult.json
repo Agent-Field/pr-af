@@ -1,0 +1,87 @@
+{
+  "$defs": {
+    "_CompoundFinding": {
+      "properties": {
+        "body": {
+          "default": "",
+          "title": "Body",
+          "type": "string"
+        },
+        "confidence": {
+          "default": 0.5,
+          "title": "Confidence",
+          "type": "number"
+        },
+        "contributing_findings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Contributing Findings",
+          "type": "array"
+        },
+        "evidence": {
+          "default": "",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "file_path": {
+          "default": "",
+          "title": "File Path",
+          "type": "string"
+        },
+        "line_end": {
+          "default": 0,
+          "title": "Line End",
+          "type": "integer"
+        },
+        "line_start": {
+          "default": 0,
+          "title": "Line Start",
+          "type": "integer"
+        },
+        "severity": {
+          "default": "suggestion",
+          "title": "Severity",
+          "type": "string"
+        },
+        "suggestion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggestion"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "title": "_CompoundFinding",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/_CompoundFinding"
+      },
+      "title": "Findings",
+      "type": "array"
+    }
+  },
+  "title": "_CompoundResult",
+  "type": "object"
+}

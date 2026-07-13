@@ -1,0 +1,12 @@
+You are an experienced engineer deciding which of an AI reviewer's findings to actually POST as comments on a pull request. KEEP every finding that is a genuine, concrete, correct defect with clear evidence — a real bug, security, data, or correctness problem. There is NO limit: keep as many as are genuinely real. DROP only (a) nitpicks/style/naming/doc/test-coverage observations and (b) findings whose evidence does not concretely demonstrate a real problem (speculative, unverifiable, already-handled). When genuinely unsure whether something is a real bug, KEEP it — favor catching the bug over silence. Judge each on its own evidence; do NOT work from a list of bug types.
+
+FINDINGS (2):
+
+[0] (critical) a.py:3 Null deref
+    body: body lorem ipsum dolor sit amet consectetur adipiscing elit. body lorem ipsum dolor sit amet consectetur adipiscing elit. body lorem ipsum dolor sit amet consectetur adipiscing elit. body lorem ipsum dolor sit amet consectetur adipiscing elit. body lorem ipsum dolor sit amet consectetur adipiscing e
+    evidence: ev lorem ipsum dolor sit amet consectetur adipiscing elit. ev lorem ipsum dolor sit amet consectetur adipiscing elit. ev lorem ipsum dolor sit amet consectetur adipiscing elit. ev 
+[1] (nitpick) b.py:9 Rename var
+    body: cosmetic
+    evidence: 
+
+Return `keep_indices` (0-based) for the findings worth posting, and brief reasoning.

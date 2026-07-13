@@ -1,0 +1,63 @@
+# Self-contained stack for the PR-AF Go-port functional tests (design §F, T4.3).
+#
+# The production docker-compose.go.yml is an opt-in ADD-ON that joins the Python
+# pr-af stack's external network and has no control plane of its own — so it
+# cannot be brought up in isolation. The functional harness needs a complete,
+# ISOLATED stack (its own control plane + the Go node + its own network/volume)
+# that it can stand up and tear down under a dedicated compose project. This file
+# provides exactly that.
+#
+# HOST PORTS are deliberately UNCOMMON (28080 CP / 28017 node) rather than the
+# 8080/8007 production defaults or the 18080/18007 dev-remap range, because those
+# lower ranges are routinely occupied on a dev box (a host `af server`, the Python
+# stack, the Go add-on node, the SWE-AF functional stack all use 8080/1808x). A
+# squatter on the CP's host port silently breaks readiness, so the parity tests
+# key off these two uncommon ports (kept in sync with main_test.go's cpBaseURL /
+# prafBaseURL). Container ports and the in-cluster URL (control-plane:8080) are
+# unchanged. Baking the ports here — instead of a separate `!override` file —
+# keeps a single source of truth and avoids the version-sensitive `!override`
+# merge tag.
+#
+# The node registers under the Go port's opt-in-sibling identity:
+#     pr-af-go  ->  node id "pr-af-go", :8007 (published on host :28017)
+#
+# Zero secrets required: the functional tests are registration parity + a
+# fail-fast review (a nonexistent repo_path errors at `git diff` before any
+# harness/.ai() call), so OPENROUTER_API_KEY / GH_TOKEN are optional and default
+# to empty via ${VAR:-}.
+services:
+  control-plane:
+    image: agentfield/control-plane:latest
+    ports:
+      - "28080:8080"
+    environment:
+      - AGENTFIELD_HTTP_ADDR=0.0.0.0:8080
+      - AGENTFIELD_STORAGE_MODE=local
+    volumes:
+      - agentfield-data:/data
+
+  pr-af-go:
+    build:
+      # Paths are relative to THIS file's dir (go/test/functional); ../../.. points
+      # the build context at the repo root so the go/ module is in context (the
+      # Dockerfile does `COPY go/ ./`), matching docker-compose.go.yml.
+      context: ../../..
+      dockerfile: go/Dockerfile
+    environment:
+      - AGENTFIELD_SERVER=http://control-plane:8080
+      - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
+      - NODE_ID=pr-af-go
+      - PORT=8007
+      - AGENT_CALLBACK_URL=http://pr-af-go:8007
+      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-opencode}
+      - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GH_TOKEN=${GH_TOKEN:-}
+    ports:
+      - "28017:8007"
+    depends_on:
+      control-plane:
+        condition: service_started
+
+volumes:
+  agentfield-data:

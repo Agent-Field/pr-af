@@ -1,0 +1,56 @@
+{
+  "$defs": {
+    "AdversaryResult": {
+      "description": "Adversary reviewer's assessment of a finding.",
+      "properties": {
+        "finding_title": {
+          "title": "Finding Title",
+          "type": "string"
+        },
+        "hidden_trap": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hidden Trap"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "severity_adjustment": {
+          "default": "none",
+          "title": "Severity Adjustment",
+          "type": "string"
+        },
+        "verdict": {
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "finding_title",
+        "verdict",
+        "reason"
+      ],
+      "title": "AdversaryResult",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "results": {
+      "items": {
+        "$ref": "#/$defs/AdversaryResult"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "title": "_AdversaryPhaseResult",
+  "type": "object"
+}

@@ -1,0 +1,108 @@
+{
+  "$defs": {
+    "BudgetAllocation": {
+      "description": "Budget cap for an agent or phase.",
+      "properties": {
+        "max_child_spawns": {
+          "default": 2,
+          "title": "Max Child Spawns",
+          "type": "integer"
+        },
+        "max_cost_usd": {
+          "default": 0.5,
+          "title": "Max Cost Usd",
+          "type": "number"
+        },
+        "max_duration_seconds": {
+          "default": 60,
+          "title": "Max Duration Seconds",
+          "type": "integer"
+        },
+        "max_reference_follows": {
+          "default": 3,
+          "title": "Max Reference Follows",
+          "type": "integer"
+        }
+      },
+      "title": "BudgetAllocation",
+      "type": "object"
+    },
+    "ReviewDimension": {
+      "description": "A single review dimension \u2014 becomes one parallel reviewer instance.\n\nThe review_prompt is THE key innovation: dynamically crafted by the planner\nat runtime, not selected from a fixed catalog.",
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/BudgetAllocation"
+        },
+        "context_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Context Files",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "priority": {
+          "default": 1,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "review_prompt": {
+          "title": "Review Prompt",
+          "type": "string"
+        },
+        "target_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Target Files",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "review_prompt",
+        "target_files"
+      ],
+      "title": "ReviewDimension",
+      "type": "object"
+    }
+  },
+  "description": "Output of a meta-dimension selector (Semantic, Mechanical, or Systemic).\n\nEach meta-selector produces a list of ReviewDimension objects plus\na confidence assessment of completeness for its lens.",
+  "properties": {
+    "confidence": {
+      "default": 0.7,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "dimensions": {
+      "items": {
+        "$ref": "#/$defs/ReviewDimension"
+      },
+      "title": "Dimensions",
+      "type": "array"
+    },
+    "lens": {
+      "title": "Lens",
+      "type": "string"
+    },
+    "rationale": {
+      "default": "",
+      "title": "Rationale",
+      "type": "string"
+    }
+  },
+  "required": [
+    "lens",
+    "dimensions"
+  ],
+  "title": "MetaDimensionResult",
+  "type": "object"
+}

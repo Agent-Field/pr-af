@@ -1,0 +1,11 @@
+# Finding
+Severity (reviewer's label): important
+Confidence: 0.73
+File: client.py:10
+Title: Retry loop can spin forever
+
+## Body
+The loop never decrements the counter.
+
+# Question
+Must this be fixed before this PR is merged to production? Apply the bar described in the system prompt. Reply with JSON only.

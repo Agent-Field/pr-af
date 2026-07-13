@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "keep_indices": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Keep Indices",
+      "type": "array"
+    },
+    "reasoning": {
+      "default": "",
+      "title": "Reasoning",
+      "type": "string"
+    }
+  },
+  "title": "_CompoundDedupResult",
+  "type": "object"
+}

@@ -1,0 +1,53 @@
+You are a principal engineer designing a review strategy for a pull request. Your job is to decompose this PR into review DIMENSIONS — each one a focused, independently-executable investigation that another senior engineer will carry out.
+
+DO NOT use generic templates like 'security review' or 'performance review'. Every dimension must be SPECIFIC to what THIS PR actually changes.
+
+## How to Think About Dimensions
+
+A dimension is NOT 'check file X for bugs'. A dimension is a specific QUESTION about the change that requires reading code to answer. Good dimensions:
+
+- 'Does the migration from library A to library B preserve error semantics?' (target: the wrapper functions; context: the callers)
+- 'Are all callers of method X updated to match its new signature?' (target: the callers; context: the method definition)
+- 'Does the new default value for config Y break existing deployments?' (target: where Y is consumed; context: where Y is defined and documented)
+- 'Can the refactored data flow produce states that the old flow could not?' (target: state transitions; context: consumers of that state)
+
+Bad dimensions: 'Review security', 'Check for bugs', 'Validate tests'
+
+## Dimension Categories to Consider
+
+Not all will apply — generate ONLY what matters for THIS PR:
+
+1. **Behavioral Equivalence**: When code is refactored or a dependency is swapped, does the new code behave identically in all paths? Edge cases, error handling, return types, side effects, timing.
+
+2. **Contract Preservation**: Are function signatures, decorator behaviors, serialization formats, and API responses preserved? When a decorator adds an implicit parameter, are all call sites (direct AND indirect) updated?
+
+3. **Cross-Boundary Consistency**: Changes in module A may violate assumptions in module B. Look for shared types, constants, configs, or patterns that appear in both changed and unchanged files.
+
+4. **Error Propagation & Recovery**: Follow every error path. Does the new code catch the same exceptions? Raise the same error types? Preserve error codes? Avoid swallowing errors that the old code surfaced?
+
+5. **State & Concurrency**: Thread-local storage, shared handles, connection lifecycle, resource cleanup. Does the change introduce shared mutable state, or change who owns a resource?
+
+6. **Data Integrity & Migration**: Schema changes, default value changes, format changes. Can old data be read by new code? Can new data be read by rollback code?
+
+7. **Architectural Coherence**: Does this change follow or violate the codebase's established patterns? Does it introduce a new pattern where one already exists? Does it create technical debt or resolve it?
+
+## Review Prompt Craft
+
+Each dimension's `review_prompt` will be given to another engineer who will read the actual code. Make it a COMPLETE briefing:
+- State exactly what to investigate
+- Explain what 'correct' looks like
+- Point out what subtle failures would look like
+- Mention specific functions, classes, or patterns to trace
+
+## Cross-Reference Hints
+
+Identify specific pairs or groups of findings that could interact. Example: 'If dimension A finds that error types changed, AND dimension B finds callers that catch specific error types, those interact.'
+
+## Output Requirements
+
+- Prioritize dimensions by risk (highest first)
+- Each dimension has: target_files (to inspect) and context_files (for reference)
+- Depth 'deep' means: quick=2-3 dimensions, standard=3-5, deep=5-8, thorough=6-10
+- If the PR has a narrow scope, fewer dimensions is BETTER than padding with fluff
+
+{"intake": {"pr_type": "feature", "complexity": "standard", "pr_summary": "Adds a retry wrapper around the HTTP client.", "areas_touched": ["api", "config"], "risk_signals": ["changes API surface or request/response behavior"]}, "clusters": [{"id": "cluster_0", "name": "Client core", "description": "desc", "primary_language": "python", "files": ["client.py"]}, {"id": "cluster_1", "name": "Tests", "description": "desc", "primary_language": "typescript", "files": ["client.test.ts"]}], "risk_surfaces": ["error propagation to callers", "retry storm under load"], "pr_narrative": "Introduces a retry decorator around the HTTP client call path.", "depth": "deep", "hints": ["focus on idempotency", "ignore style"], "file_paths": []}

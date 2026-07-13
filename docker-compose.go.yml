@@ -1,0 +1,76 @@
+# PR-AF Go node — opt-in ADD-ON to the Python stack.
+#
+# The Python docker-compose.yml is the DEFAULT stack (the AgentField control
+# plane `agentfield` + the Python `pr-af` node on :8004) and is left 100%
+# untouched. This file adds ONLY the Go node, registered under a DISTINCT
+# identity so both nodes can run against one control plane simultaneously:
+#
+#     pr-af-go  ->  node id "pr-af-go", :8007
+#
+# Run story (two commands, Python stack first):
+#
+#     docker compose up -d                           # Python stack + control plane
+#     docker compose -f docker-compose.go.yml up -d  # adds the Go node
+#
+# This is a SEPARATE compose project (name: pr-af-go) that joins the Python
+# stack's network as an EXTERNAL reference, so AGENTFIELD_SERVER=
+# http://agentfield:8080 resolves and the Go node shares the Python stack's
+# workspaces volume over that network. The control plane (service `agentfield`)
+# lives in the Python project, so there is NO `depends_on` here — bring the
+# Python stack up first.
+#
+# COMPOSE_PROJECT_NAME caveat: the external network/volume names below
+# (pr-af_default, pr-af_pr-af-workspaces) are the Python project's
+# default-project-name resources. The Python docker-compose.yml has NO explicit
+# `name:`, so its project name defaults to the compose directory's basename —
+# `pr-af` when the repo is checked out as a directory named `pr-af`. If you set
+# COMPOSE_PROJECT_NAME for the Python stack (or the checkout directory is named
+# something else), override the external `name:` fields below to match
+# `<project>_default` and `<project>_pr-af-workspaces`.
+name: pr-af-go
+
+services:
+  pr-af-go:
+    build:
+      context: .
+      dockerfile: go/Dockerfile
+    environment:
+      - AGENTFIELD_SERVER=http://agentfield:8080   # CP service name in pr-af's compose is "agentfield"
+      - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
+      - NODE_ID=pr-af-go
+      - PORT=8007
+      - AGENT_CALLBACK_URL=http://pr-af-go:8007
+      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-opencode}
+      - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - GH_TOKEN=${GH_TOKEN:-}
+      - XDG_DATA_HOME=/home/praf/.local/share
+      - PR_AF_WORKDIR=/workspaces
+    ports:
+      - "8007:8007"
+    volumes:
+      - workspaces:/workspaces
+      - opencode-data:/home/praf/.local/share
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+# Join the Python stack's default network so `agentfield` (the control plane)
+# resolves by service name. external => Compose does NOT create it; the Python
+# stack must be up first (see COMPOSE_PROJECT_NAME caveat in the header).
+networks:
+  default:
+    external: true
+    name: pr-af_default
+
+# Share the Python stack's workspaces volume (<project>_<volume> =
+# pr-af_pr-af-workspaces); keep opencode data node-local.
+volumes:
+  workspaces:
+    external: true
+    name: pr-af_pr-af-workspaces
+  opencode-data: {}

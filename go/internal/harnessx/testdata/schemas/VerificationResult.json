@@ -1,0 +1,51 @@
+{
+  "$defs": {
+    "_VerifiedFinding": {
+      "properties": {
+        "actual_behavior": {
+          "default": "",
+          "title": "Actual Behavior",
+          "type": "string"
+        },
+        "revised_confidence": {
+          "default": 0.5,
+          "title": "Revised Confidence",
+          "type": "number"
+        },
+        "revised_severity": {
+          "default": "",
+          "title": "Revised Severity",
+          "type": "string"
+        },
+        "title": {
+          "default": "",
+          "title": "Title",
+          "type": "string"
+        },
+        "verification_notes": {
+          "default": "",
+          "title": "Verification Notes",
+          "type": "string"
+        },
+        "verified": {
+          "default": true,
+          "title": "Verified",
+          "type": "boolean"
+        }
+      },
+      "title": "_VerifiedFinding",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "verified_findings": {
+      "items": {
+        "$ref": "#/$defs/_VerifiedFinding"
+      },
+      "title": "Verified Findings",
+      "type": "array"
+    }
+  },
+  "title": "_VerificationResult",
+  "type": "object"
+}

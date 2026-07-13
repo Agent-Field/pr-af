@@ -1,0 +1,41 @@
+{
+  "$defs": {
+    "_Obligation": {
+      "properties": {
+        "id": {
+          "default": "",
+          "title": "Id",
+          "type": "string"
+        },
+        "property": {
+          "default": "",
+          "title": "Property",
+          "type": "string"
+        },
+        "relies_on": {
+          "default": "",
+          "title": "Relies On",
+          "type": "string"
+        },
+        "where": {
+          "default": "",
+          "title": "Where",
+          "type": "string"
+        }
+      },
+      "title": "_Obligation",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "obligations": {
+      "items": {
+        "$ref": "#/$defs/_Obligation"
+      },
+      "title": "Obligations",
+      "type": "array"
+    }
+  },
+  "title": "_ObligationsResult",
+  "type": "object"
+}

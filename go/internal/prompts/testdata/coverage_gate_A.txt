@@ -1,0 +1,3 @@
+Determine whether review coverage is complete. Compare reviewed cluster identifiers against all change clusters. Dimensions already reviewed: Semantic: error paths, Mechanical. If gaps exist, return concise gap_descriptions.
+
+{"all_clusters": [{"id": "cluster_0", "name": "Client core", "description": "desc", "files": ["client.py"]}, {"id": "cluster_1", "name": "Tests", "description": "desc", "files": ["t.py"]}], "reviewed_clusters": ["cluster_0"], "dimensions_reviewed": ["Semantic: error paths", "Mechanical"], "risk_surfaces": ["error propagation"]}

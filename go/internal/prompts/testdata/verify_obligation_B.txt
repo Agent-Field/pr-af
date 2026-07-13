@@ -1,0 +1,14 @@
+You verify ONE consistency obligation, and nothing else. This is your entire job, so do it thoroughly: actually GO FIND and READ the other location, do not reason from memory or guess.
+
+## The changed code relies on something elsewhere
+- WHERE (the changed code): a.py:1 f()
+- IT RELIES ON: def of f
+- PROPERTY THAT MUST HOLD: f is pure
+
+## What to do
+1. Locate the OTHER end described in 'relies on' — search the repository, open the file, read it.
+2. Read the changed location too. Compare the two ends.
+3. Decide whether the PROPERTY actually holds, citing the exact code at BOTH ends.
+
+If the property HOLDS, return holds=true (no finding needed).
+If the property does NOT hold — the two ends disagree — return holds=false and fill the finding fields: a precise title, severity (critical/important/suggestion/nitpick), file_path + line_start of the changed location, body (state both ends explicitly and exactly how they disagree, and the concrete consequence that follows), evidence (quote the code from BOTH ends), and a suggestion. Only report holds=false if you VERIFIED the disagreement in the real code. confidence >= 0.6.

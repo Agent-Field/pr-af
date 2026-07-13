@@ -317,3 +317,15 @@ When the writer and the reviewer are the same intelligence, the pull request gat
 </p>
 
 [Read the post →](https://www.agentfield.ai/blog/ai-native-code-review?utm_source=github-readme&utm_campaign=pr-af-readme&utm_id=pr-af-readme-blog-ai-native-code-review)
+
+---
+
+## Go implementation (opt-in)
+
+This repo also ships a Go port of the node under [`go/`](go/README.md). The
+**Python implementation is the default** — everything above is unchanged and
+still runs as `pr-af` (`:8004`). The Go port registers **separately** as
+`pr-af-go` (`:8007`), so both can run against one control plane simultaneously.
+Opt in by targeting the `-go` reasoner path, e.g.
+`POST /api/v1/execute/async/pr-af-go.review`. Build, run, and Docker/compose
+docs live in [`go/README.md`](go/README.md).

@@ -1,0 +1,46 @@
+config_version: v1
+name: pr-af-go                          # MUST differ from root "pr-af" (installer registry is keyed by name)
+version: 0.1.0
+description: AI-Native Pull Request Review Agent (Go port)
+author: Agent-Field
+language: go                            # explicit (also auto-detected from go/go.mod)
+
+entrypoint:
+  build: ./cmd/pr-af
+  start: bin/pr-af
+  healthcheck: /health
+
+agent_node:
+  node_id: pr-af-go
+  default_port: 8007
+
+user_environment:
+  required:
+    - name: OPENROUTER_API_KEY
+      description: LLM provider key (OpenRouter)
+      type: secret
+      scope: global
+    - name: GH_TOKEN
+      description: GitHub token (repo scope)
+      type: secret
+      scope: global
+  optional:
+    - name: AGENTFIELD_SERVER
+      description: Control-plane URL
+      default: http://localhost:8080
+    - name: AGENTFIELD_API_KEY
+      description: Control-plane API key
+      type: secret
+      scope: global
+    - name: PR_AF_PROVIDER
+      description: harness provider
+      default: opencode
+    - name: PR_AF_MODEL
+      description: harness model
+      default: openrouter/moonshotai/kimi-k2.5
+    - name: PR_AF_MAX_COST_USD
+      description: per-run cost ceiling
+      default: "2.0"
+    - name: PR_AF_MAX_DURATION_SECONDS
+      description: per-run wall-clock ceiling
+      default: "300"

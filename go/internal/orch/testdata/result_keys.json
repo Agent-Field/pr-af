@@ -1,0 +1,100 @@
+{
+  "anatomy": [
+    "blast_radius",
+    "clusters",
+    "context_notes",
+    "dependency_graph",
+    "files",
+    "intent_gaps",
+    "pr_narrative",
+    "risk_surfaces",
+    "stats",
+    "unrelated_changes"
+  ],
+  "budget": [
+    "budget_exhausted",
+    "cost_breakdown",
+    "max_cost_usd",
+    "max_duration_seconds",
+    "total_cost_usd"
+  ],
+  "comment": [
+    "body",
+    "line",
+    "path",
+    "side"
+  ],
+  "finding": [
+    "active_multipliers",
+    "blocking",
+    "blocking_reason",
+    "body",
+    "confidence",
+    "diff_line",
+    "diff_side",
+    "dimension_id",
+    "dimension_name",
+    "evidence",
+    "file_path",
+    "id",
+    "line_end",
+    "line_start",
+    "score",
+    "severity",
+    "suggestion",
+    "tags",
+    "title"
+  ],
+  "intake": [
+    "ai_generated",
+    "areas_touched",
+    "complexity",
+    "languages",
+    "pr_summary",
+    "pr_type",
+    "review_depth",
+    "risk_signals"
+  ],
+  "metadata": [
+    "agent_invocations",
+    "anatomy",
+    "budget",
+    "intake",
+    "phases_completed",
+    "plan"
+  ],
+  "plan": [
+    "ai_adjusted",
+    "cross_ref_hints",
+    "dimensions",
+    "total_budget"
+  ],
+  "result": [
+    "findings",
+    "metadata",
+    "pr_url",
+    "review",
+    "review_id",
+    "summary"
+  ],
+  "review": [
+    "body",
+    "comments",
+    "event"
+  ],
+  "summary": [
+    "adversary_challenged",
+    "adversary_confirmed",
+    "advisory_count",
+    "ai_generated_confidence",
+    "blocking_count",
+    "budget_exhausted",
+    "by_severity",
+    "cost_usd",
+    "coverage_iterations",
+    "cross_ref_interactions",
+    "dimensions_run",
+    "duration_seconds",
+    "total_findings"
+  ]
+}

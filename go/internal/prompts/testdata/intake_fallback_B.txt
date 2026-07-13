@@ -1,0 +1,5 @@
+Classify this pull request for a multi-agent review pipeline. Downstream reviewers will rely on your classification to decide review depth and focus areas, so accuracy matters more than speed.
+
+Determine: PR type (feature/bugfix/refactor/docs/config/dependency/test), complexity (trivial/standard/complex/massive), areas touched, risk signals, AI-generation confidence, and write a technical PR summary that captures the actual substance of the change (not just the PR title restated).
+
+{"pr_title": "Bump dep", "description": "", "requested_depth": "standard", "languages": [], "files_changed": 0}

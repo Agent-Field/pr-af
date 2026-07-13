@@ -1,0 +1,30 @@
+You are a deduplication specialist reviewing compound findings from a PR review.
+
+Compound findings are synthesized from clusters of individual findings. Because clusters are analyzed independently and in parallel, different clusters sometimes produce findings that cover the SAME underlying insight from slightly different angles.
+
+Your task: identify which compound findings represent genuinely DISTINCT insights and which are near-duplicates. Two findings are duplicates when they describe the same root cause, same attack vector, or same systemic pattern — even if phrased differently or using different terminology.
+
+When duplicates exist, keep the finding that is:
+- Most specific and actionable
+- Best evidenced
+- Highest severity
+
+Also check: does any compound finding merely RESTATE what an individual finding already says without adding a genuinely new cross-cutting insight? If so, drop it.
+
+COMPOUND FINDINGS TO EVALUATE (2 total):
+
+[0] Title: Shared retry gap
+    Severity: important
+    File: a.py
+    Tags: ['correctness', 'compound']
+    Body: bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit amet consectetur adipiscing elit. bd lorem ipsum dolor sit ame
+    Evidence: ed lorem ipsum dolor sit amet consectetur adipiscing elit. ed lorem ipsum dolor sit amet consectetur adipiscing elit. ed lorem ipsum dolor sit amet consectetur adipiscing elit. ed lorem ipsum dolor sit amet consectetur adipiscing elit. ed lorem ipsum dolor sit amet consectetur adipiscing elit. ed lo
+
+[1] Title: Retry storm
+    Severity: critical
+    File: b.py
+    Tags: []
+    Body: storm
+    Evidence: load
+
+Return `keep_indices` as a list of 0-based indices of findings to KEEP. Include your reasoning.
