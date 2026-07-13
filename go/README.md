@@ -142,5 +142,6 @@ af install https://github.com/Agent-Field/pr-af --path go
 
 This reads `go/agentfield-package.yaml` (node id `pr-af-go`, default port
 `8007`) and builds `./cmd/pr-af`. The `--path` subdirectory selector requires
-**agentfield PR #750** (the installer's `--path` support); on an older control
-plane, prefer the Docker image / compose / binary path above.
+**agentfield ≥ v0.1.108** (the installer's `--path` support, merged in
+agentfield#750); on an older control plane, prefer the Docker image / compose /
+binary path above.
