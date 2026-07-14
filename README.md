@@ -247,6 +247,21 @@ Poll for results:
 curl http://localhost:8080/api/v1/executions/<execution_id>
 ```
 
+### Configuration (environment variables)
+
+The key knobs (see `.env.example` for the full list):
+
+| Variable                    | Purpose                                                        |
+|-----------------------------|----------------------------------------------------------------|
+| `OPENROUTER_API_KEY`        | LLM provider key (OpenRouter) — required                       |
+| `GH_TOKEN`                  | GitHub token (`repo` scope) for reading PRs and posting reviews |
+| `PR_AF_PROVIDER`            | Harness provider (default `opencode`)                          |
+| `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
+| `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
+| `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
+| `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
+| `PR_AF_WORKDIR`             | Where PR checkouts live (default `/workspaces`); each PR gets its own `<repo>-pr<N>` workspace |
+
 ## GitHub Actions Integration
 
 The easiest way to use PR-AF is to drop it into your GitHub Actions. It requires **zero configuration** and runs securely using GitHub's built-in `GITHUB_TOKEN`.

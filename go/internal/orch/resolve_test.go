@@ -1,9 +1,11 @@
 package orch
 
-// V8: PR-branch checkout is idempotent — a reused workspace re-points the
-// pr-review branch to the NEW PR head (the regression that previously reviewed
-// every PR against the first one), and an unfetchable ref surfaces the exact
-// "git fetch of PR #N head failed: …" error. Derived from tests/test_resolve_repo.py.
+// V8: PR-branch checkout is idempotent — a reused workspace (same PR reviewed
+// again) re-points the pr-review branch to the NEW head of that PR, and an
+// unfetchable ref surfaces the exact "git fetch of PR #N head failed: …" error.
+// ResolveRepo keys workspaces per PR (<repoName>-pr<N>) so concurrent reviews
+// of different PRs of the same repo never share a checkout; plain <repoName>
+// is kept when no PR number is known. Derived from tests/test_resolve_repo.py.
 
 import (
 	"context"
@@ -124,6 +126,80 @@ func TestCheckoutRaisesOnUnfetchablePRRef(t *testing.T) {
 	}
 	if !strings.HasPrefix(err.Error(), "git fetch of PR #999 head failed:") {
 		t.Fatalf("error = %q, want prefix %q", err.Error(), "git fetch of PR #999 head failed:")
+	}
+}
+
+func TestResolveRepoKeysWorkspacePerPR(t *testing.T) {
+	// Two different PR numbers of the same repo must resolve to two different
+	// workspace directories, each checked out at its own PR head.
+	tmp := t.TempDir()
+	upstream := filepath.Join(tmp, "widgets")
+	makeUpstream(t, upstream)
+	publishPRRef(t, upstream, 1, "pr1")
+	publishPRRef(t, upstream, 2, "pr2")
+
+	workdir := filepath.Join(tmp, "workspaces")
+	t.Setenv("PR_AF_WORKDIR", workdir)
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed the per-PR workspaces as clones of the local upstream so
+	// ResolveRepo takes the reuse path (fetch + PR checkout against the local
+	// origin) instead of cloning from github.com. autocrlf is disabled so the
+	// marker assertions below stay byte-exact on Windows checkouts.
+	for _, ws := range []string{"widgets-pr1", "widgets-pr2"} {
+		dir := filepath.Join(workdir, ws)
+		cloneWorkspace(t, upstream, dir)
+		git(t, dir, "config", "core.autocrlf", "false")
+	}
+
+	dir1, err := ResolveRepo(context.Background(), "", "https://github.com/acme/widgets/pull/1")
+	if err != nil {
+		t.Fatalf("ResolveRepo(pull/1): %v", err)
+	}
+	dir2, err := ResolveRepo(context.Background(), "", "https://github.com/acme/widgets/pull/2")
+	if err != nil {
+		t.Fatalf("ResolveRepo(pull/2): %v", err)
+	}
+
+	if dir1 == dir2 {
+		t.Fatalf("PR #1 and PR #2 share workspace %q — parallel reviews would collide", dir1)
+	}
+	if got := filepath.Base(dir1); got != "widgets-pr1" {
+		t.Errorf("PR #1 workspace = %q, want widgets-pr1", got)
+	}
+	if got := filepath.Base(dir2); got != "widgets-pr2" {
+		t.Errorf("PR #2 workspace = %q, want widgets-pr2", got)
+	}
+	if got := readFile(t, filepath.Join(dir1, "marker.txt")); got != "pr1\n" {
+		t.Errorf("PR #1 workspace marker = %q, want %q", got, "pr1\n")
+	}
+	if got := readFile(t, filepath.Join(dir2, "marker.txt")); got != "pr2\n" {
+		t.Errorf("PR #2 workspace marker = %q, want %q", got, "pr2\n")
+	}
+}
+
+func TestResolveRepoPlainKeyWithoutPRNumber(t *testing.T) {
+	// repo_path/diff_text flows carry no PR number — the workspace stays keyed
+	// by plain <repoName>, preserving the pre-per-PR layout.
+	tmp := t.TempDir()
+	upstream := filepath.Join(tmp, "widgets")
+	makeUpstream(t, upstream)
+
+	workdir := filepath.Join(tmp, "workspaces")
+	t.Setenv("PR_AF_WORKDIR", workdir)
+	if err := os.MkdirAll(workdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-seed the plain-keyed workspace so no network clone is attempted.
+	git(t, tmp, "clone", "--depth", "1", "--no-tags", upstream, filepath.Join(workdir, "widgets"))
+
+	dir, err := ResolveRepo(context.Background(), "https://github.com/acme/widgets.git", "")
+	if err != nil {
+		t.Fatalf("ResolveRepo(url, no PR): %v", err)
+	}
+	if got := filepath.Base(dir); got != "widgets" {
+		t.Errorf("workspace = %q, want plain widgets", got)
 	}
 }
 

@@ -75,7 +75,7 @@ func TestResolveBudgetCapsCascade(t *testing.T) {
 		wantCost float64
 		wantDur  int
 	}{
-		{"defaults when nil and no env", nil, nil, "", "", 2.0, 300},
+		{"defaults when nil and no env", nil, nil, "", "", 2.0, 3600},
 		{"env used when arg nil", nil, nil, "3.3", "450", 3.3, 450},
 		{"explicit arg wins over env", ptrF(5.0), ptrI(120), "3.3", "450", 5.0, 120},
 		{"explicit arg wins over defaults", ptrF(1.25), ptrI(90), "", "", 1.25, 90},
@@ -245,8 +245,8 @@ func TestProviderEnv(t *testing.T) {
 func TestDefaultBudgetConfig(t *testing.T) {
 	clearConfigEnv(t)
 	b := DefaultBudgetConfig()
-	if b.MaxCostUSD != 2.0 || b.MaxDurationSeconds != 1800 {
-		t.Errorf("caps = %v/%d, want 2.0/1800", b.MaxCostUSD, b.MaxDurationSeconds)
+	if b.MaxCostUSD != 2.0 || b.MaxDurationSeconds != 3600 {
+		t.Errorf("caps = %v/%d, want 2.0/3600", b.MaxCostUSD, b.MaxDurationSeconds)
 	}
 	if b.MaxConcurrentReviewers != 8 || b.MaxReferenceFollowsPerReviewer != 3 ||
 		b.MaxChildSpawnsPerReviewer != 2 || b.MaxCrossRefDeepDives != 5 ||
@@ -397,15 +397,16 @@ func TestDefaultReviewConfigIgnorePaths(t *testing.T) {
 
 func TestFromInputBudgetCapsResolvedToPerCallDefault(t *testing.T) {
 	// Key parity check: with no explicit caps and no env, FromInput must set the
-	// per-call duration to 300 (the resolved default) — NOT the 1800 BudgetConfig
-	// default, which Python always overwrites.
+	// per-call duration to 3600 via the ResolveBudgetCaps cascade — the same
+	// resolved value Python's review() always writes over the BudgetConfig
+	// default.
 	clearConfigEnv(t)
 	c := mustFromInput(t, schemas.ReviewInput{MaxReviewDepth: 2})
 	if c.Budget.MaxCostUSD != 2.0 {
 		t.Errorf("MaxCostUSD = %v, want 2.0", c.Budget.MaxCostUSD)
 	}
-	if c.Budget.MaxDurationSeconds != 300 {
-		t.Errorf("MaxDurationSeconds = %d, want 300 (per-call default, not 1800)", c.Budget.MaxDurationSeconds)
+	if c.Budget.MaxDurationSeconds != 3600 {
+		t.Errorf("MaxDurationSeconds = %d, want 3600 (per-call resolved default)", c.Budget.MaxDurationSeconds)
 	}
 }
 

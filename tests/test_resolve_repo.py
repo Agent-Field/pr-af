@@ -1,13 +1,16 @@
-"""Behavior tests for PR-head checkout into the pr-af workspace.
+"""Behavior tests for PR-head checkout and workspace keying.
 
-Maps to the validation contract for ``_checkout_pr_branch``:
+Maps to the validation contracts for ``_checkout_pr_branch`` and
+``_resolve_repo``:
 
 * fresh workspace -> working tree reflects the PR head
-* REUSED workspace (``pr-review`` already checked out from a prior PR) ->
-  working tree updates to the *new* PR head, not left on the prior PR's tree.
-  This is the regression test for the silent "no findings" bug: a reused
-  workspace kept reviewing every PR after the first against the first PR's tree.
+* REUSED workspace (same PR reviewed again, ``pr-review`` already checked
+  out) -> working tree updates to the *new* head of that PR, not left on the
+  prior tree. This is the regression test for the silent "no findings" bug.
 * unfetchable PR ref -> raises, instead of silently leaving a stale tree.
+* ``_resolve_repo`` keys workspaces per PR (``<repo_name>-pr<N>``) so two
+  concurrent reviews of different PRs of the same repo never share a
+  checkout; plain ``<repo_name>`` is kept when no PR number is known.
 
 Uses real temporary git repositories (a local path acts as the ``origin``
 remote with ``refs/pull/<n>/head`` refs); no network and no mocking of the
@@ -17,14 +20,11 @@ function's internals.
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
-from pr_af.app import _checkout_pr_branch
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from pr_af.app import _checkout_pr_branch, _resolve_repo
 
 
 def _git(*args: str, cwd: Path) -> str:
@@ -108,3 +108,53 @@ def test_checkout_raises_on_unfetchable_pr_ref(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="PR #999"):
         _checkout_pr_branch(str(target), 999)
+
+
+def test_resolve_repo_keys_workspace_per_pr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two different PR numbers of the same repo resolve to different dirs."""
+    upstream = tmp_path / "widgets"
+    _make_upstream(upstream)
+    _publish_pr_ref(upstream, 1, "pr1")
+    _publish_pr_ref(upstream, 2, "pr2")
+
+    workdir = tmp_path / "workspaces"
+    workdir.mkdir()
+    monkeypatch.setenv("PR_AF_WORKDIR", str(workdir))
+    # Pre-seed the per-PR workspaces as clones of the local upstream so
+    # _resolve_repo takes the reuse path (fetch + PR checkout against the
+    # local origin) instead of cloning from github.com. autocrlf is disabled
+    # so the marker assertions below stay byte-exact on Windows checkouts.
+    for workspace in ("widgets-pr1", "widgets-pr2"):
+        _clone_workspace(upstream, workdir / workspace)
+        _git("config", "core.autocrlf", "false", cwd=workdir / workspace)
+
+    dir1 = _resolve_repo(None, "https://github.com/acme/widgets/pull/1")
+    dir2 = _resolve_repo(None, "https://github.com/acme/widgets/pull/2")
+
+    assert dir1 != dir2, "parallel reviews of different PRs would collide"
+    assert Path(dir1).name == "widgets-pr1"
+    assert Path(dir2).name == "widgets-pr2"
+    assert (Path(dir1) / "marker.txt").read_text() == "pr1\n"
+    assert (Path(dir2) / "marker.txt").read_text() == "pr2\n"
+
+
+def test_resolve_repo_plain_key_without_pr_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """repo_path/diff_text flows (no PR number) keep the plain-name workspace."""
+    upstream = tmp_path / "widgets"
+    _make_upstream(upstream)
+
+    workdir = tmp_path / "workspaces"
+    workdir.mkdir()
+    monkeypatch.setenv("PR_AF_WORKDIR", str(workdir))
+    # Pre-seed the plain-keyed workspace so no network clone is attempted.
+    _git(
+        "clone", "--depth", "1", "--no-tags",
+        str(upstream), str(workdir / "widgets"), cwd=tmp_path,
+    )
+
+    resolved = _resolve_repo("https://github.com/acme/widgets.git", None)
+    assert Path(resolved).name == "widgets"

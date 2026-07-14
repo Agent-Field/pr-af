@@ -44,4 +44,10 @@ user_environment:
       default: "2.0"
     - name: PR_AF_MAX_DURATION_SECONDS
       description: Per-run wall-clock ceiling (seconds)
-      default: "300"
+      default: "3600"
+    # Harness CLIs in JSON mode emit events only at completion boundaries, so a
+    # long single completion looks silent; the old 120s SDK default killed
+    # healthy runs.
+    - name: AGENTFIELD_HARNESS_IDLE_SECONDS
+      description: harness no-output watchdog window (seconds)
+      default: "360"

@@ -23,7 +23,7 @@ class BudgetConfig(BaseModel):
 
     # Global caps
     max_cost_usd: float = 2.0
-    max_duration_seconds: int = 1800
+    max_duration_seconds: int = 3600
 
     # Phase-level cost allocation (USD)
     phase_budgets: dict[str, float] = Field(

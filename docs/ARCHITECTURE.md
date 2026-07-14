@@ -549,7 +549,7 @@ class BudgetConfig(BaseModel):
     """All behavioral tuning in one place."""
     # Global caps
     max_cost_usd: float = 2.0
-    max_duration_seconds: int = 300  # 5 minutes
+    max_duration_seconds: int = 3600  # 60 minutes — real reviews measure 60-70 min
 
     # Phase-level
     max_concurrent_reviewers: int = 8

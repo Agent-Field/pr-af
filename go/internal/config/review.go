@@ -118,10 +118,10 @@ func DefaultReviewConfig() ReviewConfig {
 //
 // Budget caps: Python resolves max_cost_usd / max_duration_seconds in review()
 // BEFORE constructing the ReviewInput, so from_input always writes a concrete
-// resolved value over the BudgetConfig defaults (which is why the 1800-second
-// BudgetConfig default is dead — the per-call value is 300 by default). The Go
-// ReviewInput carries these as *float64 / *int, so FromInput runs the same
-// ResolveBudgetCaps cascade (explicit > env > 2.0/300) to reproduce that
+// resolved value over the BudgetConfig defaults (the raw BudgetConfig duration
+// default is dead — the per-call value is 3600 by default). The Go ReviewInput
+// carries these as *float64 / *int, so FromInput runs the same
+// ResolveBudgetCaps cascade (explicit > env > 2.0/3600) to reproduce that
 // effective value exactly.
 func (ReviewConfig) FromInput(in schemas.ReviewInput) (ReviewConfig, error) {
 	c := DefaultReviewConfig()

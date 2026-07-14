@@ -25,7 +25,7 @@ class ReviewInput(BaseModel):
     # Configuration overrides
     depth: str = "auto"  # auto | quick | standard | deep
     max_cost_usd: float = 2.0
-    max_duration_seconds: int = 300
+    max_duration_seconds: int = 3600
     focus: str = "auto"  # auto | security | correctness | performance | tests
     ignore_paths: list[str] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)  # Project-specific review hints

@@ -97,6 +97,12 @@ func checkoutPRBranch(ctx context.Context, targetDir string, prNumber int) error
 // injected into a github.com HTTPS remote) and the PR branch checked out when a
 // PR number is known, and anything else falls back to $PR_AF_REPO_PATH / cwd.
 //
+// The workspace is keyed by repo AND PR number when one is known
+// (<repoName>-pr<N>): the shared per-repo dir re-pointed its pr-review branch
+// on every review, so two concurrent reviews of different PRs of the same repo
+// silently reviewed the wrong checkout. Plain <repoName> is kept when no PR
+// number is known (repo_path / diff_text flows), preserving the old layout.
+//
 // Empty strings stand in for Python's None. Errors mirror Python's ValueError
 // ("git clone failed: …", plus the checkout strings via checkoutPRBranch).
 func ResolveRepo(ctx context.Context, repoPath, prURL string) (string, error) {
@@ -135,7 +141,13 @@ func ResolveRepo(ctx context.Context, repoPath, prURL string) (string, error) {
 	if target != "" && (strings.HasPrefix(target, "https://") ||
 		strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "git@")) {
 		repoName := strings.TrimSuffix(lastSegment(strings.TrimRight(target, "/")), ".git")
-		targetDir := filepath.Join(workdir, repoName)
+		workspaceName := repoName
+		if hasPR && prNumber != 0 {
+			// Per-PR workspace: isolates concurrent reviews of different PRs
+			// of the same repo (see the doc comment above).
+			workspaceName = fmt.Sprintf("%s-pr%d", repoName, prNumber)
+		}
+		targetDir := filepath.Join(workdir, workspaceName)
 		if err := os.MkdirAll(workdir, 0o755); err != nil {
 			return "", fmt.Errorf("git clone failed: %s", strings.TrimSpace(err.Error()))
 		}

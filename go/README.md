@@ -123,7 +123,8 @@ The node is configured entirely through the environment.
 | `PR_AF_PROVIDER`            | Harness provider (default `opencode`)                          |
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
-| `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `300`)          |
+| `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
+| `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `HAX_API_KEY`               | Optional — enables the HITL review-approval gate when set      |
 
 Note: the code default model is `minimax/minimax-m2.5`, while the Docker image /

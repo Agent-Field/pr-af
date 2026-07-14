@@ -6,11 +6,11 @@ package schemas
 //
 // Divergence from schemas/input.py, deliberate (design §C.1): the pydantic
 // ReviewInput types max_cost_usd / max_duration_seconds as non-nullable float /
-// int with concrete defaults (2.0 / 300). The Go struct instead mirrors the
+// int with concrete defaults (2.0 / 3600). The Go struct instead mirrors the
 // actual node entry point — app.py review()'s signature, where both are
 // `... | None = None` — so they are *float64 / *int and stay nil until
 // config.ResolveBudgetCaps / config.ReviewConfig.FromInput resolve the
-// explicit-arg > env > default (2.0 / 300) cascade. This keeps the "was a cap
+// explicit-arg > env > default (2.0 / 3600) cascade. This keeps the "was a cap
 // explicitly supplied?" signal that Python recovers from the review() defaults.
 type ReviewInput struct {
 	// Mode 1: GitHub PR URL.

@@ -102,11 +102,12 @@ type Orchestrator struct {
 	reviewID  string
 	startedAt time.Time
 
-	mu               sync.Mutex // guards the counters below (mutated from fan-out goroutines)
-	totalCostUSD     float64
-	costBreakdown    map[string]float64
-	agentInvocations int
-	budgetExhausted  bool
+	mu                 sync.Mutex // guards the counters below (mutated from fan-out goroutines)
+	totalCostUSD       float64
+	costBreakdown      map[string]float64
+	agentInvocations   int
+	budgetExhausted    bool
+	durationCapTripped bool // the wall-clock cap (not the cost cap) exhausted the budget
 
 	// Single-threaded-written state (set before/after fan-outs, read after joins).
 	prData                   *schemas.GitHubPRData
@@ -426,12 +427,15 @@ func (o *Orchestrator) hitlMetadata(ctx context.Context) map[string]any {
 
 // budgetOrTimeoutExhausted ports _budget_or_timeout_exhausted. Cost stays 0
 // (reasoner returns never carry cost_usd), so only the wall-clock check trips.
+// Which cap tripped is recorded so budgetExhaustedMessage can word the failure
+// honestly (§B.4 pair with Python's _budget_exhausted_message).
 func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
 	elapsed := o.clock().Seconds()
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if elapsed > float64(o.config.Budget.MaxDurationSeconds) {
 		o.budgetExhausted = true
+		o.durationCapTripped = true
 		return true
 	}
 	if o.totalCostUSD >= o.config.Budget.MaxCostUSD {
@@ -444,6 +448,21 @@ func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
 		return false // absent phase → cap is +inf → never trips
 	}
 	return phaseSpent >= phaseCap
+}
+
+// budgetExhaustedMessage words the exhaustion by cause: the wall-clock cap gets
+// an explicit timeout message (in the Go port cost never accrues, so this is
+// the only cap that actually trips), the cost cap keeps the historical
+// "Budget exhausted before <phase>" wording. Byte-identical to Python's
+// _budget_exhausted_message (§B.4).
+func (o *Orchestrator) budgetExhaustedMessage(phase string) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.durationCapTripped {
+		return fmt.Sprintf("Review time budget exceeded (max_duration_seconds=%d) before %s",
+			o.config.Budget.MaxDurationSeconds, phase)
+	}
+	return "Budget exhausted before " + phase
 }
 
 // registerCost ports _register_cost∘_extract_cost. extractCost reads "cost_usd"

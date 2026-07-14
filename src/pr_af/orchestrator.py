@@ -117,6 +117,8 @@ class ReviewOrchestrator:
         self.cost_breakdown: dict[str, float] = {phase: 0.0 for phase in self.PHASE_ORDER}
         self.agent_invocations = 0
         self.budget_exhausted = False
+        # True when the wall-clock cap (not the cost cap) exhausted the budget.
+        self.duration_cap_tripped = False
 
         self.meta_config = MetaSelectorConfig()
         self.pr_data: GitHubPRData | None = None
@@ -388,7 +390,7 @@ class ReviewOrchestrator:
 
     async def _run_intake(self) -> IntakeResult:
         if self._budget_or_timeout_exhausted("intake"):
-            raise BudgetExhaustedError("Budget exhausted before intake")
+            raise BudgetExhaustedError(self._budget_exhausted_message("intake"))
 
         if self.input.pr_url:
             client = GitHubClient()
@@ -434,7 +436,7 @@ class ReviewOrchestrator:
 
     async def _run_anatomy(self, intake: IntakeResult) -> AnatomyResult:
         if self._budget_or_timeout_exhausted("anatomy"):
-            raise BudgetExhaustedError("Budget exhausted before anatomy")
+            raise BudgetExhaustedError(self._budget_exhausted_message("anatomy"))
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
@@ -450,7 +452,7 @@ class ReviewOrchestrator:
 
     async def _run_planning(self, intake: IntakeResult, anatomy: AnatomyResult, review_depth: str) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("planning"):
-            raise BudgetExhaustedError("Budget exhausted before planning")
+            raise BudgetExhaustedError(self._budget_exhausted_message("planning"))
 
         result_raw = await planning_phase(
             intake=intake.model_dump(),
@@ -476,7 +478,7 @@ class ReviewOrchestrator:
         reviewer_feedback: str = "",
     ) -> ReviewPlan:
         if self._budget_or_timeout_exhausted("meta_selectors"):
-            raise BudgetExhaustedError("Budget exhausted before meta-selectors")
+            raise BudgetExhaustedError(self._budget_exhausted_message("meta-selectors"))
 
         lenses = self.meta_config.enabled_lenses
         lens_map = {
@@ -1273,6 +1275,7 @@ class ReviewOrchestrator:
         elapsed = time.monotonic() - self.started_at
         if elapsed > self.config.budget.max_duration_seconds:
             self.budget_exhausted = True
+            self.duration_cap_tripped = True
             return True
         if self.total_cost_usd >= self.config.budget.max_cost_usd:
             self.budget_exhausted = True
@@ -1280,6 +1283,18 @@ class ReviewOrchestrator:
         phase_spent = self.cost_breakdown.get(phase, 0.0)
         phase_cap = self.config.budget.phase_budgets.get(phase, float("inf"))
         return phase_spent >= phase_cap
+
+    def _budget_exhausted_message(self, phase: str) -> str:
+        """Word the exhaustion by cause: the wall-clock cap gets an explicit
+        timeout message, the cost cap keeps the historical "Budget exhausted
+        before <phase>" wording. Byte-identical to the Go port's
+        budgetExhaustedMessage (§B.4)."""
+        if self.duration_cap_tripped:
+            return (
+                f"Review time budget exceeded "
+                f"(max_duration_seconds={self.config.budget.max_duration_seconds}) before {phase}"
+            )
+        return f"Budget exhausted before {phase}"
 
     def _register_cost(self, phase: str, cost: float | None) -> None:
         if cost is None:
