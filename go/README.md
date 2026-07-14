@@ -1,9 +1,12 @@
 # PR-AF — Go node
 
 A Go port of the PR-AF agentic code-review node. It registers the same reasoner
-surface under the same names as the Python node and exposes a byte-compatible
-HTTP API, so the control-plane DAG UI renders identically. The Python package
-under `src/pr_af/` is untouched; this port lives entirely under `go/`.
+surface under the same names as the Python node, exposes a byte-compatible
+HTTP API, and reports every pipeline phase as its own tracked execution, so the
+control-plane DAG UI renders the same multi-node orchestration graph as the
+Python node (see [Pipeline DAG on the control plane](#pipeline-dag-on-the-control-plane)).
+The Python package under `src/pr_af/` is untouched; this port lives entirely
+under `go/`.
 
 One binary:
 
@@ -27,6 +30,38 @@ curl -X POST http://localhost:8080/api/v1/execute/async/pr-af-go.review \
 ```
 
 `NODE_ID` / `PORT` still override the defaults if you want a different id/port.
+
+## Pipeline DAG on the control plane
+
+The Python node's review is not one execution — every phase
+(`intake_phase`, `anatomy_phase`, the three `meta_*` selectors, each parallel
+`review_dimension`, `adversary_phase`, `evidence_verifier`, the obligation and
+compound reasoners, `coverage_gate`) runs as a **tracked child execution** of
+the parent `review`, and the control-plane UI renders the run as that DAG.
+Python gets this from its `@router.reasoner()` wrapper, which routes direct
+in-process calls through workflow instrumentation.
+
+The Go port reproduces the same graph through the SDK's `Agent.CallLocal`:
+the orchestrator's phase seams (`orch.callLocalSeams`) invoke each phase under
+its registered reasoner name instead of calling the function directly. Each
+call builds a child execution context from the incoming request's context and
+emits `running` / `succeeded` / `failed` workflow events to the control plane,
+which mirrors them into the executions table — one DAG node per phase, parented
+under the `review` execution, same shape as Python.
+
+Mechanics worth knowing:
+
+- **Same code path either way.** A CallLocal-routed phase goes through the
+  registered handler (`afx.Bind` into the typed input → the same `reasoners.*`
+  function with the same deps). `afx.ToMap` keeps nested values typed so
+  custom marshalers (notably `OrderedPatches`' insertion-ordered
+  `diff_patches`) survive the round trip byte-for-byte.
+- **Best-effort reporting.** Workflow events are fire-and-forget: an
+  unreachable control plane logs a warning and the review proceeds — the DAG
+  is observability, never a failure mode.
+- **Stubs opt out.** `orch.Deps.Local` is nil in unit tests and stub
+  harnesses, which keeps the plain direct-call seams; production wiring
+  (`node.BuildAgent`) always points it at the live agent.
 
 ## Depending on the AgentField Go SDK
 
