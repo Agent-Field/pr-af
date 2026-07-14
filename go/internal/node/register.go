@@ -39,23 +39,26 @@ func (n *Node) RegisterAll() {
 
 	// The 16 router reasoners, tagged ["review","pr"], in §B.1 order. Each is
 	// bound (afx.Bind) into its typed input and backed by a reasoners.Deps built
-	// from the agent (Harness=App, AI=App).
-	regReasoner(n, "intake_phase", reasoners.IntakePhase)
-	regReasoner(n, "anatomy_phase", reasoners.AnatomyPhase)
-	regReasoner(n, "planning_phase", reasoners.PlanningPhase)
-	regReasoner(n, "meta_semantic", reasoners.MetaSemantic)
-	regReasoner(n, "meta_mechanical", reasoners.MetaMechanical)
-	regReasoner(n, "meta_systemic", reasoners.MetaSystemic)
-	regReasoner(n, "review_dimension", reasoners.ReviewDimension)
-	regReasoner(n, "compound_finder_phase", reasoners.CompoundFinderPhase)
-	regReasoner(n, "post_worthiness_gate", reasoners.PostWorthinessGate)
-	regReasoner(n, "compound_dedup_phase", reasoners.CompoundDedupPhase)
-	regReasoner(n, "evidence_verifier", reasoners.EvidenceVerifier)
-	regReasoner(n, "adversary_phase", reasoners.AdversaryPhase)
-	regReasoner(n, "deepen_findings", reasoners.DeepenFindings)
-	regReasoner(n, "extract_obligations", reasoners.ExtractObligations)
-	regReasoner(n, "verify_obligation", reasoners.VerifyObligation)
-	regReasoner(n, "coverage_gate", reasoners.CoverageGate)
+	// from the agent (Harness=App, AI=App). Names come from the reasoners.Name*
+	// constants — the same ones the orchestrator's CallLocal-routed seams invoke
+	// (orch.callLocalSeams), so the DAG phase names cannot drift from the
+	// registered surface.
+	regReasoner(n, reasoners.NameIntakePhase, reasoners.IntakePhase)
+	regReasoner(n, reasoners.NameAnatomyPhase, reasoners.AnatomyPhase)
+	regReasoner(n, reasoners.NamePlanningPhase, reasoners.PlanningPhase)
+	regReasoner(n, reasoners.NameMetaSemantic, reasoners.MetaSemantic)
+	regReasoner(n, reasoners.NameMetaMechanical, reasoners.MetaMechanical)
+	regReasoner(n, reasoners.NameMetaSystemic, reasoners.MetaSystemic)
+	regReasoner(n, reasoners.NameReviewDimension, reasoners.ReviewDimension)
+	regReasoner(n, reasoners.NameCompoundFinderPhase, reasoners.CompoundFinderPhase)
+	regReasoner(n, reasoners.NamePostWorthinessGate, reasoners.PostWorthinessGate)
+	regReasoner(n, reasoners.NameCompoundDedupPhase, reasoners.CompoundDedupPhase)
+	regReasoner(n, reasoners.NameEvidenceVerifier, reasoners.EvidenceVerifier)
+	regReasoner(n, reasoners.NameAdversaryPhase, reasoners.AdversaryPhase)
+	regReasoner(n, reasoners.NameDeepenFindings, reasoners.DeepenFindings)
+	regReasoner(n, reasoners.NameExtractObligations, reasoners.ExtractObligations)
+	regReasoner(n, reasoners.NameVerifyObligation, reasoners.VerifyObligation)
+	regReasoner(n, reasoners.NameCoverageGate, reasoners.CoverageGate)
 }
 
 // record appends name (and its tags) to the node's registration bookkeeping —
@@ -131,6 +134,7 @@ func (n *Node) reviewHandler(ctx context.Context, input map[string]any) (any, er
 		GH:               n.gh,
 		NodeID:           n.NodeID,
 		AgentFieldServer: n.AgentFieldServer,
+		Local:            n.localCaller,
 	}
 
 	result, err := n.runReview(ctx, deps, in, cfg)

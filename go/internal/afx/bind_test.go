@@ -163,3 +163,86 @@ func TestBind_TypeMismatch(t *testing.T) {
 		t.Fatalf("Bind = nil error, want unmarshal error for string into int")
 	}
 }
+
+// orderedVal is a marshaler-carrying type standing in for
+// reasoners.OrderedPatches: MarshalJSON controls its bytes. ToMap must keep
+// values typed so this marshaler still runs when the map is re-marshaled —
+// the property that preserves diff_patches insertion order through the
+// CallLocal round trip.
+type orderedVal struct{ order []string }
+
+func (o orderedVal) MarshalJSON() ([]byte, error) {
+	out := "{"
+	for i, k := range o.order {
+		if i > 0 {
+			out += ","
+		}
+		b, _ := json.Marshal(k)
+		out += string(b) + ":1"
+	}
+	return []byte(out + "}"), nil
+}
+
+// TestToMap_KeepsValuesTyped proves ToMap does not flatten field values into
+// plain maps: the custom marshaler's byte order survives a re-marshal of the
+// produced map.
+func TestToMap_KeepsValuesTyped(t *testing.T) {
+	type in struct {
+		Patches orderedVal `json:"diff_patches"`
+		Depth   string     `json:"depth"`
+	}
+	m, err := ToMap(in{Patches: orderedVal{order: []string{"z.go", "a.go"}}, Depth: "quick"})
+	if err != nil {
+		t.Fatalf("ToMap: %v", err)
+	}
+	if m["depth"] != "quick" {
+		t.Errorf("depth = %v, want quick", m["depth"])
+	}
+	b, err := json.Marshal(m["diff_patches"])
+	if err != nil {
+		t.Fatalf("re-marshal diff_patches: %v", err)
+	}
+	if string(b) != `{"z.go":1,"a.go":1}` {
+		t.Errorf("diff_patches bytes = %s, want insertion order preserved", b)
+	}
+}
+
+// TestToMap_TagHandling covers tag name selection, json:"-" skipping,
+// unexported skipping, untagged-field fallback to the Go name, and anonymous
+// embedded flattening.
+func TestToMap_TagHandling(t *testing.T) {
+	type Embedded struct {
+		Inner string `json:"inner"`
+	}
+	type in struct {
+		Embedded
+		Named   string `json:"named_key"`
+		Skipped string `json:"-"`
+		Bare    string
+		hidden  string //nolint:unused // proves unexported fields are skipped
+	}
+	m, err := ToMap(&in{Embedded: Embedded{Inner: "i"}, Named: "n", Skipped: "s", Bare: "b"})
+	if err != nil {
+		t.Fatalf("ToMap: %v", err)
+	}
+	want := map[string]any{"inner": "i", "named_key": "n", "Bare": "b"}
+	if len(m) != len(want) {
+		t.Fatalf("map = %#v, want %#v", m, want)
+	}
+	for k, v := range want {
+		if m[k] != v {
+			t.Errorf("m[%q] = %v, want %v", k, m[k], v)
+		}
+	}
+}
+
+// TestToMap_Errors covers the non-struct and nil-pointer error paths.
+func TestToMap_Errors(t *testing.T) {
+	if _, err := ToMap([]string{"not", "a", "struct"}); err == nil {
+		t.Error("ToMap(slice) = nil error, want non-struct error")
+	}
+	var p *struct{}
+	if _, err := ToMap(p); err == nil {
+		t.Error("ToMap(nil pointer) = nil error, want nil error message")
+	}
+}

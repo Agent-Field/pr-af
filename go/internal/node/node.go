@@ -60,6 +60,12 @@ type Node struct {
 	// runReview leave it unused (nil).
 	gh github.Client
 
+	// localCaller is the tracked same-process invocation seam fed into
+	// orch.Deps.Local: production points it at App so every pipeline phase is
+	// reported to the control plane as a child execution (the review DAG).
+	// Tests that stub runReview or need direct-call phases leave it nil.
+	localCaller orch.LocalCaller
+
 	// runReview is the orchestrator-construct-and-run seam. Production builds and
 	// runs the real orchestrator; the error-mapping tests inject ErrBadInput /
 	// other failures without a live harness (design §F "seam for the orchestrator
@@ -170,6 +176,7 @@ func BuildAgent(defaultNodeID, defaultPort, description string) (*Node, error) {
 		ListenAddress:    ":" + port,
 		reviewApp:        app,
 		gh:               github.NewClient(""), // reads GH_TOKEN internally (app.py GitHubClient())
+		localCaller:      app,
 		runReview:        defaultRunReview,
 		tags:             map[string][]string{},
 	}
