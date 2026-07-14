@@ -67,13 +67,15 @@ def _resolve_budget_caps(
     When the caller does not pass an explicit value, fall back to the
     ``PR_AF_MAX_COST_USD`` / ``PR_AF_MAX_DURATION_SECONDS`` env vars (so the
     budget can be tuned per deployment without a code change), and finally to
-    the historical defaults (2.0 USD / 300s) when neither is set. An explicit
-    argument always wins over the env var.
+    the defaults (2.0 USD / 3600s) when neither is set. An explicit argument
+    always wins over the env var. Real reviews measure 60-70 minutes, so the
+    duration default is a full hour — the historical 300s killed every fresh
+    install mid-pipeline.
     """
     if max_cost_usd is None:
         max_cost_usd = float(os.getenv("PR_AF_MAX_COST_USD", "2.0"))
     if max_duration_seconds is None:
-        max_duration_seconds = int(os.getenv("PR_AF_MAX_DURATION_SECONDS", "300"))
+        max_duration_seconds = int(os.getenv("PR_AF_MAX_DURATION_SECONDS", "3600"))
     return max_cost_usd, max_duration_seconds
 
 
@@ -125,7 +127,14 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
 
     if isinstance(target, str) and target.startswith(("https://", "http://", "git@")):
         repo_name = target.rstrip("/").split("/")[-1].replace(".git", "")
-        target_dir = os.path.join(workdir, repo_name)
+        # Key the workspace by repo AND PR number when one is known
+        # (``<repo_name>-pr<N>``): the shared per-repo dir re-pointed its
+        # ``pr-review`` branch on every review, so two concurrent reviews of
+        # different PRs of the same repo silently reviewed the wrong checkout.
+        # Plain ``<repo_name>`` is kept when no PR number is known
+        # (repo_path / diff_text flows), preserving the old layout.
+        workspace_name = f"{repo_name}-pr{pr_number}" if pr_number else repo_name
+        target_dir = os.path.join(workdir, workspace_name)
         os.makedirs(workdir, exist_ok=True)
 
         clone_url = target

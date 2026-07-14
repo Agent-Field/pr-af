@@ -326,7 +326,7 @@ depth: auto              # auto | quick | standard | deep
 # Budget
 budget:
   max_cost_usd: 2.00
-  max_duration_seconds: 300
+  max_duration_seconds: 3600
   model_tier: standard   # budget | standard | premium
 
 # Ignore patterns (glob)

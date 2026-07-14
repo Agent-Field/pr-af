@@ -3,7 +3,7 @@
 Maps to the validation contract for ``_resolve_budget_caps``:
 
 * caller passes no value + env set -> env value is used
-* caller passes no value + env unset -> historical defaults (2.0 USD / 300s)
+* caller passes no value + env unset -> defaults (2.0 USD / 3600s)
 * caller passes an explicit value -> it wins over the env var
 """
 
@@ -29,7 +29,7 @@ def test_defaults_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PR_AF_MAX_DURATION_SECONDS", raising=False)
     monkeypatch.delenv("PR_AF_MAX_COST_USD", raising=False)
     cost, duration = _resolve_budget_caps(None, None)
-    assert duration == 300
+    assert duration == 3600
     assert cost == 2.0
 
 

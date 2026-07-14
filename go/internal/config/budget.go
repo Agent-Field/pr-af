@@ -4,8 +4,8 @@ import "strings"
 
 // BudgetConfig ports config.py BudgetConfig — global and per-phase budget caps.
 // Numeric defaults are the §D "Config numeric tables" verbatim. Note
-// max_duration_seconds defaults to 1800 here but is always overridden per call
-// to the resolved value (300 by default) via ReviewConfig.FromInput.
+// max_duration_seconds is always overridden per call to the resolved value
+// (3600 by default) via ReviewConfig.FromInput.
 type BudgetConfig struct {
 	MaxCostUSD         float64            `json:"max_cost_usd"`
 	MaxDurationSeconds int                `json:"max_duration_seconds"`
@@ -49,7 +49,7 @@ func DefaultPhaseBudgets() map[string]float64 {
 func DefaultBudgetConfig() BudgetConfig {
 	return BudgetConfig{
 		MaxCostUSD:                     2.0,
-		MaxDurationSeconds:             1800,
+		MaxDurationSeconds:             3600,
 		PhaseBudgets:                   DefaultPhaseBudgets(),
 		MaxConcurrentReviewers:         8,
 		MaxReferenceFollowsPerReviewer: 3,
@@ -72,11 +72,13 @@ func evidencePackDefault() bool {
 	}
 }
 
-// ResolveBudgetCaps ports app.py:62-77 _resolve_budget_caps. An explicit
-// argument always wins; when nil, the PR_AF_MAX_COST_USD / PR_AF_MAX_DURATION_
-// SECONDS env vars are consulted; finally the historical defaults 2.0 / 300.
-// A malformed env value is an error (Python's float()/int() raises inside
-// review(), where the ValueError class maps to HTTP 400).
+// ResolveBudgetCaps ports app.py _resolve_budget_caps. An explicit argument
+// always wins; when nil, the PR_AF_MAX_COST_USD / PR_AF_MAX_DURATION_SECONDS
+// env vars are consulted; finally the defaults 2.0 / 3600 (real reviews
+// measure 60-70 minutes — the historical 300s default killed every fresh
+// install mid-pipeline). A malformed env value is an error (Python's
+// float()/int() raises inside review(), where the ValueError class maps to
+// HTTP 400).
 func ResolveBudgetCaps(maxCostUSD *float64, maxDurationSeconds *int) (float64, int, error) {
 	cost := 2.0
 	if maxCostUSD != nil {
@@ -88,12 +90,12 @@ func ResolveBudgetCaps(maxCostUSD *float64, maxDurationSeconds *int) (float64, i
 		}
 	}
 
-	dur := 300
+	dur := 3600
 	if maxDurationSeconds != nil {
 		dur = *maxDurationSeconds
 	} else {
 		var err error
-		if dur, err = intEnv("PR_AF_MAX_DURATION_SECONDS", 300); err != nil {
+		if dur, err = intEnv("PR_AF_MAX_DURATION_SECONDS", 3600); err != nil {
 			return 0, 0, err
 		}
 	}

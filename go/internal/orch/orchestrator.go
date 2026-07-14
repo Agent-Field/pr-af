@@ -26,6 +26,7 @@ import (
 	"github.com/Agent-Field/agentfield/sdk/go/ai"
 	"github.com/Agent-Field/agentfield/sdk/go/harness"
 
+	"github.com/Agent-Field/pr-af/go/internal/afx"
 	"github.com/Agent-Field/pr-af/go/internal/config"
 	"github.com/Agent-Field/pr-af/go/internal/github"
 	"github.com/Agent-Field/pr-af/go/internal/hitl"
@@ -63,6 +64,22 @@ type App interface {
 // Compile-time proof the live agent satisfies the surface.
 var _ App = (*agent.Agent)(nil)
 
+// LocalCaller is the SDK surface for same-process reasoner invocation with
+// workflow tracking (Agent.CallLocal): each call builds a child execution
+// context from ctx and emits running/succeeded/failed events to the control
+// plane, so every pipeline phase renders as its own node in the run's DAG —
+// the same orchestration graph the Python port produces via its tracked
+// router-reasoner calls. Python's @router.reasoner() wrapper routes direct
+// in-process calls through workflow instrumentation; CallLocal is the Go
+// SDK's equivalent, and routing the phase seams through it is what keeps the
+// Go node from collapsing into a single opaque `review` execution.
+type LocalCaller interface {
+	CallLocal(ctx context.Context, reasonerName string, input map[string]any) (any, error)
+}
+
+// Compile-time proof the live agent satisfies the local-call surface.
+var _ LocalCaller = (*agent.Agent)(nil)
+
 // Deps carries the injected capabilities. Divergence from design §C.6: the hax
 // client is NOT a Deps field — Python builds it inside run() via
 // build_hax_client_from_env (gated on pr_url && !dry_run), so the orchestrator
@@ -74,6 +91,13 @@ type Deps struct {
 	GH               github.Client
 	NodeID           string
 	AgentFieldServer string
+
+	// Local, when non-nil, routes every phase invocation through
+	// LocalCaller.CallLocal so the control plane records one child execution
+	// per phase (the pipeline DAG). nil falls back to plain in-process
+	// function calls — the pre-DAG behavior unit tests and stub harnesses
+	// rely on. Production (node/register.go) always wires the live agent.
+	Local LocalCaller
 }
 
 // phaseOrder ports ReviewOrchestrator.PHASE_ORDER — the cost-breakdown /
@@ -102,11 +126,12 @@ type Orchestrator struct {
 	reviewID  string
 	startedAt time.Time
 
-	mu               sync.Mutex // guards the counters below (mutated from fan-out goroutines)
-	totalCostUSD     float64
-	costBreakdown    map[string]float64
-	agentInvocations int
-	budgetExhausted  bool
+	mu                 sync.Mutex // guards the counters below (mutated from fan-out goroutines)
+	totalCostUSD       float64
+	costBreakdown      map[string]float64
+	agentInvocations   int
+	budgetExhausted    bool
+	durationCapTripped bool // the wall-clock cap (not the cost cap) exhausted the budget
 
 	// Single-threaded-written state (set before/after fan-outs, read after joins).
 	prData                   *schemas.GitHubPRData
@@ -183,6 +208,59 @@ func defaultReasonerSeams() reasonerSeams {
 	}
 }
 
+// callLocalSeams routes every phase through local.CallLocal under its
+// registered reasoner name (reasoners.Name*), so each invocation is tracked
+// as a child execution on the control plane. The registered handler
+// (node/register.go) afx.Binds the map back into the same typed input and
+// calls the same reasoners.* function with the same Deps the direct seams
+// use — behavior is identical, the DAG is the only addition.
+func callLocalSeams(local LocalCaller) reasonerSeams {
+	return reasonerSeams{
+		intake:         viaLocal[reasoners.IntakeInput](local, reasoners.NameIntakePhase),
+		anatomy:        viaLocal[reasoners.AnatomyInput](local, reasoners.NameAnatomyPhase),
+		metaSemantic:   viaLocal[reasoners.MetaInput](local, reasoners.NameMetaSemantic),
+		metaMechanical: viaLocal[reasoners.MetaInput](local, reasoners.NameMetaMechanical),
+		metaSystemic:   viaLocal[reasoners.MetaInput](local, reasoners.NameMetaSystemic),
+		reviewDim:      viaLocal[reasoners.ReviewDimensionInput](local, reasoners.NameReviewDimension),
+		postWorthiness: viaLocal[reasoners.PostWorthinessInput](local, reasoners.NamePostWorthinessGate),
+		evidenceVerify: viaLocal[reasoners.EvidenceVerifierInput](local, reasoners.NameEvidenceVerifier),
+		adversary:      viaLocal[reasoners.AdversaryInput](local, reasoners.NameAdversaryPhase),
+		compoundFinder: viaLocal[reasoners.CompoundFinderInput](local, reasoners.NameCompoundFinderPhase),
+		compoundDedup:  viaLocal[reasoners.CompoundDedupInput](local, reasoners.NameCompoundDedupPhase),
+		coverageGate:   viaLocal[reasoners.CoverageGateInput](local, reasoners.NameCoverageGate),
+		extractOblig:   viaLocal[reasoners.ExtractObligationsInput](local, reasoners.NameExtractObligations),
+		verifyOblig:    viaLocal[reasoners.VerifyObligationInput](local, reasoners.NameVerifyObligation),
+	}
+}
+
+// viaLocal adapts one typed seam to a CallLocal invocation: typed input →
+// afx.ToMap → CallLocal(name) → registered handler (afx.Bind → reasoners.*).
+// The reasoners.Deps parameter is ignored — the handler closes over the
+// node-level Deps built at registration, which point at the same live agent.
+// Handlers return map[string]any; a nil result (impossible today: every
+// reasoner returns a non-nil map or an error) surfaces as an empty map so
+// callers keep their raw-map contract.
+func viaLocal[T any](local LocalCaller, name string) func(context.Context, reasoners.Deps, T) (map[string]any, error) {
+	return func(ctx context.Context, _ reasoners.Deps, in T) (map[string]any, error) {
+		input, err := afx.ToMap(in)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := local.CallLocal(ctx, name, input)
+		if err != nil {
+			return nil, err
+		}
+		out, ok := raw.(map[string]any)
+		if !ok {
+			if raw == nil {
+				return map[string]any{}, nil
+			}
+			return nil, fmt.Errorf("orch: reasoner %s returned %T, want map[string]any", name, raw)
+		}
+		return out, nil
+	}
+}
+
 // New constructs an Orchestrator with production seams. startedAt is set now so
 // the wall-clock budget gate measures from construction (parity with Python's
 // time.monotonic() in __init__).
@@ -199,6 +277,9 @@ func New(d Deps, in schemas.ReviewInput, cfg config.ReviewConfig) *Orchestrator 
 	}
 	for _, p := range phaseOrder {
 		o.costBreakdown[p] = 0.0
+	}
+	if d.Local != nil {
+		o.rfns = callLocalSeams(d.Local)
 	}
 	o.clock = func() time.Duration { return time.Since(o.startedAt) }
 
@@ -426,12 +507,15 @@ func (o *Orchestrator) hitlMetadata(ctx context.Context) map[string]any {
 
 // budgetOrTimeoutExhausted ports _budget_or_timeout_exhausted. Cost stays 0
 // (reasoner returns never carry cost_usd), so only the wall-clock check trips.
+// Which cap tripped is recorded so budgetExhaustedMessage can word the failure
+// honestly (§B.4 pair with Python's _budget_exhausted_message).
 func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
 	elapsed := o.clock().Seconds()
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if elapsed > float64(o.config.Budget.MaxDurationSeconds) {
 		o.budgetExhausted = true
+		o.durationCapTripped = true
 		return true
 	}
 	if o.totalCostUSD >= o.config.Budget.MaxCostUSD {
@@ -444,6 +528,21 @@ func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
 		return false // absent phase → cap is +inf → never trips
 	}
 	return phaseSpent >= phaseCap
+}
+
+// budgetExhaustedMessage words the exhaustion by cause: the wall-clock cap gets
+// an explicit timeout message (in the Go port cost never accrues, so this is
+// the only cap that actually trips), the cost cap keeps the historical
+// "Budget exhausted before <phase>" wording. Byte-identical to Python's
+// _budget_exhausted_message (§B.4).
+func (o *Orchestrator) budgetExhaustedMessage(phase string) string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.durationCapTripped {
+		return fmt.Sprintf("Review time budget exceeded (max_duration_seconds=%d) before %s",
+			o.config.Budget.MaxDurationSeconds, phase)
+	}
+	return "Budget exhausted before " + phase
 }
 
 // registerCost ports _register_cost∘_extract_cost. extractCost reads "cost_usd"

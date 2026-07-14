@@ -32,7 +32,7 @@ import (
 
 func (o *Orchestrator) runIntake(ctx context.Context) (schemas.IntakeResult, error) {
 	if o.budgetOrTimeoutExhausted("intake") {
-		return schemas.IntakeResult{}, budgetExhaustedErr("Budget exhausted before intake")
+		return schemas.IntakeResult{}, budgetExhaustedErr(o.budgetExhaustedMessage("intake"))
 	}
 
 	switch {
@@ -90,7 +90,7 @@ func (o *Orchestrator) runIntake(ctx context.Context) (schemas.IntakeResult, err
 
 func (o *Orchestrator) runAnatomy(ctx context.Context, intake schemas.IntakeResult) (schemas.AnatomyResult, error) {
 	if o.budgetOrTimeoutExhausted("anatomy") {
-		return schemas.AnatomyResult{}, budgetExhaustedErr("Budget exhausted before anatomy")
+		return schemas.AnatomyResult{}, budgetExhaustedErr(o.budgetExhaustedMessage("anatomy"))
 	}
 	if o.prData == nil {
 		return schemas.AnatomyResult{}, errPRDataNotInitialized
@@ -257,7 +257,7 @@ func (o *Orchestrator) runMetaSelectors(
 	reviewDepth, reviewerFeedback string,
 ) (schemas.ReviewPlan, error) {
 	if o.budgetOrTimeoutExhausted("meta_selectors") {
-		return schemas.ReviewPlan{}, budgetExhaustedErr("Budget exhausted before meta-selectors")
+		return schemas.ReviewPlan{}, budgetExhaustedErr(o.budgetExhaustedMessage("meta-selectors"))
 	}
 
 	lensFns := map[string]func(context.Context, reasoners.Deps, reasoners.MetaInput) (map[string]any, error){
