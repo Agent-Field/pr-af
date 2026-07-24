@@ -18,7 +18,7 @@ func CoverageGate(ctx context.Context, deps Deps, in CoverageGateInput) (map[str
 	prompt := prompts.CoverageGatePrompt(in.Anatomy, in.ReviewedClusters, in.DimensionNamesReviewed)
 
 	var gate schemas.CoverageGate
-	if err := aiStructured(ctx, deps.AI, prompt, prompts.CoverageGateSystem, schemas.CoverageGate{}, &gate); err != nil {
+	if err := aiStructured(ctx, deps.AI, prompt, prompts.CoverageGateSystem, strictAISchemas[strictAISchemaCoverageGate], &gate); err != nil {
 		return nil, err
 	}
 	gate.GapDescriptions = orEmptyStrs(gate.GapDescriptions)

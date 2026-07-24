@@ -26,7 +26,7 @@ func IntakePhase(ctx context.Context, deps Deps, in IntakeInput) (map[string]any
 		pr.Title, pr.Description, pr.Labels, pr.Author, filesChanged, languages, pr.CommitMessages,
 	)
 	var gate schemas.IntakeGate
-	if err := aiStructured(ctx, deps.AI, gatePrompt, prompts.IntakeGateSystem, schemas.IntakeGate{}, &gate); err != nil {
+	if err := aiStructured(ctx, deps.AI, gatePrompt, prompts.IntakeGateSystem, strictAISchemas[strictAISchemaIntakeGate], &gate); err != nil {
 		return nil, err
 	}
 

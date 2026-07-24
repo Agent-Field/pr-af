@@ -1,8 +1,10 @@
 package reasoners
 
 import (
+	"encoding/json"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -146,5 +148,67 @@ func TestRootTypeCountMatchesFixtures(t *testing.T) {
 	sort.Strings(names)
 	if len(names) != 13 {
 		t.Fatalf("expected 13 registered Run[T] destination fixtures, got %d: %v", len(names), names)
+	}
+}
+
+func TestStrictAndRegisteredSchemasDeclareArrayItems(t *testing.T) {
+	for name, raw := range strictAISchemas {
+		var schema any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("strict schema %s is invalid JSON: %v", name, err)
+		}
+		assertArrayItems(t, string(name), schema)
+	}
+
+	coverage := map[string]any{}
+	if err := json.Unmarshal(strictAISchemas[strictAISchemaCoverageGate], &coverage); err != nil {
+		t.Fatalf("decode coverage schema: %v", err)
+	}
+	properties, _ := coverage["properties"].(map[string]any)
+	gaps, _ := properties["gap_descriptions"].(map[string]any)
+	if gaps["type"] != "array" {
+		t.Fatalf("coverage gap_descriptions type = %v, want array", gaps["type"])
+	}
+	items, _ := gaps["items"].(map[string]any)
+	if items["type"] != "string" {
+		t.Fatalf("coverage gap_descriptions items type = %v, want string", items["type"])
+	}
+	if coverage["additionalProperties"] != false {
+		t.Fatalf("coverage additionalProperties = %v, want false", coverage["additionalProperties"])
+	}
+	required, _ := coverage["required"].([]any)
+	if !reflect.DeepEqual(required, []any{"fully_covered", "gap_descriptions", "confident"}) {
+		t.Fatalf("coverage required = %v", required)
+	}
+
+	for rt, fixture := range rootTypes {
+		schema, ok := harnessx.RegisteredSchema(rt)
+		if !ok {
+			t.Fatalf("%s (%s) is not registered", rt.Name(), fixture)
+		}
+		assertArrayItems(t, fixture, schema)
+	}
+}
+
+// assertArrayItems recursively walks schema maps and lists. Any actual array
+// schema must declare a non-nil items schema; lists used by composition keywords
+// are merely containers and are traversed like every other list.
+func assertArrayItems(t *testing.T, path string, node any) {
+	t.Helper()
+	switch node := node.(type) {
+	case map[string]any:
+		if node["type"] == "array" {
+			items, ok := node["items"]
+			if !ok || items == nil {
+				t.Errorf("%s: array schema has no items definition", path)
+			}
+		}
+		for key, value := range node {
+			assertArrayItems(t, path+"."+key, value)
+		}
+	case []any:
+		for i, value := range node {
+			assertArrayItems(t, path+"["+strconv.Itoa(i)+"]", value)
+		}
 	}
 }

@@ -48,6 +48,7 @@ type fakeAI struct {
 	text      string
 	gotPrompt string
 	gotSystem string
+	gotSchema json.RawMessage
 	calls     int
 }
 
@@ -64,6 +65,9 @@ func (f *fakeAI) AI(_ context.Context, prompt string, opts ...ai.Option) (*ai.Re
 		if msg.Role == "system" && len(msg.Content) > 0 {
 			f.gotSystem = msg.Content[0].Text
 		}
+	}
+	if req.ResponseFormat != nil && req.ResponseFormat.JSONSchema != nil {
+		f.gotSchema = append(f.gotSchema[:0], req.ResponseFormat.JSONSchema.Schema...)
 	}
 	return &ai.Response{
 		Choices: []ai.Choice{{
@@ -140,6 +144,9 @@ func TestIntakePhaseConfidentGate(t *testing.T) {
 	}
 	if aiSeam.gotSystem != prompts.IntakeGateSystem {
 		t.Fatalf("system prompt = %q", aiSeam.gotSystem)
+	}
+	if !reflect.DeepEqual(aiSeam.gotSchema, strictAISchemas[strictAISchemaIntakeGate]) {
+		t.Fatalf("intake schema = %s, want registered schema", aiSeam.gotSchema)
 	}
 	if out["pr_type"] != "feature" || out["complexity"] != "trivial" {
 		t.Fatalf("gate fields not propagated: %v", out)
@@ -851,6 +858,9 @@ func TestCoverageGate(t *testing.T) {
 	if aiSeam.gotSystem != prompts.CoverageGateSystem {
 		t.Fatalf("system = %q", aiSeam.gotSystem)
 	}
+	if !reflect.DeepEqual(aiSeam.gotSchema, strictAISchemas[strictAISchemaCoverageGate]) {
+		t.Fatalf("coverage schema = %s, want registered schema", aiSeam.gotSchema)
+	}
 	if !strings.Contains(aiSeam.gotPrompt, "Dimensions already reviewed: Dim A.") {
 		t.Fatalf("prompt = %q", aiSeam.gotPrompt)
 	}
@@ -924,7 +934,7 @@ func TestAIStructuredParseToleranceMirrorsPython(t *testing.T) {
 	t.Run("fenced JSON extracted on the first call, no retry", func(t *testing.T) {
 		f := &fakeAISeq{texts: []string{"```json\n{\"pr_type\":\"feature\",\"confident\":true}\n```"}}
 		var g gate
-		if err := aiStructured(context.Background(), f, "p", "s", gate{}, &g); err != nil {
+		if err := aiStructured(context.Background(), f, "p", "s", strictAISchemas[strictAISchemaIntakeGate], &g); err != nil {
 			t.Fatalf("aiStructured: %v", err)
 		}
 		if f.calls != 1 || g.PrType != "feature" || !g.Confident {
@@ -935,7 +945,7 @@ func TestAIStructuredParseToleranceMirrorsPython(t *testing.T) {
 	t.Run("malformed first response retries the LLM call", func(t *testing.T) {
 		f := &fakeAISeq{texts: []string{"sorry, no data", `{"pr_type":"fix","confident":false}`}}
 		var g gate
-		if err := aiStructured(context.Background(), f, "p", "s", gate{}, &g); err != nil {
+		if err := aiStructured(context.Background(), f, "p", "s", strictAISchemas[strictAISchemaIntakeGate], &g); err != nil {
 			t.Fatalf("aiStructured: %v", err)
 		}
 		if f.calls != 2 || g.PrType != "fix" {
@@ -946,7 +956,7 @@ func TestAIStructuredParseToleranceMirrorsPython(t *testing.T) {
 	t.Run("all attempts malformed -> 3 calls and the Python error string", func(t *testing.T) {
 		f := &fakeAISeq{texts: []string{"garbage"}}
 		var g gate
-		err := aiStructured(context.Background(), f, "p", "s", gate{}, &g)
+		err := aiStructured(context.Background(), f, "p", "s", strictAISchemas[strictAISchemaIntakeGate], &g)
 		if err == nil || !strings.HasPrefix(err.Error(), "Could not parse structured response: ") {
 			t.Fatalf("err = %v, want Could-not-parse prefix", err)
 		}
@@ -958,7 +968,7 @@ func TestAIStructuredParseToleranceMirrorsPython(t *testing.T) {
 	t.Run("API error is not parse-retried", func(t *testing.T) {
 		f := &fakeAISeq{err: errors.New("boom")}
 		var g gate
-		if err := aiStructured(context.Background(), f, "p", "s", gate{}, &g); err == nil || err.Error() != "boom" {
+		if err := aiStructured(context.Background(), f, "p", "s", strictAISchemas[strictAISchemaIntakeGate], &g); err == nil || err.Error() != "boom" {
 			t.Fatalf("err = %v, want boom", err)
 		}
 		if f.calls != 1 {
