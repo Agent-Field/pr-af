@@ -11,10 +11,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Agent-Field/pr-af/go/internal/config"
+	"github.com/Agent-Field/pr-af/go/internal/github"
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
 )
 
@@ -33,6 +35,57 @@ func fixedClockOrch(t *testing.T) *Orchestrator {
 		{Lens: "mechanical", Dimensions: []schemas.ReviewDimension{{ID: "m1", Name: "C"}}, Confidence: 0.6},
 	}
 	return o
+}
+
+type ownPRFallbackGH struct {
+	reviews []schemas.GitHubReview
+}
+
+func (g *ownPRFallbackGH) ParsePRURL(string) (string, string, int, error) {
+	return "", "", 0, nil
+}
+
+func (g *ownPRFallbackGH) FetchPR(context.Context, string, string, int) (schemas.GitHubPRData, error) {
+	return schemas.GitHubPRData{}, nil
+}
+
+func (g *ownPRFallbackGH) PostReview(_ context.Context, _ string, _ string, _ int, review schemas.GitHubReview, _ string) (map[string]any, error) {
+	g.reviews = append(g.reviews, review)
+	if len(g.reviews) == 1 {
+		return nil, &github.APIError{StatusCode: 422, Body: "review cannot be submitted on your own pull request"}
+	}
+	return map[string]any{"id": 42}, nil
+}
+
+func TestPostReview_OwnPR422FallsBackToComment(t *testing.T) {
+	gh := &ownPRFallbackGH{}
+	o := New(Deps{App: &fakeApp{}, GH: gh}, schemas.ReviewInput{}, config.DefaultReviewConfig())
+	o.prData = &schemas.GitHubPRData{Owner: "o", Repo: "r", Number: 7, HeadSHA: "sha"}
+	comments := []schemas.GitHubComment{{Path: "a.go", Line: 3, Body: "comment"}}
+
+	o.postReview(context.Background(), schemas.GitHubReview{Body: "initial", Event: "REQUEST_CHANGES"}, "fallback", comments)
+
+	if len(gh.reviews) != 2 {
+		t.Fatalf("PostReview calls = %d, want 2", len(gh.reviews))
+	}
+	if gh.reviews[0].Event != "REQUEST_CHANGES" {
+		t.Errorf("initial event = %q, want REQUEST_CHANGES", gh.reviews[0].Event)
+	}
+	if got := gh.reviews[1]; got.Event != "COMMENT" || got.Body != "fallback" || !equalComments(got.Comments, comments) {
+		t.Errorf("fallback review = %#v, want COMMENT with fallback body and comments", got)
+	}
+}
+
+func equalComments(a, b []schemas.GitHubComment) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestSummaryGoldenByteExact(t *testing.T) {
@@ -77,8 +130,9 @@ func TestSummaryGoldenByteExact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != string(want) {
-		reportFirstDiff(t, string(want), got)
+	wantSummary := strings.ReplaceAll(string(want), "\r\n", "\n")
+	if got != wantSummary {
+		reportFirstDiff(t, wantSummary, got)
 	}
 }
 

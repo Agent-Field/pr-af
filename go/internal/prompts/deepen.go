@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 )
@@ -48,7 +47,7 @@ func renderPatchesText(patches []StrPair) string {
 func diffRef(patches []StrPair, repoPath, fileName string) string {
 	text := renderPatchesText(patches)
 	if utf8.RuneCountInString(text) > 9000 && repoPath != "" {
-		fp := filepath.Join(repoPath, ".pr-af-context", fileName)
+		fp := contextPath(repoPath, ".pr-af-context", fileName)
 		return "Changed-code diffs written to: " + fp + "\nRead it for the full set of hunks."
 	}
 	return "## Changed code (diffs)\n\n" + text

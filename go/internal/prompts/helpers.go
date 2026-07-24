@@ -21,10 +21,19 @@ package prompts
 
 import (
 	"math"
+	"path"
 	"reflect"
 	"strconv"
 	"strings"
 )
+
+// contextPath renders repository-relative context references with Python's
+// slash separator on every host. These paths are prompt text, not filesystem
+// operations; writers still use filepath.Join at their call sites.
+func contextPath(repoPath string, elems ...string) string {
+	parts := append([]string{strings.ReplaceAll(repoPath, "\\", "/")}, elems...)
+	return path.Join(parts...)
+}
 
 // ---------------------------------------------------------------------------
 // Python-parity scalar/list formatting.

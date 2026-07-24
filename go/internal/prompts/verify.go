@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"path/filepath"
 	"unicode/utf8"
 
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
@@ -89,7 +88,7 @@ func EvidenceVerifierPrompt(findings []schemas.ReviewFinding, evidenceMap map[st
 
 	var findingsRef string
 	if utf8.RuneCountInString(findingsText) > 12000 && repoPath != "" {
-		fp := filepath.Join(repoPath, ".pr-af-context", "verification_findings.json")
+		fp := contextPath(repoPath, ".pr-af-context", "verification_findings.json")
 		findingsRef = "Findings with extracted code written to: " + fp + "\n" +
 			"Read this file for the full list of findings and their extracted code context."
 	} else {

@@ -53,6 +53,8 @@ import (
 
 const defaultBaseURL = "https://api.github.com"
 
+const postReviewMaxAttempts = 3
+
 var prURLRe = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)`)
 
 // APIError is returned for any GitHub response with status >= 400. It carries
@@ -506,15 +508,41 @@ func (c *client) PostReview(ctx context.Context, owner, repo string, number int,
 	if err != nil {
 		return nil, err
 	}
-	body, err := c.request(ctx, http.MethodPost,
-		fmt.Sprintf("%s/repos/%s/%s/pulls/%d/reviews", c.baseURL, owner, repo, number),
-		authHeaders, payload, 60*time.Second)
-	if err != nil {
-		return nil, err
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/reviews", c.baseURL, owner, repo, number)
+
+	var lastErr error
+	for attempt := 0; attempt < postReviewMaxAttempts; attempt++ {
+		body, err := c.request(ctx, http.MethodPost, endpoint, authHeaders, payload, 60*time.Second)
+		if err == nil {
+			var result map[string]any
+			if err := json.Unmarshal(body, &result); err != nil {
+				return nil, err
+			}
+			return result, nil
+		}
+		if !isRetryablePostReviewError(err) {
+			return nil, err
+		}
+
+		lastErr = err
+		if attempt == postReviewMaxAttempts-1 {
+			break
+		}
+		if err := c.sleep(ctx, time.Duration(1<<(attempt+1))*time.Second); err != nil {
+			return nil, err
+		}
 	}
-	var result map[string]any
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+	return nil, lastErr
+}
+
+// isRetryablePostReviewError reports whether a review creation failure is
+// transient. Client errors are deliberately excluded so the orchestrator can
+// retain ownership of its semantic 422 own-PR fallback.
+func isRetryablePostReviewError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode >= 500 && apiErr.StatusCode <= 599
 	}
-	return result, nil
+	var transportErr *transportError
+	return errors.As(err, &transportErr)
 }

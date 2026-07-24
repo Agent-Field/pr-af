@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"path/filepath"
 	"unicode/utf8"
 
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
@@ -95,7 +94,7 @@ func AdversaryPrompt(findings []schemas.ReviewFinding, aiGeneratedConfidence flo
 
 	var findingsRef string
 	if utf8.RuneCountInString(summary) > 10000 && repoPath != "" {
-		fp := filepath.Join(repoPath, ".pr-af-context", "adversary_findings.json")
+		fp := contextPath(repoPath, ".pr-af-context", "adversary_findings.json")
 		findingsRef = "Full findings with ground-truth evidence written to: " + fp + "\n" +
 			"Read this file for complete finding details and code evidence."
 	} else {

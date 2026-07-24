@@ -272,7 +272,7 @@ func findFunctionCallers(ctx context.Context, repoPath, functionName, excludeFil
 	args := append([]string{"-RInE", pattern, "."}, skipDirGrepArgs...)
 	stdout, ran := runGrep(ctx, repoPath, args)
 	if !ran {
-		return []string{}
+		stdout = fallbackFunctionGrep(repoPath, pattern)
 	}
 
 	normalizedExclude := normalizeRelativePath(repoPath, excludeFile)
@@ -444,7 +444,11 @@ func buildImportContext(ctx context.Context, repoPath, filePath string) string {
 	if moduleName != "" {
 		regex := `^\s*(?:from\s+` + reEscape(moduleName) + `\b|import\s+` + reEscape(moduleName) + `\b)`
 		args := append([]string{"-RIlE", regex, ".", "--include=*.py"}, skipDirGrepArgs...)
-		if stdout, ran := runGrep(ctx, repoPath, args); ran {
+		stdout, ran := runGrep(ctx, repoPath, args)
+		if !ran {
+			stdout = fallbackImportGrep(repoPath, regex)
+		}
+		{
 			for _, rawPath := range splitLines(stdout) {
 				rel := normalizeRelativePath(repoPath, rawPath)
 				if rel != normalized {
@@ -788,6 +792,75 @@ func runGrep(ctx context.Context, repoPath string, args []string) (string, bool)
 		return "", false // could not start (e.g. grep not found) == OSError
 	}
 	return out.String(), true
+}
+
+// The production implementation follows Python by using grep when available.
+// Windows development environments commonly lack it, so retain equivalent
+// caller/import discovery with a small filesystem fallback.
+func fallbackFunctionGrep(repoPath, pattern string) string {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return ""
+	}
+	var matches []string
+	forEachRepoFile(repoPath, func(rel, abs string) {
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			return
+		}
+		for lineNo, line := range splitLines(string(data)) {
+			if re.MatchString(line) {
+				matches = append(matches, rel+":"+strconv.Itoa(lineNo+1)+":"+line)
+			}
+		}
+	})
+	return strings.Join(matches, "\n")
+}
+
+func fallbackImportGrep(repoPath, pattern string) string {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return ""
+	}
+	var matches []string
+	forEachRepoFile(repoPath, func(rel, abs string) {
+		if !strings.HasSuffix(rel, ".py") {
+			return
+		}
+		data, err := os.ReadFile(abs)
+		if err == nil && re.Match(data) {
+			matches = append(matches, rel)
+		}
+	})
+	return strings.Join(matches, "\n")
+}
+
+func forEachRepoFile(repoPath string, visit func(rel, abs string)) {
+	_ = filepath.WalkDir(repoPath, func(abs string, d os.DirEntry, err error) error {
+		if err != nil || d == nil {
+			return nil
+		}
+		if d.IsDir() {
+			if abs != repoPath && isSkippedGrepDir(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(repoPath, abs)
+		if err == nil {
+			visit(filepath.ToSlash(rel), abs)
+		}
+		return nil
+	})
+}
+
+func isSkippedGrepDir(name string) bool {
+	for _, skipped := range []string{".git", "node_modules", "__pycache__", ".venv", "vendor", "venv"} {
+		if name == skipped {
+			return true
+		}
+	}
+	return false
 }
 
 // readFileLines ports _read_file_lines (minus the perf cache): the file split

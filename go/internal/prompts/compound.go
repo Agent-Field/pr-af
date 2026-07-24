@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -80,7 +79,7 @@ func CompoundFinderPrompt(findings []schemas.ReviewFinding, repoPath string, evi
 
 	var findingsRef string
 	if utf8.RuneCountInString(summary) > 10000 && repoPath != "" {
-		fp := filepath.Join(repoPath, ".pr-af-context", "compound_cluster_findings.json")
+		fp := contextPath(repoPath, ".pr-af-context", "compound_cluster_findings.json")
 		findingsRef = "Cluster findings and evidence written to: " + fp +
 			"\nRead this file for complete compound-analysis context."
 	} else {

@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -400,7 +401,10 @@ type postRec struct {
 	mu       sync.Mutex
 	auth     string
 	body     []byte
+	bodies   [][]byte
+	calls    int
 	status   int
+	statusFn func(call int) int
 	respBody string
 }
 
@@ -412,7 +416,13 @@ func newPostServer(t *testing.T, rec *postRec) *httptest.Server {
 		rec.mu.Lock()
 		rec.auth = r.Header.Get("Authorization")
 		rec.body = b
+		rec.bodies = append(rec.bodies, append([]byte(nil), b...))
+		rec.calls++
+		call := rec.calls
 		status := rec.status
+		if rec.statusFn != nil {
+			status = rec.statusFn(call)
+		}
 		respBody := rec.respBody
 		rec.mu.Unlock()
 		if status >= 400 {
@@ -420,7 +430,10 @@ func newPostServer(t *testing.T, rec *postRec) *httptest.Server {
 			_, _ = io.WriteString(w, respBody)
 			return
 		}
-		_, _ = io.WriteString(w, `{"id":42,"state":"COMMENTED"}`)
+		if respBody == "" {
+			respBody = `{"id":42,"state":"COMMENTED"}`
+		}
+		_, _ = io.WriteString(w, respBody)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -563,6 +576,221 @@ func TestPostReview_422TypedError(t *testing.T) {
 	}
 	if !strings.Contains(apiErr.Body, "own pull request") {
 		t.Errorf("body does not carry the 422 reason: %q", apiErr.Body)
+	}
+}
+
+func TestPostReview_RetriesTransientServerFailure(t *testing.T) {
+	rec := &postRec{statusFn: func(call int) int {
+		if call == 1 {
+			return http.StatusGatewayTimeout
+		}
+		return http.StatusOK
+	}}
+	srv := newPostServer(t, rec)
+	c := testClient(srv.URL, "test-token")
+	var delays []time.Duration
+	c.sleepFn = func(_ context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	}
+
+	result, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{Body: "b", Event: "COMMENT"}, "sha")
+	if err != nil {
+		t.Fatalf("PostReview: %v", err)
+	}
+	if got, _ := result["id"].(float64); got != 42 {
+		t.Errorf("result id = %v, want 42", result["id"])
+	}
+	rec.mu.Lock()
+	calls := rec.calls
+	bodies := append([][]byte(nil), rec.bodies...)
+	rec.mu.Unlock()
+	if calls != 2 {
+		t.Errorf("POST calls = %d, want 2", calls)
+	}
+	if len(bodies) != 2 || !bytes.Equal(bodies[0], bodies[1]) {
+		t.Errorf("retry payloads = %q, want two identical payloads", bodies)
+	}
+	if want := []time.Duration{2 * time.Second}; !equalDurations(delays, want) {
+		t.Errorf("backoff delays = %v, want %v", delays, want)
+	}
+}
+
+func TestPostReview_RetriesExhausted(t *testing.T) {
+	rec := &postRec{status: http.StatusInternalServerError, respBody: `{"message":"boom"}`}
+	srv := newPostServer(t, rec)
+	c := testClient(srv.URL, "test-token")
+	var delays []time.Duration
+	c.sleepFn = func(_ context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	}
+
+	_, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{}, "")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("error = %v, want final *APIError 500", err)
+	}
+	rec.mu.Lock()
+	calls := rec.calls
+	rec.mu.Unlock()
+	if calls != postReviewMaxAttempts {
+		t.Errorf("POST calls = %d, want %d", calls, postReviewMaxAttempts)
+	}
+	if want := []time.Duration{2 * time.Second, 4 * time.Second}; !equalDurations(delays, want) {
+		t.Errorf("backoff delays = %v, want %v", delays, want)
+	}
+}
+
+func TestPostReview_DoesNotRetry422(t *testing.T) {
+	rec := &postRec{status: http.StatusUnprocessableEntity, respBody: `{"message":"unprocessable"}`}
+	srv := newPostServer(t, rec)
+	c := testClient(srv.URL, "test-token")
+	var delays []time.Duration
+	c.sleepFn = func(_ context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	}
+
+	_, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{}, "")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("error = %v, want *APIError 422", err)
+	}
+	rec.mu.Lock()
+	calls := rec.calls
+	rec.mu.Unlock()
+	if calls != 1 || len(delays) != 0 {
+		t.Errorf("calls/delays = %d/%v, want 1/none", calls, delays)
+	}
+}
+
+func TestPostReview_DoesNotRetryOtherClientErrors(t *testing.T) {
+	for _, status := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			rec := &postRec{status: status}
+			srv := newPostServer(t, rec)
+			c := testClient(srv.URL, "test-token")
+			var sleeps int
+			c.sleepFn = func(context.Context, time.Duration) error {
+				sleeps++
+				return nil
+			}
+
+			_, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{}, "")
+			var apiErr *APIError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != status {
+				t.Fatalf("error = %v, want *APIError %d", err, status)
+			}
+			rec.mu.Lock()
+			calls := rec.calls
+			rec.mu.Unlock()
+			if calls != 1 || sleeps != 0 {
+				t.Errorf("calls/sleeps = %d/%d, want 1/0", calls, sleeps)
+			}
+		})
+	}
+}
+
+func TestIsRetryablePostReviewError_StatusBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   bool
+	}{
+		{name: "below server errors", status: http.StatusRequestTimeout, want: false},
+		{name: "first server error", status: http.StatusInternalServerError, want: true},
+		{name: "last server error", status: 599, want: true},
+		{name: "above server errors", status: 600, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := &APIError{StatusCode: tc.status}
+			if got := isRetryablePostReviewError(err); got != tc.want {
+				t.Errorf("isRetryablePostReviewError(status %d) = %t, want %t", tc.status, got, tc.want)
+			}
+		})
+	}
+
+	if !isRetryablePostReviewError(&transportError{err: errors.New("connection reset")}) {
+		t.Error("transport error should be retryable")
+	}
+	if isRetryablePostReviewError(errors.New("payload marshal failure")) {
+		t.Error("ordinary local error should not be retryable")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestPostReview_RetriesTransportFailure(t *testing.T) {
+	c := testClient("http://github.test", "test-token")
+	var calls int
+	c.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("temporary network failure")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"id":42}`)),
+		}, nil
+	})}
+	var delays []time.Duration
+	c.sleepFn = func(_ context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	}
+
+	if _, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{}, ""); err != nil {
+		t.Fatalf("PostReview: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("transport calls = %d, want 2", calls)
+	}
+	if want := []time.Duration{2 * time.Second}; !equalDurations(delays, want) {
+		t.Errorf("backoff delays = %v, want %v", delays, want)
+	}
+}
+
+func TestPostReview_StopsWhenBackoffCanceled(t *testing.T) {
+	rec := &postRec{status: http.StatusBadGateway}
+	srv := newPostServer(t, rec)
+	c := testClient(srv.URL, "test-token")
+	c.sleepFn = func(context.Context, time.Duration) error { return context.Canceled }
+
+	_, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{}, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	rec.mu.Lock()
+	calls := rec.calls
+	rec.mu.Unlock()
+	if calls != 1 {
+		t.Errorf("POST calls = %d, want 1 after canceled backoff", calls)
+	}
+}
+
+func TestPostReview_MalformedSuccessResponseDoesNotRetry(t *testing.T) {
+	rec := &postRec{respBody: "not-json"}
+	srv := newPostServer(t, rec)
+	c := testClient(srv.URL, "test-token")
+	var sleeps int
+	c.sleepFn = func(context.Context, time.Duration) error {
+		sleeps++
+		return nil
+	}
+
+	_, err := c.PostReview(context.Background(), "o", "r", 7, schemas.GitHubReview{}, "")
+	if err == nil {
+		t.Fatal("expected JSON decode error")
+	}
+	rec.mu.Lock()
+	calls := rec.calls
+	rec.mu.Unlock()
+	if calls != 1 || sleeps != 0 {
+		t.Errorf("calls/sleeps = %d/%d, want 1/0", calls, sleeps)
 	}
 }
 
@@ -785,6 +1013,18 @@ func TestNewClient_TokenCascade(t *testing.T) {
 // ---- small helpers ---------------------------------------------------------
 
 func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalDurations(a, b []time.Duration) bool {
 	if len(a) != len(b) {
 		return false
 	}
