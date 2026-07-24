@@ -161,6 +161,7 @@ func (o *Orchestrator) generateOutput(
 	total := o.totalCostUSD
 	exhausted := o.budgetExhausted
 	o.mu.Unlock()
+	dimensionStats := o.dimensionStats()
 	metadata := schemas.ReviewMetadata{
 		Intake:  intakeMap,
 		Anatomy: anatomyMap,
@@ -172,8 +173,9 @@ func (o *Orchestrator) generateOutput(
 			"max_cost_usd":         o.config.Budget.MaxCostUSD,
 			"max_duration_seconds": o.config.Budget.MaxDurationSeconds,
 		},
-		AgentInvocations: o.invocations(),
-		PhasesCompleted:  append([]string(nil), phaseOrder...),
+		AgentInvocations:   o.invocations(),
+		PhasesCompleted:    append([]string(nil), phaseOrder...),
+		DegradedDimensions: dimensionStats.Failed,
 	}
 
 	return schemas.ReviewResult{
@@ -374,6 +376,9 @@ func (o *Orchestrator) formatSummary(
 			emojis["nitpick"], bySeverity["nitpick"]),
 		"",
 	)
+	if degraded := o.dimensionStats().Failed; degraded > 0 {
+		lines = append(lines, fmt.Sprintf("> Degraded dimensions: %d", degraded), "")
+	}
 
 	if intake != nil {
 		lines = append(lines, "<details>", "<summary><b>PR Overview</b></summary>", "", intake.PrSummary, "", "</details>", "")

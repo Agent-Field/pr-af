@@ -66,7 +66,8 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 	if err != nil {
 		return nil, err
 	}
-	if res == nil || res.Parsed == nil {
+	schemaParseFailed := res == nil || res.Parsed == nil
+	if schemaParseFailed {
 		// Schema parse failed entirely — don't silently report "0 findings",
 		// which is indistinguishable from a clean review. Make it visible.
 		errMsg := "None"
@@ -79,6 +80,10 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 		)
 	}
 	result := *parsed
+	if schemaParseFailed {
+		result.Findings = nil
+		result.SubReviews = nil
+	}
 	for i := range result.Findings {
 		result.Findings[i].Tags = orEmptyStrs(result.Findings[i].Tags)
 	}
@@ -106,8 +111,9 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 		return nil, err
 	}
 	return map[string]any{
-		"findings":      findings,
-		"sub_reviews":   subReviewDicts,
-		"current_depth": in.CurrentDepth,
+		"findings":            findings,
+		"sub_reviews":         subReviewDicts,
+		"current_depth":       in.CurrentDepth,
+		"schema_parse_failed": schemaParseFailed,
 	}, nil
 }

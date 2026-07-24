@@ -375,7 +375,7 @@ func TestMetaSelectorParseFail(t *testing.T) {
 
 // --- review_dimension -------------------------------------------------------------
 
-var reviewDimKeys = []string{"findings", "sub_reviews", "current_depth"}
+var reviewDimKeys = []string{"findings", "sub_reviews", "current_depth", "schema_parse_failed"}
 
 var findingDumpKeys = []string{
 	"dimension_id", "dimension_name", "file_path", "line_start", "line_end",
@@ -404,6 +404,9 @@ func TestReviewDimensionHappyPath(t *testing.T) {
 	wantKeys(t, out, reviewDimKeys...)
 	if out["current_depth"] != 1 {
 		t.Fatalf("current_depth = %v", out["current_depth"])
+	}
+	if out["schema_parse_failed"] != false {
+		t.Fatalf("schema_parse_failed = %v, want false", out["schema_parse_failed"])
 	}
 	findings := out["findings"].([]any)
 	if len(findings) != 1 {
@@ -466,6 +469,9 @@ func TestReviewDimensionParseFail(t *testing.T) {
 	}
 	if out["current_depth"] != 0 {
 		t.Fatalf("current_depth = %v", out["current_depth"])
+	}
+	if out["schema_parse_failed"] != true {
+		t.Fatalf("schema_parse_failed = %v, want true", out["schema_parse_failed"])
 	}
 }
 
