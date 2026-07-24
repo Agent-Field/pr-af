@@ -17,7 +17,7 @@ var configEnvKeys = []string{
 	"PR_AF_PROVIDER", "PR_AF_MODEL", "PR_AF_AI_MODEL",
 	"PR_AF_MAX_TURNS", "PR_AF_AI_MAX_RETRIES",
 	"PR_AF_AI_INITIAL_BACKOFF_SECONDS", "PR_AF_AI_MAX_BACKOFF_SECONDS",
-	"PR_AF_OPENCODE_BIN", "PR_AF_OPENCODE_SERVER",
+	"PR_AF_OPENCODE_BIN", "PR_AF_HARNESS_BIN", "PR_AF_OPENCODE_SERVER",
 	"PR_AF_MAX_COST_USD", "PR_AF_MAX_DURATION_SECONDS",
 	"PR_AF_EVIDENCE_PACK", "PR_AF_POSTWORTHINESS_GATE",
 	"HAX_API_KEY", "AGENTFIELD_APPROVAL_USER_ID",
@@ -154,6 +154,9 @@ func TestAIConfigFromEnvDefaults(t *testing.T) {
 	if c.OpencodeBin != "opencode" {
 		t.Errorf("OpencodeBin = %q, want opencode", c.OpencodeBin)
 	}
+	if c.HarnessBin != "" {
+		t.Errorf("HarnessBin = %q, want empty when unset", c.HarnessBin)
+	}
 	if c.OpencodeServer != nil {
 		t.Errorf("OpencodeServer = %v, want nil", *c.OpencodeServer)
 	}
@@ -168,6 +171,7 @@ func TestAIConfigFromEnvOverrides(t *testing.T) {
 	t.Setenv("PR_AF_AI_INITIAL_BACKOFF_SECONDS", "1.5")
 	t.Setenv("PR_AF_AI_MAX_BACKOFF_SECONDS", "16")
 	t.Setenv("PR_AF_OPENCODE_BIN", "/usr/bin/opencode")
+	t.Setenv("PR_AF_HARNESS_BIN", "C:/bin/provider-custom")
 	t.Setenv("PR_AF_OPENCODE_SERVER", "http://localhost:9000")
 
 	c := mustAIConfig(t)
@@ -190,6 +194,9 @@ func TestAIConfigFromEnvOverrides(t *testing.T) {
 	if c.OpencodeServer == nil || *c.OpencodeServer != "http://localhost:9000" {
 		t.Errorf("OpencodeServer = %v", c.OpencodeServer)
 	}
+	if c.HarnessBin != "C:/bin/provider-custom" {
+		t.Errorf("HarnessBin = %q, want exact configured value", c.HarnessBin)
+	}
 
 	// PR_AF_AI_MODEL, when set, wins over PR_AF_MODEL for AIModel only.
 	t.Setenv("PR_AF_AI_MODEL", "anthropic/claude-x")
@@ -199,6 +206,14 @@ func TestAIConfigFromEnvOverrides(t *testing.T) {
 	}
 	if c2.HarnessModel != "openrouter/moonshotai/kimi-k2.5" {
 		t.Errorf("HarnessModel should not be affected by PR_AF_AI_MODEL: %q", c2.HarnessModel)
+	}
+}
+
+func TestAIConfigFromEnvEmptyHarnessBinIsNoOverride(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("PR_AF_HARNESS_BIN", "")
+	if got := mustAIConfig(t).HarnessBin; got != "" {
+		t.Errorf("HarnessBin = %q, want empty for explicit empty environment value", got)
 	}
 }
 

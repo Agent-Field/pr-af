@@ -38,6 +38,8 @@ user_environment:
     - name: PR_AF_MODEL
       description: harness model
       default: openrouter/moonshotai/kimi-k2.5
+    - name: PR_AF_HARNESS_BIN
+      description: optional executable override for every harness provider (unset uses provider defaults)
     - name: PR_AF_MAX_COST_USD
       description: per-run cost ceiling
       default: "2.0"

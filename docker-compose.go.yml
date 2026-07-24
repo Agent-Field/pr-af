@@ -42,6 +42,8 @@ services:
       - AGENT_CALLBACK_URL=http://pr-af-go:8007
       - PR_AF_PROVIDER=${PR_AF_PROVIDER:-opencode}
       - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      # Optional generic executable override; leave unset for provider defaults.
+      - PR_AF_HARNESS_BIN
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GH_TOKEN=${GH_TOKEN:-}
       - XDG_DATA_HOME=/home/praf/.local/share

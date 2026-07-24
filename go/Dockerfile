@@ -39,6 +39,8 @@ FROM debian:bookworm-slim AS runtime
 
 ARG OPENCODE_VERSION=1.17.15
 
+# PR_AF_HARNESS_BIN remains unset by default; set it only to override every
+# provider's executable path.
 ENV AGENTFIELD_SERVER=http://agentfield:8080 \
     PR_AF_PROVIDER=opencode \
     PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5 \

@@ -98,6 +98,30 @@ func defaultRunReview(ctx context.Context, deps orch.Deps, in schemas.ReviewInpu
 	return orch.New(deps, in, cfg).Run(ctx)
 }
 
+// harnessConfig maps the resolved AI integration configuration to the SDK
+// harness configuration. An empty BinPath lets the SDK select the configured
+// provider's default executable.
+func harnessConfig(c config.AIIntegrationConfig) *agent.HarnessConfig {
+	return &agent.HarnessConfig{
+		Provider:       c.Provider,
+		Model:          c.HarnessModel,
+		MaxTurns:       c.MaxTurns,
+		PermissionMode: "auto",
+		Env:            c.ProviderEnv(),
+		BinPath:        resolvedHarnessBin(c),
+	}
+}
+
+func resolvedHarnessBin(c config.AIIntegrationConfig) string {
+	if c.HarnessBin != "" {
+		return c.HarnessBin
+	}
+	if c.Provider == "opencode" {
+		return c.OpencodeBin
+	}
+	return ""
+}
+
 // BuildAgent constructs the PR-AF agent from the environment exactly as the
 // Python entry point does (app.py:26-50):
 //
@@ -140,14 +164,7 @@ func BuildAgent(defaultNodeID, defaultPort, description string) (*Node, error) {
 		ListenAddress: ":" + port,
 		PublicURL:     os.Getenv("AGENT_CALLBACK_URL"),
 		CLIConfig:     &agent.CLIConfig{AppDescription: description},
-		HarnessConfig: &agent.HarnessConfig{
-			Provider:       aiConf.Provider,
-			Model:          aiConf.HarnessModel,
-			MaxTurns:       aiConf.MaxTurns,
-			PermissionMode: "auto",
-			Env:            aiConf.ProviderEnv(),
-			BinPath:        aiConf.OpencodeBin,
-		},
+		HarnessConfig: harnessConfig(aiConf),
 	}
 	if apiKey := os.Getenv("OPENROUTER_API_KEY"); apiKey != "" {
 		// Python's .ai() path runs through LiteLLM, which CONSUMES a leading

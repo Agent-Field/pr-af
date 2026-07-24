@@ -26,6 +26,7 @@ type AIIntegrationConfig struct {
 	InitialBackoffSeconds float64 `json:"initial_backoff_seconds"`
 	MaxBackoffSeconds     float64 `json:"max_backoff_seconds"`
 	OpencodeBin           string  `json:"opencode_bin"`
+	HarnessBin            string  `json:"harness_bin"`
 	OpencodeServer        *string `json:"opencode_server"`
 }
 
@@ -61,7 +62,9 @@ func AIConfigFromEnv() (AIIntegrationConfig, error) {
 		InitialBackoffSeconds: initialBackoff,
 		MaxBackoffSeconds:     maxBackoff,
 		OpencodeBin:           strEnv("PR_AF_OPENCODE_BIN", "opencode"),
-		OpencodeServer:        lookupPtr("PR_AF_OPENCODE_SERVER"),
+		// An empty generic binary override deliberately means no override.
+		HarnessBin:     strEnv("PR_AF_HARNESS_BIN", ""),
+		OpencodeServer: lookupPtr("PR_AF_OPENCODE_SERVER"),
 	}, nil
 }
 

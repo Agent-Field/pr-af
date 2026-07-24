@@ -1,8 +1,52 @@
 package node
 
 import (
+	"reflect"
 	"testing"
+
+	"github.com/Agent-Field/pr-af/go/internal/config"
 )
+
+func TestHarnessConfigProviderAwareBinary(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	cases := []struct {
+		name string
+		conf config.AIIntegrationConfig
+		want string
+	}{
+		{"codex uses SDK default", config.AIIntegrationConfig{Provider: "codex", OpencodeBin: "C:/bin/opencode-custom"}, ""},
+		{"opencode uses configured binary", config.AIIntegrationConfig{Provider: "opencode", OpencodeBin: "C:/bin/opencode-custom"}, "C:/bin/opencode-custom"},
+		{"generic override wins", config.AIIntegrationConfig{Provider: "codex", OpencodeBin: "C:/bin/opencode-custom", HarnessBin: "C:/bin/provider-custom"}, "C:/bin/provider-custom"},
+		{"generic override wins for opencode", config.AIIntegrationConfig{Provider: "opencode", OpencodeBin: "C:/bin/opencode-custom", HarnessBin: "C:/bin/provider-custom"}, "C:/bin/provider-custom"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := harnessConfig(tc.conf).BinPath; got != tc.want {
+				t.Errorf("BinPath = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHarnessConfigPreservesExistingFields(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", xdg)
+	for _, key := range []string{"OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GH_TOKEN"} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("OPENAI_API_KEY", "openai-key")
+	conf := config.AIIntegrationConfig{
+		Provider: "opencode", HarnessModel: "test-model", MaxTurns: 17,
+		OpencodeBin: "C:/bin/opencode-custom",
+	}
+	got := harnessConfig(conf)
+	if got.Provider != conf.Provider || got.Model != conf.HarnessModel || got.MaxTurns != conf.MaxTurns || got.PermissionMode != "auto" || got.BinPath != conf.OpencodeBin {
+		t.Errorf("harnessConfig fields = %+v", got)
+	}
+	if want := map[string]string{"OPENAI_API_KEY": "openai-key", "XDG_DATA_HOME": xdg}; !reflect.DeepEqual(got.Env, want) {
+		t.Errorf("Env = %#v, want %#v", got.Env, want)
+	}
+}
 
 // TestBuildAgentFromEnv is the main.go smoke: BuildAgent resolves node identity
 // from the environment (with the pr-af-go / 8007 defaults), constructs the agent
