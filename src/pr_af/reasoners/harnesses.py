@@ -260,13 +260,19 @@ async def intake_phase(pr_data: dict, depth: str = "standard") -> dict:
         default=str,
     )
 
-    gate_result = await router.app.ai(
-        f"Classify this pull request from metadata and diff footprint.\n\n{ai_input}",
-        system="Return pr_type, complexity, and confident only. Use the provided schema.",
-        schema=IntakeGate,
-    )
+    try:
+        gate_result = await router.app.ai(
+            f"Classify this pull request from metadata and diff footprint.\n\n{ai_input}",
+            system="Return pr_type, complexity, and confident only. Use the provided schema.",
+            schema=IntakeGate,
+        )
+    except Exception:
+        # Some providers/harnesses (e.g. GLM via an OpenAI-compatible endpoint)
+        # do not support the structured-output request .ai() issues. Rather than
+        # sink the whole review, fall through to the harness classifier below.
+        gate_result = None
 
-    if gate_result.confident:
+    if gate_result is not None and gate_result.confident:
         paths = [changed.path for changed in pr.changed_files]
         areas_touched = _extract_areas(paths)
         intake_result = IntakeResult(
@@ -1688,12 +1694,21 @@ async def coverage_gate(
         },
         default=str,
     )
-    gate = await router.app.ai(
+    coverage_prompt = (
         f"Determine whether review coverage is complete. "
         f"Compare reviewed cluster identifiers against all change clusters. "
         f"Dimensions already reviewed: {', '.join(dimension_names_reviewed or [])}. "
-        f"If gaps exist, return concise gap_descriptions.\n\n{context}",
-        system="Analyze the coverage state and return the structured result.",
-        schema=CoverageGate,
+        f"If gaps exist, return concise gap_descriptions.\n\n{context}"
     )
-    return gate.model_dump()
+    try:
+        gate = await router.app.ai(
+            coverage_prompt,
+            system="Analyze the coverage state and return the structured result.",
+            schema=CoverageGate,
+        )
+        return gate.model_dump()
+    except Exception:
+        # Structured output via .ai() may be unsupported by the configured
+        # provider; fall back to the harness so coverage still runs.
+        gate = await router.app.harness(coverage_prompt, schema=CoverageGate)
+        return gate.parsed.model_dump() if gate.parsed else {}
