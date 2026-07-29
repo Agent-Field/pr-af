@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -77,7 +76,7 @@ func ReviewDimensionPrompt(o ReviewDimensionOptions) string {
 		if len(parts) > 0 {
 			patchesText := strings.Join(parts, "\n\n")
 			if o.RepoPath != "" && utf8.RuneCountInString(patchesText) > 6000 {
-				pf := filepath.Join(o.RepoPath, ".pr-af-context", "review_dimension_diff_patches.md")
+				pf := contextPath(o.RepoPath, ".pr-af-context", "review_dimension_diff_patches.md")
 				diffSection = "## Diff Patches for Target Files\n\n" +
 					"Full diff patches written to: " + pf + "\n" +
 					"Read this file for detailed target-file patches.\n\n"
@@ -90,7 +89,7 @@ func ReviewDimensionPrompt(o ReviewDimensionOptions) string {
 	primedSection := ""
 	if o.PrimedCode != "" {
 		if o.RepoPath != "" && utf8.RuneCountInString(o.PrimedCode) > 6000 {
-			pf := filepath.Join(o.RepoPath, ".pr-af-context", "review_dimension_primed_code.md")
+			pf := contextPath(o.RepoPath, ".pr-af-context", "review_dimension_primed_code.md")
 			primedSection = "## Target-File Code (pre-read for you)\n\n" +
 				"The current content of your target files (with line numbers) and their import " +
 				"context is written to: " + pf + "\nRead that file FIRST — it is the code you would " +

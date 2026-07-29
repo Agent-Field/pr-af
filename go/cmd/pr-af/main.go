@@ -16,6 +16,7 @@
 //	PORT                listen port (default 8007)
 //	PR_AF_PROVIDER      harness provider (default opencode)
 //	PR_AF_MODEL         harness model (env wins over the code default)
+//	PR_AF_HARNESS_BIN   optional executable override for every harness provider
 //	OPENROUTER_API_KEY  LLM key — required for the .ai() gates; AIConfig is only
 //	                    attached when set (SDK rejects an empty key)
 //	GH_TOKEN            GitHub token for FetchPR/clone/PostReview

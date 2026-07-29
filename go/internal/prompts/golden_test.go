@@ -3,6 +3,7 @@ package prompts
 import (
 	"embed"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -17,7 +18,10 @@ func golden(t *testing.T, name string) string {
 	if err != nil {
 		t.Fatalf("read fixture %s: %v", name, err)
 	}
-	return string(b)
+	// Fixtures are checked out with CRLF on Windows when core.autocrlf is set,
+	// while prompt builders deliberately produce LF. Golden content is textual,
+	// so normalize the checkout representation before comparing it.
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
 }
 
 // assertGolden compares got against the named fixture byte-for-byte and, on

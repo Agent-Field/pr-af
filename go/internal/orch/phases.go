@@ -10,6 +10,7 @@ package orch
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -385,8 +386,9 @@ func dedupCrossMeta(dimensions []schemas.ReviewDimension) []schemas.ReviewDimens
 func (o *Orchestrator) collectParallelReview(ctx context.Context, plan schemas.ReviewPlan, feedback string) ([]schemas.ReviewFinding, error) {
 	ch := make(chan []schemas.ReviewFinding)
 	errc := make(chan error, 1)
+	stats := &dimensionParseStats{}
 	go func() {
-		err := o.runParallelReview(ctx, plan, ch, 0, feedback)
+		err := o.runParallelReview(ctx, plan, ch, 0, feedback, stats)
 		close(ch)
 		errc <- err
 	}()
@@ -394,7 +396,20 @@ func (o *Orchestrator) collectParallelReview(ctx context.Context, plan schemas.R
 	for batch := range ch {
 		out = append(out, batch...)
 	}
-	return out, <-errc
+	if err := <-errc; err != nil {
+		return nil, err
+	}
+	if err := allDimensionsSchemaFailed(stats.snapshot()); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func allDimensionsSchemaFailed(stats dimensionParseSnapshot) error {
+	if stats.Attempted > 0 && stats.Parseable == 0 && stats.Failed > 0 {
+		return fmt.Errorf("all review dimensions failed schema parsing (failed dimensions: %d)", stats.Failed)
+	}
+	return nil
 }
 
 // runParallelReview ports _run_parallel_review. It fans out one reviewer per
@@ -407,6 +422,7 @@ func (o *Orchestrator) runParallelReview(
 	ch chan<- []schemas.ReviewFinding,
 	currentDepth int,
 	feedback string,
+	stats *dimensionParseStats,
 ) error {
 	maxDepth := o.config.Budget.MaxReviewDepth
 	sem := semaphore.NewWeighted(int64(o.config.Budget.MaxConcurrentReviewers))
@@ -457,6 +473,8 @@ func (o *Orchestrator) runParallelReview(
 				patchArg = dimPatches
 			}
 
+			stats.recordAttempt()
+			o.recordDimensionAttempt()
 			resultRaw, err := o.rfns.reviewDim(gctx, o.reasonerDeps(), reasoners.ReviewDimensionInput{
 				ReviewPrompt:      dim.ReviewPrompt,
 				TargetFiles:       dim.TargetFiles,
@@ -477,6 +495,17 @@ func (o *Orchestrator) runParallelReview(
 			}
 			o.incInvocations(1)
 			o.registerCost("review", resultRaw)
+			schemaParseFailed := getBoolDefault(unwrap(resultRaw), "schema_parse_failed", false)
+			stats.recordResult(schemaParseFailed)
+			o.recordDimensionResult(schemaParseFailed)
+			if schemaParseFailed {
+				select {
+				case ch <- []schemas.ReviewFinding{}:
+				case <-gctx.Done():
+					return gctx.Err()
+				}
+				return nil
+			}
 
 			findings := o.extractFindings(resultRaw, dim)
 			select {
@@ -579,7 +608,11 @@ func (o *Orchestrator) streamReviewLayer(
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
 		defer close(ch)
-		return o.runParallelReview(gctx, plan, ch, 0, reviewerFeedback)
+		stats := &dimensionParseStats{}
+		if err := o.runParallelReview(gctx, plan, ch, 0, reviewerFeedback, stats); err != nil {
+			return err
+		}
+		return allDimensionsSchemaFailed(stats.snapshot())
 	})
 	g.Go(func() error {
 		var e error

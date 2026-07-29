@@ -228,5 +228,6 @@ func readFile(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(b)
+	// Git may apply core.autocrlf in temporary test repositories on Windows.
+	return strings.ReplaceAll(string(b), "\r\n", "\n")
 }

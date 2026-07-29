@@ -82,10 +82,11 @@ type ReviewResult struct {
 // intake/anatomy/plan/budget dicts and phases_completed list are collection
 // defaults in Python — construct them non-nil upstream to marshal as {} / [].
 type ReviewMetadata struct {
-	Intake           map[string]any `json:"intake"`
-	Anatomy          map[string]any `json:"anatomy"`
-	Plan             map[string]any `json:"plan"`
-	Budget           map[string]any `json:"budget"`
-	AgentInvocations int            `json:"agent_invocations"`
-	PhasesCompleted  []string       `json:"phases_completed"`
+	Intake             map[string]any `json:"intake"`
+	Anatomy            map[string]any `json:"anatomy"`
+	Plan               map[string]any `json:"plan"`
+	Budget             map[string]any `json:"budget"`
+	AgentInvocations   int            `json:"agent_invocations"`
+	PhasesCompleted    []string       `json:"phases_completed"`
+	DegradedDimensions int            `json:"degraded_dimensions"`
 }

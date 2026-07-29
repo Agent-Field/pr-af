@@ -126,12 +126,15 @@ type Orchestrator struct {
 	reviewID  string
 	startedAt time.Time
 
-	mu                 sync.Mutex // guards the counters below (mutated from fan-out goroutines)
-	totalCostUSD       float64
-	costBreakdown      map[string]float64
-	agentInvocations   int
-	budgetExhausted    bool
-	durationCapTripped bool // the wall-clock cap (not the cost cap) exhausted the budget
+	mu                        sync.Mutex // guards the counters below (mutated from fan-out goroutines)
+	totalCostUSD              float64
+	costBreakdown             map[string]float64
+	agentInvocations          int
+	budgetExhausted           bool
+	durationCapTripped        bool // the wall-clock cap (not the cost cap) exhausted the budget
+	reviewDimensionsAttempted int
+	reviewDimensionsParseable int
+	degradedDimensions        int
 
 	// Single-threaded-written state (set before/after fan-outs, read after joins).
 	prData                   *schemas.GitHubPRData
@@ -168,6 +171,71 @@ type Orchestrator struct {
 
 	// Reasoner-call seams (default to reasoners.*; streaming/order tests override).
 	rfns reasonerSeams
+}
+
+type dimensionParseStats struct {
+	mu        sync.Mutex
+	attempted int
+	parseable int
+	failed    int
+}
+
+type dimensionParseSnapshot struct {
+	Attempted int
+	Parseable int
+	Failed    int
+}
+
+func (s *dimensionParseStats) recordAttempt() {
+	s.mu.Lock()
+	s.attempted++
+	s.mu.Unlock()
+}
+
+func (s *dimensionParseStats) recordResult(schemaParseFailed bool) {
+	s.mu.Lock()
+	if schemaParseFailed {
+		s.failed++
+	} else {
+		s.parseable++
+	}
+	s.mu.Unlock()
+}
+
+func (s *dimensionParseStats) snapshot() dimensionParseSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return dimensionParseSnapshot{Attempted: s.attempted, Parseable: s.parseable, Failed: s.failed}
+}
+
+func (o *Orchestrator) resetDimensionStats() {
+	o.mu.Lock()
+	o.reviewDimensionsAttempted = 0
+	o.reviewDimensionsParseable = 0
+	o.degradedDimensions = 0
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) recordDimensionAttempt() {
+	o.mu.Lock()
+	o.reviewDimensionsAttempted++
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) recordDimensionResult(schemaParseFailed bool) {
+	o.mu.Lock()
+	if schemaParseFailed {
+		o.degradedDimensions++
+	} else {
+		o.reviewDimensionsParseable++
+	}
+	o.mu.Unlock()
+}
+
+func (o *Orchestrator) dimensionStats() dimensionParseSnapshot {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return dimensionParseSnapshot{Attempted: o.reviewDimensionsAttempted, Parseable: o.reviewDimensionsParseable, Failed: o.degradedDimensions}
 }
 
 // reasonerSeams bundles the reasoner entry points the pipeline invokes so tests
@@ -339,6 +407,7 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 	reviewerFeedback := ""
 
 	for revisionIter := 0; revisionIter <= maxRevisions; revisionIter++ {
+		o.resetDimensionStats()
 		plan, scored, err := o.runReviewPhasesFn(ctx, intake, anatomy, reviewDepth, reviewerFeedback)
 		if err != nil {
 			return zero, err

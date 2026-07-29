@@ -135,7 +135,9 @@ func buildPythonModuleMap(pyFiles []string, repoPath string) map[string]string {
 	mapping := make(map[string]string, len(pyFiles))
 	for _, pyFile := range pyFiles {
 		rel := relPathOf(repoPath, pyFile)
-		module := strings.ReplaceAll(rel, string(os.PathSeparator), ".")
+		// Repository-relative paths are part of the cross-platform data contract;
+		// normalize before turning a path into a Python module name.
+		module := strings.ReplaceAll(filepath.ToSlash(rel), "/", ".")
 		module = strings.TrimSuffix(module, ".py")
 		module = strings.TrimSuffix(module, ".__init__")
 		mapping[module] = rel
@@ -153,13 +155,14 @@ func extractPythonImports(content string) []string {
 	return modules
 }
 
-// relPathOf mirrors os.path.relpath(file, repoPath) with the OS separator.
+// relPathOf mirrors os.path.relpath(file, repoPath) using repository-standard
+// slash separators, independent of the host OS.
 func relPathOf(repoPath, file string) string {
 	rel, err := filepath.Rel(repoPath, file)
 	if err != nil {
 		return file
 	}
-	return rel
+	return filepath.ToSlash(rel)
 }
 
 // containsSkipToken reports whether any skip token is a substring of relRoot,

@@ -137,7 +137,7 @@ func TestMetaSelectorWritesContextFile(t *testing.T) {
 	if string(b) != want {
 		t.Fatal("context file content diverges from prompts.MetaContext")
 	}
-	if !strings.Contains(h.gotPrompt, "Full analysis context written to: "+path) {
+	if !strings.Contains(h.gotPrompt, "Full analysis context written to: "+filepath.ToSlash(path)) {
 		t.Fatal("prompt should reference the context file path")
 	}
 	if strings.Contains(h.gotPrompt, bigPatch) {
@@ -179,10 +179,10 @@ func TestReviewDimensionWritesContextFiles(t *testing.T) {
 	if string(pb) != bigPrimed {
 		t.Fatal("primed code file content diverges")
 	}
-	if !strings.Contains(h.gotPrompt, "Full diff patches written to: "+diffPath) {
+	if !strings.Contains(h.gotPrompt, "Full diff patches written to: "+filepath.ToSlash(diffPath)) {
 		t.Fatal("prompt should reference the diff patches file")
 	}
-	if !strings.Contains(h.gotPrompt, "context is written to: "+primedPath) {
+	if !strings.Contains(h.gotPrompt, "context is written to: "+filepath.ToSlash(primedPath)) {
 		t.Fatal("prompt should reference the primed code file")
 	}
 }
@@ -253,7 +253,7 @@ func TestCompoundFinderWritesContextFile(t *testing.T) {
 	if string(b) != want {
 		t.Fatal("compound context file diverges from the builder summary")
 	}
-	if !strings.Contains(h.gotPrompt, "Cluster findings and evidence written to: "+path) {
+	if !strings.Contains(h.gotPrompt, "Cluster findings and evidence written to: "+filepath.ToSlash(path)) {
 		t.Fatal("prompt should reference the context file")
 	}
 }

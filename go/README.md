@@ -157,6 +157,7 @@ The node is configured entirely through the environment.
 | `PORT`                      | Listen port (default `8007`)                                   |
 | `PR_AF_PROVIDER`            | Harness provider (default `opencode`)                          |
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
+| `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider; unset uses provider defaults |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |

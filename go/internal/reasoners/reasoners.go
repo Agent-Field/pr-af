@@ -69,9 +69,8 @@ const maxParseRetries = 2
 // fresh LLM call, up to maxParseRetries times. Transport/API errors are NOT
 // retried here (Python retries only "Could not parse structured response").
 // Each attempt decodes into a fresh instance so a failed attempt's partial
-// fill never bleeds into the next one. schemaSample is a zero value of the
-// schema struct (the Go analogue of passing the pydantic class).
-func aiStructured(ctx context.Context, caller AICaller, prompt, system string, schemaSample any, dest any) error {
+// fill never bleeds into the next one.
+func aiStructured(ctx context.Context, caller AICaller, prompt, system string, schema json.RawMessage, dest any) error {
 	if caller == nil {
 		return fmt.Errorf("reasoners: AI seam is nil")
 	}
@@ -81,7 +80,7 @@ func aiStructured(ctx context.Context, caller AICaller, prompt, system string, s
 	}
 	var lastErr error
 	for attempt := 0; attempt <= maxParseRetries; attempt++ {
-		resp, err := caller.AI(ctx, prompt, ai.WithSystem(system), ai.WithSchema(schemaSample))
+		resp, err := caller.AI(ctx, prompt, ai.WithSystem(system), ai.WithSchema(schema))
 		if err != nil {
 			return err
 		}

@@ -162,8 +162,8 @@ func TestBuildPythonModuleMap(t *testing.T) {
 	}
 	got := buildPythonModuleMap(files, repo)
 	want := map[string]string{
-		"a.b": filepath.Join("a", "b.py"),
-		"pkg": filepath.Join("pkg", "__init__.py"),
+		"a.b": "a/b.py",
+		"pkg": "pkg/__init__.py",
 		"top": "top.py",
 	}
 	if !reflect.DeepEqual(got, want) {

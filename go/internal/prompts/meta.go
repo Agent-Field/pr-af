@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"path/filepath"
 	"unicode/utf8"
 
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
@@ -62,7 +61,7 @@ func MetaContext(intake schemas.IntakeResult, anatomy schemas.AnatomyResult, dif
 // len() in Python counts code points, so we use RuneCountInString.
 func metaContextRef(lens, context, repoPath string) string {
 	if repoPath != "" && utf8.RuneCountInString(context) > 8000 {
-		fp := filepath.Join(repoPath, ".pr-af-context", "meta_"+lens+"_context.json")
+		fp := contextPath(repoPath, ".pr-af-context", "meta_"+lens+"_context.json")
 		return "\n\nFull analysis context written to: " + fp +
 			"\nRead this file for complete PR context including diff patches."
 	}

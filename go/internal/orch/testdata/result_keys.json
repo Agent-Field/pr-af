@@ -59,6 +59,7 @@
     "agent_invocations",
     "anatomy",
     "budget",
+    "degraded_dimensions",
     "intake",
     "phases_completed",
     "plan"
