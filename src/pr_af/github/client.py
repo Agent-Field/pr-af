@@ -204,11 +204,26 @@ class GitHubClient:
                 commit_page += 1
 
             diff_headers = {**auth_headers, "Accept": "application/vnd.github.v3.diff"}
-            diff_resp = await client.get(
-                f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}",
-                headers=diff_headers,
-            )
-            diff_resp.raise_for_status()
+            try:
+                diff_resp = await client.get(
+                    f"{self.base_url}/repos/{owner}/{repo}/pulls/{number}",
+                    headers=diff_headers,
+                )
+                diff_resp.raise_for_status()
+                full_diff = diff_resp.text
+            except httpx.HTTPStatusError as exc:
+                # GitHub returns 406 for the one-shot .diff media type when a
+                # PR's diff is too large to generate (very large PRs). The
+                # per-file patches were already fetched from the /files API
+                # above, so reconstruct an equivalent unified diff from them
+                # instead of failing the whole review.
+                if exc.response.status_code != 406:
+                    raise
+                full_diff = "\n".join(
+                    f"diff --git a/{f.path} b/{f.path}\n--- a/{f.path}\n+++ b/{f.path}\n{f.patch}"
+                    for f in changed_files
+                    if f.patch
+                )
 
         return GitHubPRData(
             owner=owner,
@@ -221,7 +236,7 @@ class GitHubClient:
             base_sha=pr_data.get("base", {}).get("sha", ""),
             head_sha=pr_data.get("head", {}).get("sha", ""),
             commit_messages=commit_messages,
-            diff=diff_resp.text,
+            diff=full_diff,
             changed_files=changed_files,
         )
 
