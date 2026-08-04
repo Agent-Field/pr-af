@@ -40,7 +40,7 @@ type Node struct {
 	// field at it and Serve mounts App.Handler() as the fallback route.
 	App *agent.Agent
 
-	// NodeID is the resolved node id (NODE_ID env, or the pr-af-go default).
+	// NodeID is the resolved node id (NODE_ID env, or the pr-af default).
 	NodeID string
 
 	// AgentFieldServer is the control-plane base URL (AGENTFIELD_SERVER). The
@@ -125,8 +125,7 @@ func resolvedHarnessBin(c config.AIIntegrationConfig) string {
 // BuildAgent constructs the PR-AF agent from the environment exactly as the
 // Python entry point does (app.py:26-50):
 //
-//   - NODE_ID            default "pr-af-go" (opt-in sibling; distinct from the
-//     Python "pr-af" node so both run against one control plane).
+//   - NODE_ID            default "pr-af" (the maintained package identity).
 //   - AGENTFIELD_SERVER  default "http://localhost:8080".
 //   - AGENTFIELD_API_KEY -> Config.Token (control-plane bearer).
 //   - PORT               default "8007" -> ListenAddress ":8007".

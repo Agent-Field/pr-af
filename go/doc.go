@@ -3,12 +3,12 @@
 // The port turns a pull request (or raw diff / local repo) into a structured,
 // multi-dimensional code review — the same reasoner names, control-plane
 // surface, and HTTP API shapes as the Python pr_af package. It registers as an
-// OPT-IN sibling node ("pr-af-go", default port 8007) so it can run against one
-// control plane alongside the untouched Python "pr-af" node.
+// maintained node ("pr-af", default port 8007). NODE_ID can be overridden when
+// it runs alongside the untouched Python node.
 //
 // Layout (design §A):
 //
-//	cmd/pr-af          node entry point (node id "pr-af-go")
+//	cmd/pr-af          node entry point (node id "pr-af")
 //	internal/afx       small AgentField SDK ergonomics (typed input binding)
 //	internal/fatal     non-retryable harness-error classification
 //	internal/harnessx  the single generic Run[T] harness choke-point + schema cache

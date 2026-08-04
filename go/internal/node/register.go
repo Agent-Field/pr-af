@@ -6,8 +6,8 @@ package node
 // in-process but that Python still CP-registers, each tagged ["review","pr"].
 //
 // Those 16 tags are SEMANTIC domain tags, not node-identity tags — node identity
-// is carried by node_id=pr-af-go, so callers reach pr-af-go.review. They are NOT
-// renamed to the node id (unlike SWE-AF's -go role tags).
+// is carried by node_id=pr-af, so callers reach pr-af.review. They are not
+// renamed to the node id.
 
 import (
 	"context"

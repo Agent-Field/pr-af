@@ -49,7 +49,7 @@ func TestHarnessConfigPreservesExistingFields(t *testing.T) {
 }
 
 // TestBuildAgentFromEnv is the main.go smoke: BuildAgent resolves node identity
-// from the environment (with the pr-af-go / 8007 defaults), constructs the agent
+// from the environment (with the pr-af / 8007 defaults), constructs the agent
 // without a control plane or LLM key, and RegisterAll wires the full surface.
 func TestBuildAgentFromEnv(t *testing.T) {
 	cases := []struct {
@@ -62,19 +62,19 @@ func TestBuildAgentFromEnv(t *testing.T) {
 		{
 			name:       "defaults when env unset",
 			env:        map[string]string{"NODE_ID": "", "PORT": "", "AGENTFIELD_SERVER": "", "OPENROUTER_API_KEY": ""},
-			wantNodeID: "pr-af-go",
+			wantNodeID: "pr-af",
 			wantServer: "http://localhost:8080",
 			wantListen: ":8007",
 		},
 		{
 			name: "env overrides",
 			env: map[string]string{
-				"NODE_ID":            "pr-af-go-canary",
+				"NODE_ID":            "pr-af-canary",
 				"PORT":               "9107",
 				"AGENTFIELD_SERVER":  "http://cp.internal:8080",
 				"OPENROUTER_API_KEY": "", // keep AIConfig off so New needs no key
 			},
-			wantNodeID: "pr-af-go-canary",
+			wantNodeID: "pr-af-canary",
 			wantServer: "http://cp.internal:8080",
 			wantListen: ":9107",
 		},
@@ -85,7 +85,7 @@ func TestBuildAgentFromEnv(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
-			n, err := BuildAgent("pr-af-go", "8007", "AI-Native Pull Request Review Agent")
+			n, err := BuildAgent("pr-af", "8007", "AI-Native Pull Request Review Agent")
 			if err != nil {
 				t.Fatalf("BuildAgent: %v", err)
 			}
@@ -118,7 +118,7 @@ func TestBuildAgentWithLLMKey(t *testing.T) {
 	t.Setenv("AGENTFIELD_SERVER", "")
 	t.Setenv("OPENROUTER_API_KEY", "sk-or-test")
 
-	n, err := BuildAgent("pr-af-go", "8007", "desc")
+	n, err := BuildAgent("pr-af", "8007", "desc")
 	if err != nil {
 		t.Fatalf("BuildAgent with LLM key: %v", err)
 	}

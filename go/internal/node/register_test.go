@@ -92,7 +92,7 @@ func TestReviewHandlerErrorMapping(t *testing.T) {
 	t.Run("bad-input maps to 400 with raw message, no note", func(t *testing.T) {
 		fa := &fakeApp{}
 		n := &Node{
-			NodeID:    "pr-af-go",
+			NodeID:    "pr-af",
 			reviewApp: fa,
 			runReview: func(context.Context, orch.Deps, schemas.ReviewInput, config.ReviewConfig) (schemas.ReviewResult, error) {
 				return schemas.ReviewResult{}, wrapBadInput("One of pr_url, diff_text, or repo_path is required")
@@ -115,7 +115,7 @@ func TestReviewHandlerErrorMapping(t *testing.T) {
 	t.Run("other error maps to 500 with prefix + pipeline note", func(t *testing.T) {
 		fa := &fakeApp{}
 		n := &Node{
-			NodeID:    "pr-af-go",
+			NodeID:    "pr-af",
 			reviewApp: fa,
 			runReview: func(context.Context, orch.Deps, schemas.ReviewInput, config.ReviewConfig) (schemas.ReviewResult, error) {
 				return schemas.ReviewResult{}, errors.New("kaboom")
@@ -146,7 +146,7 @@ func TestReviewHandlerErrorMapping(t *testing.T) {
 		fa := &fakeApp{}
 		want := schemas.ReviewResult{ReviewID: "rev_abc123", PrURL: "https://example/pr/1"}
 		n := &Node{
-			NodeID:    "pr-af-go",
+			NodeID:    "pr-af",
 			reviewApp: fa,
 			runReview: func(context.Context, orch.Deps, schemas.ReviewInput, config.ReviewConfig) (schemas.ReviewResult, error) {
 				return want, nil
@@ -179,7 +179,7 @@ func TestReviewHandlerClampsDepthAndResolvesRepo(t *testing.T) {
 	var seenInput schemas.ReviewInput
 	fa := &fakeApp{}
 	n := &Node{
-		NodeID:    "pr-af-go",
+		NodeID:    "pr-af",
 		reviewApp: fa,
 		runReview: func(_ context.Context, _ orch.Deps, in schemas.ReviewInput, _ config.ReviewConfig) (schemas.ReviewResult, error) {
 			seenInput = in
@@ -213,7 +213,7 @@ func newTestNode(t *testing.T) *Node {
 	t.Setenv("AGENTFIELD_SERVER", "")
 	t.Setenv("AGENT_CALLBACK_URL", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
-	n, err := BuildAgent("pr-af-go", "8007", "AI-Native Pull Request Review Agent")
+	n, err := BuildAgent("pr-af", "8007", "AI-Native Pull Request Review Agent")
 	if err != nil {
 		t.Fatalf("BuildAgent: %v", err)
 	}
