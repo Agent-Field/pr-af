@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TestReviewErrorShape drives the full CP async surface for pr-af-go.review with a
+// TestReviewErrorShape drives the full CP async surface for pr-af.review with a
 // nonexistent repo_path (design §F V2). A local repo_path that is neither a
 // directory nor a clonable URL makes the orchestrator's intake `git diff` fail
 // IMMEDIATELY — before any harness (opencode) or .ai() call — so the whole path is
@@ -29,7 +29,7 @@ func TestReviewErrorShape(t *testing.T) {
 
 	input := map[string]any{
 		// Guaranteed not a git repo (and not a clonable URL) inside the container.
-		"repo_path": "/nonexistent/pr-af-go-functional-probe",
+		"repo_path": "/nonexistent/pr-af-functional-probe",
 		"dry_run":   true,
 	}
 

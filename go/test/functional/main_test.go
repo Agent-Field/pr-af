@@ -2,7 +2,7 @@
 
 // Package functional holds the black-box / functional parity tests for the PR-AF
 // Go port (design §F, work-breakdown T4.3). They exercise the *live* stack — a
-// control plane plus the Go node (pr-af-go :8007) — brought up via the
+// control plane plus the Go node (pr-af :8007) — brought up via the
 // self-contained compose.functional.yml, and assert the parity contracts the
 // Python→Go port must preserve:
 //
@@ -12,7 +12,7 @@
 //     ["review","pr"] where the control plane exposes per-reasoner tags
 //     (TestRegistrationParity, hardcoded from the PYTHON surface, NOT the Go
 //     register.go);
-//   - a deterministic (no-LLM) pr-af-go.review against a nonexistent repo_path
+//   - a deterministic (no-LLM) pr-af.review against a nonexistent repo_path
 //     fails fast (before any harness / .ai() call) and the terminal execution
 //     record carries a non-succeeded status plus an error message — the review
 //     error-shape contract (TestReviewErrorShape, design §F V2).
@@ -53,8 +53,8 @@ const (
 	composeFile = "go/test/functional/compose.functional.yml"
 
 	// composeProject isolates this stack's containers/volumes/network from any
-	// concurrently running pr-af / pr-af-go compose project.
-	composeProject = "pr-af-go-functional"
+	// concurrently running production compose projects.
+	composeProject = "pr-af-functional"
 
 	// Host ports are deliberately uncommon (see compose.functional.yml) to avoid a
 	// dev `af server` / dev stack squatting on the CP's host port, which silently
@@ -62,7 +62,7 @@ const (
 	cpBaseURL   = "http://localhost:28080"
 	prafBaseURL = "http://localhost:28017"
 
-	prafNodeID = "pr-af-go"
+	prafNodeID = "pr-af"
 
 	// Generous ceilings: the Go image is a multi-stage build that runs
 	// `go mod download` against the module proxy, so a cold `up --build` can take

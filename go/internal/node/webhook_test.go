@@ -80,7 +80,7 @@ func doWebhook(t *testing.T, n *Node, event, signature string, body []byte) (*ht
 
 func TestWebhookPing(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
-	n := &Node{NodeID: "pr-af-go"}
+	n := &Node{NodeID: "pr-af"}
 	rec, body := doWebhook(t, n, "ping", "", []byte(`{}`))
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -93,7 +93,7 @@ func TestWebhookPing(t *testing.T) {
 func TestWebhookSignature(t *testing.T) {
 	const secret = "s3cr3t"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
-	n := &Node{NodeID: "pr-af-go"}
+	n := &Node{NodeID: "pr-af"}
 	body := prComment("created", "@pr-af review", "https://github.com/octo/repo/pull/42")
 
 	t.Run("valid signature passes verification (ping through)", func(t *testing.T) {
@@ -121,7 +121,7 @@ func TestWebhookSignature(t *testing.T) {
 
 func TestWebhookIgnoreGates(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
-	n := &Node{NodeID: "pr-af-go"}
+	n := &Node{NodeID: "pr-af"}
 	prURL := "https://github.com/octo/repo/pull/42"
 
 	cases := []struct {
@@ -154,7 +154,7 @@ func TestWebhookIgnoreGates(t *testing.T) {
 func TestWebhookFiresAsyncReview(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
 	cp := newFakeCP(t)
-	n := &Node{NodeID: "pr-af-go", AgentFieldServer: cp.server.URL}
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.server.URL}
 	prURL := "https://github.com/octo/repo/pull/42"
 
 	rec, resp := doWebhook(t, n, "issue_comment", "",
@@ -177,8 +177,8 @@ func TestWebhookFiresAsyncReview(t *testing.T) {
 	if cp.hitCount != 1 {
 		t.Fatalf("CP hit %d times, want 1", cp.hitCount)
 	}
-	if cp.gotPath != "/api/v1/execute/async/pr-af-go.review" {
-		t.Errorf("fire path = %q, want /api/v1/execute/async/pr-af-go.review", cp.gotPath)
+	if cp.gotPath != "/api/v1/execute/async/pr-af.review" {
+		t.Errorf("fire path = %q, want /api/v1/execute/async/pr-af.review", cp.gotPath)
 	}
 	input, ok := cp.gotBody["input"].(map[string]any)
 	if !ok {
@@ -203,7 +203,7 @@ func TestWebhookBotMentionOverride(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
 	t.Setenv("PR_AF_BOT_MENTION", "@reviewbot")
 	cp := newFakeCP(t)
-	n := &Node{NodeID: "pr-af-go", AgentFieldServer: cp.server.URL}
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.server.URL}
 	prURL := "https://github.com/octo/repo/pull/7"
 
 	// The default "@pr-af" no longer triggers; the configured "@reviewbot" does.

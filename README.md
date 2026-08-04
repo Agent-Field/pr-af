@@ -199,13 +199,21 @@ af install https://github.com/Agent-Field/pr-af
 af run pr-af
 ```
 
-`af install` clones the repo, provisions an isolated Python environment, and registers the `pr-af` node with your control plane. On first `af run` you're prompted for the required secrets — `OPENROUTER_API_KEY` and `GH_TOKEN` — which are stored encrypted and reused across every node, so you enter each only once. Then review a PR:
+`af install` follows the repository manifest to the maintained Go package and registers it as the `pr-af` node with your control plane. If an older Python `pr-af` is installed, it is replaced in place, retaining the same node id, triggers, and node-scoped secrets. On first `af run` you're prompted for the required secrets — `OPENROUTER_API_KEY` and `GH_TOKEN` — which are stored encrypted and reused across every node, so you enter each only once. Then review a PR:
 
 ```bash
 af call pr-af.review --in '{"pr_url": "https://github.com/owner/repo/pull/123"}'
 ```
 
 New to AgentField? Install the control plane first with `curl -fsSL https://agentfield.ai/install.sh | bash`, or use one of the options below.
+
+To install the Python node deliberately, clone this repository and install the
+checkout as a local path. Local-path installs do not follow `superseded_by`:
+
+```bash
+git clone https://github.com/Agent-Field/pr-af
+af install ./pr-af
+```
 
 ### Deploy with Railway (fastest)
 
@@ -335,12 +343,12 @@ When the writer and the reviewer are the same intelligence, the pull request gat
 
 ---
 
-## Go implementation (opt-in)
+## Go implementation
 
-This repo also ships a Go port of the node under [`go/`](go/README.md). The
-**Python implementation is the default** — everything above is unchanged and
-still runs as `pr-af` (`:8004`). The Go port registers **separately** as
-`pr-af-go` (`:8007`), so both can run against one control plane simultaneously.
-Opt in by targeting the `-go` reasoner path, e.g.
-`POST /api/v1/execute/async/pr-af-go.review`. Build, run, and Docker/compose
-docs live in [`go/README.md`](go/README.md).
+The maintained node lives under [`go/`](go/README.md), and installing the bare
+repository URL gives you this implementation as `pr-af` on its default port
+`8007`. The Python implementation remains available through `python -m
+pr_af.app`, the root Docker Compose stack, or the local-path install escape
+hatch above. The Go add-on Compose file explicitly uses `pr-af-go` only so both
+implementations can run against one control plane during a changeover. Build,
+run, and Docker/compose docs live in [`go/README.md`](go/README.md).
