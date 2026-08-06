@@ -40,6 +40,7 @@ app = Agent(
         max_turns=_ai_config.max_turns,
         env=_ai_config.provider_env(),
         opencode_bin=_ai_config.opencode_bin,
+        aforge_bin=_ai_config.aforge_bin,
         permission_mode="auto",
     ),
     ai_config=AIConfig(
