@@ -205,6 +205,42 @@ func TestIntakePhaseFallbackParsed(t *testing.T) {
 	}
 }
 
+// Contract: an unusable AI seam escalates to the harness instead of sinking
+// the review — the gate is treated as unconfident (Python's except -> None).
+// Covers both a node with no AI configured at all (nil seam, e.g. a
+// claude-code harness with no OpenRouter key) and a provider that rejects the
+// structured-output request.
+func TestIntakePhaseAIUnavailableFallsBackToHarness(t *testing.T) {
+	payload := `{
+		"pr_type":"refactor","complexity":"standard","languages":["go"],
+		"areas_touched":["api"],"risk_signals":[],"ai_generated":0.1,
+		"review_depth":"standard","pr_summary":"s"}`
+
+	for name, seam := range map[string]AICaller{
+		"no AI seam configured": nil,
+		"structured output rejected": &fakeAISeq{
+			err: errors.New("response_format is not supported"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := &mockHarness{payload: payload}
+			out, err := IntakePhase(context.Background(), Deps{Harness: h, AI: seam}, IntakeInput{
+				PRData: fixturePR(), Depth: "standard",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if h.calls != 1 {
+				t.Fatalf("harness calls = %d, want 1", h.calls)
+			}
+			wantKeys(t, out, intakeKeys...)
+			if out["pr_type"] != "refactor" {
+				t.Fatalf("pr_type = %v", out["pr_type"])
+			}
+		})
+	}
+}
+
 // Contract: fallback parse failure returns Python's literal empty dict.
 func TestIntakePhaseFallbackParseFailReturnsEmpty(t *testing.T) {
 	aiSeam := &fakeAI{text: `{"pr_type":"","complexity":"","confident":false}`}
@@ -882,6 +918,44 @@ func TestCoverageGate(t *testing.T) {
 	}
 	if len(out["gap_descriptions"].([]any)) != 0 {
 		t.Fatalf("gap_descriptions = %v", out["gap_descriptions"])
+	}
+}
+
+// Contract: an unusable AI seam retries the SAME coverage prompt through the
+// harness, and a harness result that fails to parse yields Python's literal
+// empty dict.
+func TestCoverageGateAIUnavailableFallsBackToHarness(t *testing.T) {
+	in := CoverageGateInput{
+		Anatomy: schemas.AnatomyResult{
+			Clusters: []schemas.ChangeCluster{{ID: "cluster_0", Name: "root", Files: []string{"a.go"}}},
+		},
+		ReviewedClusters:       []string{"cluster_0"},
+		DimensionNamesReviewed: []string{"Dim A"},
+	}
+
+	h := &mockHarness{payload: `{"fully_covered":true,"gap_descriptions":[],"confident":true}`}
+	out, err := CoverageGate(context.Background(), Deps{Harness: h, AI: nil}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.calls != 1 {
+		t.Fatalf("harness calls = %d, want 1", h.calls)
+	}
+	if !strings.Contains(h.gotPrompt, "Dimensions already reviewed: Dim A.") {
+		t.Fatalf("harness prompt = %q, want the coverage prompt", h.gotPrompt)
+	}
+	wantKeys(t, out, "fully_covered", "gap_descriptions", "confident")
+	if out["fully_covered"] != true {
+		t.Fatalf("got %v", out)
+	}
+
+	h = &mockHarness{parseFail: true}
+	out, err = CoverageGate(context.Background(), Deps{Harness: h, AI: nil}, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("want {}, got %v", out)
 	}
 }
 
