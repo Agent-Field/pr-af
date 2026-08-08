@@ -1,8 +1,7 @@
 package node
 
-// webhook.go ports the GitHub @mention webhook (app.py:250-367): an
-// issue_comment listener that fires an async PR review at the control plane when
-// someone comments "@pr-af …" on a PR.
+// webhook.go ports the GitHub webhook (app.py:250-367): issue_comment mentions
+// and pull_request labels fire an async PR review at the control plane.
 //
 // Env reads happen at REQUEST time (matching internal/config's call-time
 // convention) so the httptest table can drive GITHUB_WEBHOOK_SECRET /
@@ -10,24 +9,80 @@ package node
 // behavior is identical for a fixed environment.
 
 import (
+	"container/list"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-const defaultBotMention = "@pr-af"
+const (
+	defaultBotMention   = "@pr-af"
+	defaultLabelTrigger = "pr-af"
+	deliveryCacheSize   = 1024
+	labelFireTTL        = 10 * time.Minute
+)
+
+type webhookDedupe struct {
+	mu              sync.Mutex
+	deliveries      *list.List
+	deliveryEntries map[string]*list.Element
+	recentPRs       map[string]time.Time
+	now             func() time.Time
+}
+
+// claim guards label-triggered dispatches. The state is intentionally local to
+// one node process and resets on restart; multi-process deployments need a
+// shared store to dedupe across workers.
+func (d *webhookDedupe) claim(deliveryID, prURL string) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.deliveries == nil {
+		d.deliveries = list.New()
+		d.deliveryEntries = map[string]*list.Element{}
+		d.recentPRs = map[string]time.Time{}
+	}
+	if deliveryID != "" {
+		if elem := d.deliveryEntries[deliveryID]; elem != nil {
+			d.deliveries.MoveToBack(elem)
+			return "duplicate delivery"
+		}
+		delivery := d.deliveries.PushBack(deliveryID)
+		d.deliveryEntries[deliveryID] = delivery
+		if d.deliveries.Len() > deliveryCacheSize {
+			oldest := d.deliveries.Front()
+			delete(d.deliveryEntries, oldest.Value.(string))
+			d.deliveries.Remove(oldest)
+		}
+	}
+	now := time.Now()
+	if d.now != nil {
+		now = d.now()
+	}
+	for url, firedAt := range d.recentPRs {
+		if now.Sub(firedAt) >= labelFireTTL {
+			delete(d.recentPRs, url)
+		}
+	}
+	if firedAt, ok := d.recentPRs[prURL]; ok && now.Sub(firedAt) < labelFireTTL {
+		return "recently dispatched"
+	}
+	d.recentPRs[prURL] = now
+	return ""
+}
 
 // webhookGitHub handles POST /webhook/github. It mirrors app.py::webhook_github:
-// verify the HMAC signature, answer ping with pong, ignore anything that is not
-// a created issue_comment carrying the bot mention on a PR, then fire the async
-// review and echo the execution id.
+// verify the HMAC signature, answer ping with pong, dispatch matching label and
+// mention triggers, and ignore all other events.
 func (n *Node) webhookGitHub(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -48,7 +103,7 @@ func (n *Node) webhookGitHub(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "pong"})
 		return
 	}
-	if event != "issue_comment" {
+	if event != "issue_comment" && event != "pull_request" {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "reason": "event=" + event})
 		return
 	}
@@ -56,6 +111,10 @@ func (n *Node) webhookGitHub(w http.ResponseWriter, r *http.Request) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": "invalid JSON"})
+		return
+	}
+	if event == "pull_request" {
+		n.handlePullRequestWebhook(w, r, payload)
 		return
 	}
 
@@ -91,6 +150,33 @@ func (n *Node) webhookGitHub(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (n *Node) handlePullRequestWebhook(w http.ResponseWriter, r *http.Request, payload map[string]any) {
+	action := getStr(payload, "action")
+	if action != "labeled" {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "reason": "pr action=" + action})
+		return
+	}
+	if nestedStr(payload, "label", "name") != envOr("PR_AF_LABEL", defaultLabelTrigger) {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "reason": "label not a trigger"})
+		return
+	}
+	prURL := nestedStr(payload, "pull_request", "html_url")
+	if prURL == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "reason": "no pr_url"})
+		return
+	}
+	if reason := n.labelDedupe.claim(r.Header.Get("X-GitHub-Delivery"), prURL); reason != "" {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ignored", "reason": reason})
+		return
+	}
+	execID := n.fireReview(r.Context(), prURL, nil)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":       "review_dispatched",
+		"pr_url":       prURL,
+		"execution_id": execID,
+	})
+}
+
 // verifySignature ports app.py::_verify_signature. An empty secret means "no
 // secret configured — skip verification" (the caller already guards that).
 func verifySignature(payload []byte, signature, secret string) bool {
@@ -116,6 +202,9 @@ func (n *Node) fireReview(ctx context.Context, prURL string, hints []string) any
 	if len(hints) > 0 {
 		inputPayload["hints"] = hints
 	}
+	for key, value := range webhookReviewLimits() {
+		inputPayload[key] = value
+	}
 	body, err := json.Marshal(map[string]any{"input": inputPayload})
 	if err != nil {
 		return nil
@@ -129,8 +218,14 @@ func (n *Node) fireReview(ctx context.Context, prURL string, hints []string) any
 		return nil
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if apiKey := os.Getenv("AGENTFIELD_API_KEY"); apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
+	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := n.webhookClient
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil
@@ -149,6 +244,34 @@ func (n *Node) fireReview(ctx context.Context, prURL string, hints []string) any
 		return id
 	}
 	return nil
+}
+
+// webhookReviewLimits reads optional per-deployment caps for each dispatch.
+// Invalid values are deployment mistakes, but must never turn a webhook into a
+// 500 or create an unusable zero-cap review, so they are logged and omitted.
+func webhookReviewLimits() map[string]any {
+	limits := map[string]any{}
+	for _, cap := range []struct {
+		env string
+		key string
+		min int
+	}{
+		{"PR_AF_MAX_CONCURRENT_REVIEWERS", "max_concurrent_reviewers", 1},
+		{"PR_AF_MAX_REVIEW_DEPTH", "max_review_depth", 0},
+		{"PR_AF_MAX_COVERAGE_ITERATIONS", "max_coverage_iterations", 1},
+	} {
+		raw := os.Getenv(cap.env)
+		if raw == "" {
+			continue
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil || value < cap.min {
+			log.Printf("[PR-AF] Ignoring invalid %s=%q (must be an integer >= %d)", cap.env, raw, cap.min)
+			continue
+		}
+		limits[cap.key] = value
+	}
+	return limits
 }
 
 // extractHintsFromComment ports app.py::_extract_hints_from_comment: the text

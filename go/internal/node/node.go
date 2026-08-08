@@ -40,6 +40,14 @@ type Node struct {
 	// field at it and Serve mounts App.Handler() as the fallback route.
 	App *agent.Agent
 
+	// labelDedupe bounds duplicate label-triggered review dispatches. It is
+	// process-local by design; see webhookDedupe.claim for the limitation.
+	labelDedupe webhookDedupe
+
+	// webhookClient is nil in production (fireReview uses a bounded default).
+	// Tests inject a transport so webhook dispatches need no listening socket.
+	webhookClient *http.Client
+
 	// NodeID is the resolved node id (NODE_ID env, or the pr-af default).
 	NodeID string
 

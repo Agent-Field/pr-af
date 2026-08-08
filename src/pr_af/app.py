@@ -6,6 +6,9 @@ import hmac
 import json
 import os
 import subprocess
+import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, cast
 
@@ -257,11 +260,85 @@ async def review(
 
 
 # ---------------------------------------------------------------------------
-# GitHub Webhook — @mention-triggered PR review
+# GitHub Webhook — @mention- or label-triggered PR review
 # ---------------------------------------------------------------------------
 _BOT_MENTION = os.getenv("PR_AF_BOT_MENTION", "@pr-af")
+# Adding this label to a PR triggers a review (alternative to the @mention).
+_LABEL_TRIGGER = os.getenv("PR_AF_LABEL", "pr-af")
 _WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 _CP_URL = os.getenv("AGENTFIELD_SERVER", "http://localhost:8080")
+# Control-plane API key, forwarded on the dispatch call when the control plane
+# has auth enabled (otherwise the webhook's review dispatch 401s).
+_CP_API_KEY = os.getenv("AGENTFIELD_API_KEY", "")
+
+_DELIVERY_CACHE_SIZE = 1024
+_LABEL_FIRE_TTL_SECONDS = 10 * 60
+_webhook_dedupe_lock = threading.Lock()
+_seen_deliveries: OrderedDict[str, None] = OrderedDict()
+_recent_label_fires: OrderedDict[str, float] = OrderedDict()
+
+
+def _claim_label_trigger(delivery_id: str, pr_url: str) -> str | None:
+    """Atomically claim one label-triggered dispatch, or return an ignore reason.
+
+    These guards are intentionally in memory: they cover GitHub redeliveries and
+    bot-label loops only within one webhook process and reset on restart. A
+    multi-worker deployment needs a shared store for cross-process dedupe.
+    """
+    now = time.monotonic()
+    with _webhook_dedupe_lock:
+        if delivery_id:
+            if delivery_id in _seen_deliveries:
+                _seen_deliveries.move_to_end(delivery_id)
+                return "duplicate delivery"
+            _seen_deliveries[delivery_id] = None
+            if len(_seen_deliveries) > _DELIVERY_CACHE_SIZE:
+                _seen_deliveries.popitem(last=False)
+
+        while _recent_label_fires:
+            oldest_url, fired_at = next(iter(_recent_label_fires.items()))
+            if now - fired_at < _LABEL_FIRE_TTL_SECONDS:
+                break
+            del _recent_label_fires[oldest_url]
+
+        last_fired = _recent_label_fires.get(pr_url)
+        if last_fired is not None and now - last_fired < _LABEL_FIRE_TTL_SECONDS:
+            return "recently dispatched"
+        _recent_label_fires[pr_url] = now
+        if len(_recent_label_fires) > _DELIVERY_CACHE_SIZE:
+            _recent_label_fires.popitem(last=False)
+        return None
+
+
+def _webhook_review_limits() -> dict[str, object]:
+    """Optional per-deployment review limits for webhook-triggered runs.
+
+    Only applied when the corresponding env var is set, so default behaviour is
+    unchanged. Lets a small/shared host cap resource use (e.g. concurrency=1,
+    review_depth=0) without a code change.
+    """
+    limits: dict[str, object] = {}
+    for env_name, input_key, minimum in (
+        ("PR_AF_MAX_CONCURRENT_REVIEWERS", "max_concurrent_reviewers", 1),
+        ("PR_AF_MAX_REVIEW_DEPTH", "max_review_depth", 0),
+        ("PR_AF_MAX_COVERAGE_ITERATIONS", "max_coverage_iterations", 1),
+    ):
+        raw = os.getenv(env_name)
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            value = minimum - 1
+        if value < minimum:
+            print(
+                f"[PR-AF] Ignoring invalid {env_name}={raw!r} "
+                f"(must be an integer >= {minimum})",
+                flush=True,
+            )
+            continue
+        limits[input_key] = value
+    return limits
 
 
 def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
@@ -281,16 +358,20 @@ async def _fire_review(
         "pr_url": pr_url,
         "depth": "standard",
         "dry_run": False,
+        **_webhook_review_limits(),
     }
     if hints:
         input_payload["hints"] = hints
     body = json.dumps({"input": input_payload})
+    headers = {"Content-Type": "application/json"}
+    if _CP_API_KEY:
+        headers["X-API-Key"] = _CP_API_KEY
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                f"{_CP_URL}/api/v1/execute/async/pr-af.review",
+                f"{_CP_URL}/api/v1/execute/async/{NODE_ID}.review",
                 content=body,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
             resp.raise_for_status()
             return resp.json().get("execution_id")
@@ -320,11 +401,11 @@ def _get_pr_url_from_issue(payload: dict) -> str | None:
 
 
 async def webhook_github(request: Request) -> dict[str, object]:
-    """Handle GitHub webhook for @mention-triggered PR reviews.
+    """Handle GitHub webhook for @mention- or label-triggered PR reviews.
 
-    Listens for issue_comment events. When someone comments on a PR with
-    @pr-af (or the configured bot mention), fires an async review via the
-    Control Plane. Any text after the @mention is passed as review hints.
+    A matching pull_request label or an issue_comment containing @pr-af (or
+    the configured bot mention) fires an async review via the Control Plane.
+    Any text after an @mention is passed as review hints.
 
     Examples:
         "@pr-af" — standard review
@@ -339,6 +420,30 @@ async def webhook_github(request: Request) -> dict[str, object]:
     event = request.headers.get("x-github-event", "")
     if event == "ping":
         return {"status": "pong"}
+
+    # Label trigger: adding the configured label to a PR fires a review.
+    if event == "pull_request":
+        payload = json.loads(body)
+        if payload.get("action") != "labeled":
+            return {"status": "ignored", "reason": f"pr action={payload.get('action')}"}
+        if (payload.get("label") or {}).get("name", "") != _LABEL_TRIGGER:
+            return {"status": "ignored", "reason": "label not a trigger"}
+        pr_url = (payload.get("pull_request") or {}).get("html_url")
+        if not pr_url:
+            return {"status": "ignored", "reason": "no pr_url"}
+        if reason := _claim_label_trigger(
+            request.headers.get("x-github-delivery", ""), pr_url
+        ):
+            return {"status": "ignored", "reason": reason}
+        repo_name = payload.get("repository", {}).get("full_name", "")
+        number = (payload.get("pull_request") or {}).get("number")
+        print(
+            f"[PR-AF] Webhook: '{_LABEL_TRIGGER}' label on {repo_name}#{number}"
+            " — firing review",
+            flush=True,
+        )
+        exec_id = await _fire_review(pr_url)
+        return {"status": "review_dispatched", "pr_url": pr_url, "execution_id": exec_id}
 
     if event != "issue_comment":
         return {"status": "ignored", "reason": f"event={event}"}

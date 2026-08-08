@@ -157,6 +157,10 @@ The node is configured entirely through the environment.
 | `PORT`                      | Listen port (default `8007`)                                   |
 | `PR_AF_PROVIDER`            | Harness provider (default `opencode`)                          |
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
+| `PR_AF_LABEL`               | Pull-request label that triggers a webhook review (default `pr-af`) |
+| `PR_AF_MAX_CONCURRENT_REVIEWERS` | Optional webhook review concurrency cap (minimum `1`)     |
+| `PR_AF_MAX_REVIEW_DEPTH`    | Optional webhook sub-review depth cap (minimum `0`)            |
+| `PR_AF_MAX_COVERAGE_ITERATIONS` | Optional webhook coverage iteration cap (minimum `1`)      |
 | `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider; unset uses provider defaults |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |

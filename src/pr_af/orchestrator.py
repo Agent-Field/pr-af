@@ -731,14 +731,18 @@ class ReviewOrchestrator:
                 await findings_queue.put(findings)
 
                 sub_reviews = self._extract_sub_reviews(result_raw, dim)
-                if sub_reviews and depth < max_depth and not self._budget_or_timeout_exhausted("review"):
-                    print(
-                        f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} "
-                        f"sub-review(s) at depth {depth + 1}/{max_depth}",
-                        flush=True,
-                    )
-                    sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
-                    await asyncio.gather(*sub_tasks)
+
+            # Children need their own semaphore permits. Await them only after
+            # the parent has released its permit, otherwise concurrency=1
+            # deadlocks with the child waiting forever behind its parent.
+            if sub_reviews and depth < max_depth and not self._budget_or_timeout_exhausted("review"):
+                print(
+                    f"[PR-AF] Dimension '{dim.name}' spawned {len(sub_reviews)} "
+                    f"sub-review(s) at depth {depth + 1}/{max_depth}",
+                    flush=True,
+                )
+                sub_tasks = [run_dimension(sub_dim, depth + 1) for sub_dim in sub_reviews]
+                await asyncio.gather(*sub_tasks)
 
         try:
             tasks = [run_dimension(dim, current_depth) for dim in plan.dimensions]
