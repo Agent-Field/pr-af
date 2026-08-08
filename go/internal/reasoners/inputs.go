@@ -158,6 +158,7 @@ type ReviewDimensionInput struct {
 	PrNarrative       string            `json:"pr_narrative"`
 	RiskSurfaces      []string          `json:"risk_surfaces"`
 	IntakeSummary     string            `json:"intake_summary"`
+	PrDescription     string            `json:"pr_description"`
 	DiffPatches       map[string]string `json:"diff_patches"`
 	AllDimensionNames []string          `json:"all_dimension_names"`
 	ReviewerFeedback  string            `json:"reviewer_feedback"`

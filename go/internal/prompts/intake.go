@@ -9,12 +9,12 @@ const IntakeGateSystem = "Return pr_type, complexity, and confident only. Use th
 
 // IntakeGatePrompt builds the intake .ai() gate user prompt. languages must be
 // pre-sorted (the reasoner uses sorted(_extract_languages(pr))); commitMessages
-// is truncated to the first 5 and description to the first 500 runes, matching
+// is truncated to the first 5 and description to the first 4000 runes, matching
 // the Python json payload.
 func IntakeGatePrompt(title, description string, labels []string, author string, filesChanged int, languages, commitMessages []string) string {
 	ctx := omap(
 		"title", title,
-		"description", runeSlice(description, 500),
+		"description", delimitPRDescription(runeSlice(description, 4000)),
 		"labels", orEmpty(labels),
 		"author", author,
 		"files_changed", filesChanged,
@@ -25,11 +25,11 @@ func IntakeGatePrompt(title, description string, labels []string, author string,
 }
 
 // IntakeFallbackPrompt builds the intake_phase .harness() fallback prompt.
-// description is truncated to the first 1000 runes.
+// description is truncated to the first 4000 runes.
 func IntakeFallbackPrompt(title, description, requestedDepth string, languages []string, filesChanged int) string {
 	ctx := omap(
 		"pr_title", title,
-		"description", runeSlice(description, 1000),
+		"description", delimitPRDescription(runeSlice(description, 4000)),
 		"requested_depth", requestedDepth,
 		"languages", orEmpty(languages),
 		"files_changed", filesChanged,

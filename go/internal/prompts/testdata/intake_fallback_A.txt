@@ -2,4 +2,4 @@ Classify this pull request for a multi-agent review pipeline. Downstream reviewe
 
 Determine: PR type (feature/bugfix/refactor/docs/config/dependency/test), complexity (trivial/standard/complex/massive), areas touched, risk signals, AI-generation confidence, and write a technical PR summary that captures the actual substance of the change (not just the PR title restated).
 
-{"pr_title": "Add retry logic to HTTP client", "description": "Wraps the client in a retry decorator with exponential backoff.\nCloses #42.", "requested_depth": "deep", "languages": ["markdown", "python", "typescript"], "files_changed": 4}
+{"pr_title": "Add retry logic to HTTP client", "description": "<PR_AF_AUTHOR_DESCRIPTION>\nWraps the client in a retry decorator with exponential backoff.\nCloses #42.\n</PR_AF_AUTHOR_DESCRIPTION>", "requested_depth": "deep", "languages": ["markdown", "python", "typescript"], "files_changed": 4}

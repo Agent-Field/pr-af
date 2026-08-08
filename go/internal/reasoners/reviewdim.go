@@ -56,6 +56,7 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 		PrNarrative:       in.PrNarrative,
 		RiskSurfaces:      in.RiskSurfaces,
 		IntakeSummary:     in.IntakeSummary,
+		PrDescription:     in.PrDescription,
 		DiffPatches:       in.DiffPatches,
 		AllDimensionNames: in.AllDimensionNames,
 		ReviewerFeedback:  in.ReviewerFeedback,
