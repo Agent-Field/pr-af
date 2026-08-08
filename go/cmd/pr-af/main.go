@@ -3,16 +3,15 @@
 // surface (design §B.1), and serves the SDK handler plus the custom
 // /webhook/github route until SIGINT/SIGTERM.
 //
-// Defaults: NODE_ID "pr-af-go", PORT 8007 — a distinct identity from the Python
-// pr-af node (:8004) so the Go port runs as an opt-in sibling alongside Python
-// against one control plane. NODE_ID / PORT env vars override.
+// Defaults: NODE_ID "pr-af", PORT 8007. NODE_ID / PORT env vars override;
+// docker-compose.go.yml does so when both implementations coexist.
 //
 // Boot env (T4.3 e2e / production):
 //
 //	AGENTFIELD_SERVER   control-plane base URL (default http://localhost:8080)
 //	AGENTFIELD_API_KEY  control-plane bearer token
 //	AGENT_CALLBACK_URL  base URL the CP uses to reach this node (else localhost)
-//	NODE_ID             node id (default pr-af-go)
+//	NODE_ID             node id (default pr-af)
 //	PORT                listen port (default 8007)
 //	PR_AF_PROVIDER      harness provider (default opencode)
 //	PR_AF_MODEL         harness model (env wins over the code default)
@@ -33,7 +32,7 @@ import (
 
 func main() {
 	n, err := node.BuildAgent(
-		"pr-af-go",
+		"pr-af",
 		"8007",
 		"AI-Native Pull Request Review Agent",
 	)

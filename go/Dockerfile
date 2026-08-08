@@ -4,7 +4,7 @@
 # the paths below (go/go.mod, go/) resolve. The docker-compose.go.yml add-on
 # builds it exactly this way (build.context: ., dockerfile: go/Dockerfile):
 #
-#     docker build -f go/Dockerfile -t pr-af-go:latest .
+#     docker build -f go/Dockerfile -t pr-af:latest .
 #
 # Unlike the SWE-AF Go port, the AgentField Go SDK is a REAL versioned require
 # resolved from proxy.golang.org — so there is NO sparse SDK clone stage, no
@@ -45,7 +45,7 @@ ENV AGENTFIELD_SERVER=http://agentfield:8080 \
     PR_AF_PROVIDER=opencode \
     PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5 \
     PORT=8007 \
-    NODE_ID=pr-af-go \
+    NODE_ID=pr-af \
     HOME=/home/praf \
     PATH=/home/praf/.opencode/bin:${PATH} \
     XDG_DATA_HOME=/home/praf/.local/share \

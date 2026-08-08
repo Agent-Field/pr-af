@@ -33,7 +33,7 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 && golangci-lint run || \
 		echo "golangci-lint not installed; skipping (install: https://golangci-lint.run)"
 
-# Run the PR-AF node (pr-af-go, default port 8007).
+# Run the PR-AF node (pr-af, default port 8007).
 run:
 	go run ./cmd/pr-af
 
@@ -42,8 +42,8 @@ run:
 # a real require pulled by `go mod download`, so there is no SDK clone stage and
 # no build-arg. The compose add-on (docker-compose.go.yml) lives at the repo
 # root and joins the Python pr-af stack's external network + workspaces volume.
-# Override the image tag with: make docker-build IMAGE=myrepo/pr-af-go:dev
-IMAGE ?= pr-af-go:latest
+# Override the image tag with: make docker-build IMAGE=myrepo/pr-af:dev
+IMAGE ?= pr-af:latest
 
 # Build the multi-stage Go image. The Dockerfile expects the REPO ROOT as the
 # build context (it COPYs go/go.mod, go/ ...), so the context is the parent dir.
