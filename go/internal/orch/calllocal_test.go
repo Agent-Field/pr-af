@@ -99,7 +99,7 @@ func TestCallLocalSeamsRouteEveryPhase(t *testing.T) {
 	checkSeam(t, fake, o.rfns.reviewDim, reasoners.NameReviewDimension,
 		reasoners.ReviewDimensionInput{
 			ReviewPrompt: "look", TargetFiles: []string{"a.go"}, CurrentDepth: 1, MaxDepth: 0,
-			DiffPatches: map[string]string{"a.go": "@@"},
+			PrDescription: "author intent", DiffPatches: map[string]string{"a.go": "@@"},
 		})
 	checkSeam(t, fake, o.rfns.postWorthiness, reasoners.NamePostWorthinessGate,
 		reasoners.PostWorthinessInput{Findings: []schemas.ReviewFinding{}})

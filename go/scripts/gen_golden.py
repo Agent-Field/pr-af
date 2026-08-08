@@ -316,6 +316,7 @@ def main() -> None:
         pr_narrative="Adds a retry decorator.",
         risk_surfaces=["error propagation", "timeout handling"],
         intake_summary="Feature PR touching the HTTP client.",
+        pr_description="Retries are fail-soft by design because callers have their own fallback.",
         diff_patches={"client.py": "@@ -1 +1 @@\n-x\n+y", "retry.py": "@@ -2 +2 @@\n-a\n+b"},
         all_dimension_names=["Semantic: error paths", "Mechanical: signatures"],
         reviewer_feedback="drop nitpicks, focus on correctness",
