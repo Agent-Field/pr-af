@@ -469,6 +469,23 @@ func TestReviewDimensionHappyPath(t *testing.T) {
 	}
 }
 
+func TestReviewDimensionThreadsAuthorDescriptionToPrompt(t *testing.T) {
+	h := &mockHarness{payload: `{"findings":[],"sub_reviews":[]}`}
+	_, err := ReviewDimension(context.Background(), Deps{Harness: h}, ReviewDimensionInput{
+		ReviewPrompt:  "Investigate X",
+		TargetFiles:   []string{"a.go"},
+		MaxDepth:      2,
+		PrDescription: "FAIL_SOFT_RATIONALE",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(h.gotPrompt, "## Author's Stated Intent (PR Description)") ||
+		!strings.Contains(h.gotPrompt, "FAIL_SOFT_RATIONALE") {
+		t.Fatal("reviewer prompt did not receive the author description")
+	}
+}
+
 // Contract: at max depth no sub-reviews are forwarded even if the model
 // returned some.
 func TestReviewDimensionAtMaxDepthDropsSubReviews(t *testing.T) {

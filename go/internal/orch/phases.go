@@ -427,6 +427,10 @@ func (o *Orchestrator) runParallelReview(
 	maxDepth := o.config.Budget.MaxReviewDepth
 	sem := semaphore.NewWeighted(int64(o.config.Budget.MaxConcurrentReviewers))
 	g, gctx := errgroup.WithContext(ctx)
+	prDescription := ""
+	if o.prData != nil {
+		prDescription = truncateRunes(strings.TrimSpace(o.prData.Description), 4000)
+	}
 
 	var runDim func(dim schemas.ReviewDimension, depth int)
 	runDim = func(dim schemas.ReviewDimension, depth int) {
@@ -485,6 +489,7 @@ func (o *Orchestrator) runParallelReview(
 				PrNarrative:       narrative,
 				RiskSurfaces:      riskSurfaces,
 				IntakeSummary:     intakeSummary,
+				PrDescription:     prDescription,
 				DiffPatches:       patchArg,
 				AllDimensionNames: otherNames,
 				ReviewerFeedback:  feedback,

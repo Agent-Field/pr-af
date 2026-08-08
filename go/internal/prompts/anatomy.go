@@ -37,7 +37,7 @@ func AnatomyPrompt(intake schemas.IntakeResult, prTitle, prDescription string, p
 		),
 		"pr_metadata", omap(
 			"title", prTitle,
-			"description", runeSlice(prDescription, 500),
+			"description", delimitPRDescription(runeSlice(prDescription, 4000)),
 			"labels", orEmpty(prLabels),
 		),
 		"clusters", clusterDescriptions(clusters),

@@ -150,6 +150,7 @@ func TestReviewDimensionGolden(t *testing.T) {
 		PrNarrative:       "Adds a retry decorator.",
 		RiskSurfaces:      []string{"error propagation", "timeout handling"},
 		IntakeSummary:     "Feature PR touching the HTTP client.",
+		PrDescription:     "Retries are fail-soft by design because callers have their own fallback.",
 		DiffPatches:       map[string]string{"client.py": "@@ -1 +1 @@\n-x\n+y", "retry.py": "@@ -2 +2 @@\n-a\n+b"},
 		AllDimensionNames: []string{"Semantic: error paths", "Mechanical: signatures"},
 		ReviewerFeedback:  "drop nitpicks, focus on correctness",

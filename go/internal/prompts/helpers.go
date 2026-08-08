@@ -181,6 +181,20 @@ func runeSlice(s string, n int) string {
 	return string(runes[:n])
 }
 
+// delimitPRDescription wraps author-controlled text in tags that cannot occur
+// in the text. It mirrors _delimit_pr_description in the Python node.
+func delimitPRDescription(description string) string {
+	if description == "" {
+		return ""
+	}
+
+	delimiter := "PR_AF_AUTHOR_DESCRIPTION"
+	for strings.Contains(description, delimiter) {
+		delimiter += "_"
+	}
+	return "<" + delimiter + ">\n" + description + "\n</" + delimiter + ">"
+}
+
 // firstN returns xs[:n] (Python list slice), safe when len(xs) <= n.
 func firstN[T any](xs []T, n int) []T {
 	if len(xs) <= n {
