@@ -10,30 +10,43 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeCP records the async-execute request the webhook fires and returns a
 // canned execution id, standing in for the control plane.
 type fakeCP struct {
-	server   *httptest.Server
-	gotPath  string
-	gotBody  map[string]any
-	hitCount int
+	url       string
+	client    *http.Client
+	gotPath   string
+	gotBody   map[string]any
+	gotAPIKey string
+	hitCount  int
 }
 
 func newFakeCP(t *testing.T) *fakeCP {
 	t.Helper()
-	cp := &fakeCP{}
-	cp.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cp := &fakeCP{url: "http://control-plane.test"}
+	cp.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		cp.hitCount++
 		cp.gotPath = r.URL.Path
+		cp.gotAPIKey = r.Header.Get("X-API-Key")
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &cp.gotBody)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"execution_id":"exec_abc123"}`))
-	}))
-	t.Cleanup(cp.server.Close)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"execution_id":"exec_abc123"}`)),
+			Request:    r,
+		}, nil
+	})}
 	return cp
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
 }
 
 func sign(secret string, body []byte) string {
@@ -59,9 +72,24 @@ func prComment(action, commentBody, htmlURL string) []byte {
 	return b
 }
 
+func prLabeled(action, label, htmlURL string) []byte {
+	payload := map[string]any{
+		"action":       action,
+		"label":        map[string]any{"name": label},
+		"pull_request": map[string]any{"number": 42, "html_url": htmlURL},
+		"repository":   map[string]any{"full_name": "octo/repo"},
+	}
+	b, _ := json.Marshal(payload)
+	return b
+}
+
 // doWebhook drives n.webhookGitHub with the given event/signature and returns
 // the recorded response plus the decoded JSON body.
 func doWebhook(t *testing.T, n *Node, event, signature string, body []byte) (*httptest.ResponseRecorder, map[string]any) {
+	return doWebhookDelivery(t, n, event, signature, "", body)
+}
+
+func doWebhookDelivery(t *testing.T, n *Node, event, signature, delivery string, body []byte) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(string(body)))
 	if event != "" {
@@ -69,6 +97,9 @@ func doWebhook(t *testing.T, n *Node, event, signature string, body []byte) (*ht
 	}
 	if signature != "" {
 		req.Header.Set("X-Hub-Signature-256", signature)
+	}
+	if delivery != "" {
+		req.Header.Set("X-GitHub-Delivery", delivery)
 	}
 	rec := httptest.NewRecorder()
 	n.webhookGitHub(rec, req)
@@ -154,7 +185,7 @@ func TestWebhookIgnoreGates(t *testing.T) {
 func TestWebhookFiresAsyncReview(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
 	cp := newFakeCP(t)
-	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.server.URL}
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.url, webhookClient: cp.client}
 	prURL := "https://github.com/octo/repo/pull/42"
 
 	rec, resp := doWebhook(t, n, "issue_comment", "",
@@ -199,11 +230,133 @@ func TestWebhookFiresAsyncReview(t *testing.T) {
 	}
 }
 
+func TestWebhookForwardsControlPlaneAPIKey(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+	cp := newFakeCP(t)
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.url, webhookClient: cp.client}
+	prURL := "https://github.com/octo/repo/pull/42"
+
+	t.Setenv("AGENTFIELD_API_KEY", "cp-secret")
+	doWebhook(t, n, "issue_comment", "", prComment("created", "@pr-af", prURL))
+	if cp.gotAPIKey != "cp-secret" {
+		t.Errorf("X-API-Key = %q, want cp-secret", cp.gotAPIKey)
+	}
+
+	t.Setenv("AGENTFIELD_API_KEY", "")
+	doWebhook(t, n, "issue_comment", "", prComment("created", "@pr-af", prURL))
+	if cp.gotAPIKey != "" {
+		t.Errorf("X-API-Key = %q, want absent", cp.gotAPIKey)
+	}
+}
+
+func TestWebhookLabelTrigger(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+	cp := newFakeCP(t)
+	n := &Node{NodeID: "custom-node", AgentFieldServer: cp.url, webhookClient: cp.client}
+	prURL := "https://github.com/octo/repo/pull/42"
+
+	_, resp := doWebhook(t, n, "pull_request", "", prLabeled("opened", "pr-af", prURL))
+	if resp["status"] != "ignored" || resp["reason"] != "pr action=opened" {
+		t.Fatalf("non-labeled action response = %v", resp)
+	}
+	_, resp = doWebhook(t, n, "pull_request", "", prLabeled("labeled", "other", prURL))
+	if resp["status"] != "ignored" || resp["reason"] != "label not a trigger" {
+		t.Fatalf("wrong-label response = %v", resp)
+	}
+	_, resp = doWebhook(t, n, "pull_request", "", prLabeled("labeled", "pr-af", prURL))
+	if resp["status"] != "review_dispatched" || cp.hitCount != 1 {
+		t.Fatalf("default-label response = %v, CP hits = %d", resp, cp.hitCount)
+	}
+	if cp.gotPath != "/api/v1/execute/async/custom-node.review" {
+		t.Errorf("fire path = %q, want custom node endpoint", cp.gotPath)
+	}
+
+	t.Setenv("PR_AF_LABEL", "ready-for-ai")
+	overrideURL := "https://github.com/octo/repo/pull/43"
+	_, resp = doWebhook(t, n, "pull_request", "", prLabeled("labeled", "pr-af", overrideURL))
+	if resp["status"] != "ignored" {
+		t.Fatalf("default label under override response = %v", resp)
+	}
+	_, resp = doWebhook(t, n, "pull_request", "", prLabeled("labeled", "ready-for-ai", overrideURL))
+	if resp["status"] != "review_dispatched" || cp.hitCount != 2 {
+		t.Fatalf("override-label response = %v, CP hits = %d", resp, cp.hitCount)
+	}
+}
+
+func TestWebhookReviewCaps(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+	t.Setenv("PR_AF_MAX_CONCURRENT_REVIEWERS", "2")
+	t.Setenv("PR_AF_MAX_REVIEW_DEPTH", "0")
+	t.Setenv("PR_AF_MAX_COVERAGE_ITERATIONS", "3")
+	cp := newFakeCP(t)
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.url, webhookClient: cp.client}
+
+	doWebhook(t, n, "issue_comment", "", prComment("created", "@pr-af", "https://github.com/octo/repo/pull/42"))
+	input := cp.gotBody["input"].(map[string]any)
+	for key, want := range map[string]float64{
+		"max_concurrent_reviewers": 2,
+		"max_review_depth":         0,
+		"max_coverage_iterations":  3,
+	} {
+		if input[key] != want {
+			t.Errorf("%s = %v, want %v", key, input[key], want)
+		}
+	}
+}
+
+func TestWebhookInvalidReviewCapsAreIgnored(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+	t.Setenv("PR_AF_MAX_CONCURRENT_REVIEWERS", "0")
+	t.Setenv("PR_AF_MAX_REVIEW_DEPTH", "-1")
+	t.Setenv("PR_AF_MAX_COVERAGE_ITERATIONS", "many")
+	cp := newFakeCP(t)
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.url, webhookClient: cp.client}
+
+	rec, resp := doWebhook(t, n, "issue_comment", "", prComment("created", "@pr-af", "https://github.com/octo/repo/pull/42"))
+	if rec.Code != http.StatusOK || resp["status"] != "review_dispatched" {
+		t.Fatalf("invalid caps response: code=%d body=%v", rec.Code, resp)
+	}
+	input := cp.gotBody["input"].(map[string]any)
+	for _, key := range []string{"max_concurrent_reviewers", "max_review_depth", "max_coverage_iterations"} {
+		if _, ok := input[key]; ok {
+			t.Errorf("invalid cap %s unexpectedly forwarded: %v", key, input[key])
+		}
+	}
+}
+
+func TestWebhookLabelDedupe(t *testing.T) {
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
+	cp := newFakeCP(t)
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.url, webhookClient: cp.client}
+	now := time.Unix(1000, 0)
+	n.labelDedupe.now = func() time.Time { return now }
+	payload := prLabeled("labeled", "pr-af", "https://github.com/octo/repo/pull/42")
+
+	_, first := doWebhookDelivery(t, n, "pull_request", "", "delivery-1", payload)
+	_, duplicate := doWebhookDelivery(t, n, "pull_request", "", "delivery-1", payload)
+	_, recent := doWebhookDelivery(t, n, "pull_request", "", "delivery-2", payload)
+	now = now.Add(labelFireTTL + time.Second)
+	_, afterTTL := doWebhookDelivery(t, n, "pull_request", "", "delivery-3", payload)
+
+	if first["status"] != "review_dispatched" || afterTTL["status"] != "review_dispatched" {
+		t.Errorf("first/after-TTL responses = %v / %v", first, afterTTL)
+	}
+	if duplicate["reason"] != "duplicate delivery" {
+		t.Errorf("duplicate response = %v", duplicate)
+	}
+	if recent["reason"] != "recently dispatched" {
+		t.Errorf("recent response = %v", recent)
+	}
+	if cp.hitCount != 2 {
+		t.Errorf("CP hit %d times, want 2", cp.hitCount)
+	}
+}
+
 func TestWebhookBotMentionOverride(t *testing.T) {
 	t.Setenv("GITHUB_WEBHOOK_SECRET", "")
 	t.Setenv("PR_AF_BOT_MENTION", "@reviewbot")
 	cp := newFakeCP(t)
-	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.server.URL}
+	n := &Node{NodeID: "pr-af", AgentFieldServer: cp.url, webhookClient: cp.client}
 	prURL := "https://github.com/octo/repo/pull/7"
 
 	// The default "@pr-af" no longer triggers; the configured "@reviewbot" does.
