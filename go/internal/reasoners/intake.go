@@ -25,9 +25,16 @@ func IntakePhase(ctx context.Context, deps Deps, in IntakeInput) (map[string]any
 	gatePrompt := prompts.IntakeGatePrompt(
 		pr.Title, pr.Description, pr.Labels, pr.Author, filesChanged, languages, pr.CommitMessages,
 	)
+	// Python wraps this .ai() call in try/except and leaves gate_result None on
+	// any failure (harnesses.py intake_phase): providers reached over an
+	// OpenAI-compatible endpoint may not support the structured-output request
+	// .ai() issues, and a node configured for a non-OpenRouter harness has no
+	// AI seam at all. Either way the classification is not worth sinking the
+	// review for — a zero IntakeGate is not confident, so control falls through
+	// to the harness classifier below exactly as Python's does.
 	var gate schemas.IntakeGate
 	if err := aiStructured(ctx, deps.AI, gatePrompt, prompts.IntakeGateSystem, strictAISchemas[strictAISchemaIntakeGate], &gate); err != nil {
-		return nil, err
+		gate = schemas.IntakeGate{}
 	}
 
 	if gate.Confident {
