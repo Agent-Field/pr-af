@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run.sh — one-command E2E harness for the PR-AF Go port.
 #
-# Runs pr-af-go.review over a LOCAL fixture git repo (a seeded 2-commit diff) with
+# Runs pr-af.review over a LOCAL fixture git repo (a seeded 2-commit diff) with
 # the opencode HARNESS fully mocked, so the deterministic bulk of the review
 # pipeline (anatomy -> meta selectors -> review dimensions -> evidence ->
 # adversary -> compound/obligations -> synthesis -> output) runs with ZERO LLM
@@ -55,7 +55,7 @@ CP_PORT=18080
 NODE_PORT=18017
 CP_URL="http://localhost:$CP_PORT"
 NODE_URL="http://localhost:$NODE_PORT"
-NODE_ID="pr-af-go"
+NODE_ID="pr-af"
 KEEP=0
 [[ "${1:-}" == "--keep" ]] && KEEP=1
 
@@ -168,9 +168,9 @@ fi
 ok "control plane healthy ($CP_URL)"
 
 # ---------------------------------------------------------------------------
-# 4. Start the pr-af-go node with the opencode shim wired in
+# 4. Start the pr-af node with the opencode shim wired in
 #    (PR_AF_OPENCODE_BIN points the harness straight at the shim; PATH is belt
-#    and suspenders). NODE_ID=pr-af-go opts into the Go sibling identity.
+#    and suspenders). NODE_ID=pr-af makes the expected identity explicit.
 # ---------------------------------------------------------------------------
 log "starting pr-af node on :$NODE_PORT (shim=$SHIM/opencode, cwd=$RUN_DIR)"
 # cwd matters: harness calls made with an empty Cwd (intake fallback, dedup /
@@ -207,7 +207,7 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 [[ "${RC:-0}" -ge 1 ]] || { err "node never appeared in CP capabilities (see $RUN_DIR/node.log)"; exit 1; }
-ok "pr-af-go node registered (pid $NODE_PID)"
+ok "pr-af node registered (pid $NODE_PID)"
 
 # ---------------------------------------------------------------------------
 # 5. Kick off the async review (repo_path + dry_run=true) and poll to terminal

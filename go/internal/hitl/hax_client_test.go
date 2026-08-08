@@ -77,7 +77,7 @@ func ptr(s string) *string { return &s }
 func TestCreateRequestWireBody(t *testing.T) {
 	clearEnv(t, haxEnvKeys...)
 	// Deterministic sender: display name explicit, key falls back to it.
-	setEnv(t, "HAX_SENDER_NAME", "pr-af-go")
+	setEnv(t, "HAX_SENDER_NAME", "pr-af")
 
 	var (
 		gotMethod string
@@ -152,7 +152,7 @@ func TestCreateRequestWireBody(t *testing.T) {
 	if err := json.Unmarshal(gotBody["sender"], &sender); err != nil {
 		t.Fatalf("decode sender: %v", err)
 	}
-	wantSender := map[string]any{"key": "pr-af-go", "displayName": "pr-af-go"}
+	wantSender := map[string]any{"key": "pr-af", "displayName": "pr-af"}
 	if !reflect.DeepEqual(sender, wantSender) {
 		t.Errorf("sender = %v, want %v", sender, wantSender)
 	}
@@ -162,7 +162,7 @@ func TestCreateRequestWireBody(t *testing.T) {
 // unset — only type, payload and the always-present sender remain.
 func TestCreateRequestMinimalBody(t *testing.T) {
 	clearEnv(t, haxEnvKeys...)
-	setEnv(t, "NODE_ID", "pr-af-go") // sender falls back to NODE_ID
+	setEnv(t, "NODE_ID", "pr-af") // sender falls back to NODE_ID
 
 	var gotBody map[string]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -300,10 +300,10 @@ func TestResolveSender(t *testing.T) {
 		wantKey, wantName  string
 	}{
 		{name: "all unset -> pr-af/pr-af", wantKey: "pr-af", wantName: "pr-af"},
-		{name: "NODE_ID drives both (design case)", nodeID: ptr("pr-af-go"), wantKey: "pr-af-go", wantName: "pr-af-go"},
-		{name: "HAX_SENDER_NAME wins over NODE_ID", senderName: ptr("custom"), nodeID: ptr("pr-af-go"), wantKey: "custom", wantName: "custom"},
+		{name: "NODE_ID drives both (design case)", nodeID: ptr("pr-af"), wantKey: "pr-af", wantName: "pr-af"},
+		{name: "HAX_SENDER_NAME wins over NODE_ID", senderName: ptr("custom"), nodeID: ptr("pr-af"), wantKey: "custom", wantName: "custom"},
 		{name: "explicit key overrides name-derived key", senderName: ptr("disp"), senderKey: ptr("k-explicit"), wantKey: "k-explicit", wantName: "disp"},
-		{name: "empty HAX_SENDER_NAME falls through to NODE_ID", senderName: ptr(""), nodeID: ptr("pr-af-go"), wantKey: "pr-af-go", wantName: "pr-af-go"},
+		{name: "empty HAX_SENDER_NAME falls through to NODE_ID", senderName: ptr(""), nodeID: ptr("pr-af"), wantKey: "pr-af", wantName: "pr-af"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

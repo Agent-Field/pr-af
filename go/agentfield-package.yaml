@@ -1,7 +1,13 @@
 config_version: v1
-name: pr-af-go                          # MUST differ from root "pr-af" (installer registry is keyed by name)
+# This is THE PR-AF node. It deliberately shares the root manifest's name: the
+# root declares `superseded_by` pointing here, so installing this repo installs
+# this package, and a user who already has the Python pr-af gets it replaced in
+# place — same name, same node id, same triggers, secrets kept. Installing the
+# root as a local path (the documented escape hatch) is the one way to get the
+# Python node, and it necessarily takes this name over.
+name: pr-af
 version: 0.1.0
-description: AI-Native Pull Request Review Agent (Go port)
+description: AI-Native Pull Request Review Agent
 author: Agent-Field
 language: go                            # explicit (also auto-detected from go/go.mod)
 
@@ -11,7 +17,9 @@ entrypoint:
   healthcheck: /health
 
 agent_node:
-  node_id: pr-af-go
+  node_id: pr-af
+  # 8007 rather than the Python node's 8004: during the changeover both may be
+  # running, and triggers resolve by node id, not port.
   default_port: 8007
 
 user_environment:

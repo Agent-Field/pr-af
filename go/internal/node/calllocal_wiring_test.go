@@ -27,7 +27,7 @@ func TestReviewHandlerForwardsLocalCaller(t *testing.T) {
 
 	var got orch.Deps
 	n := &Node{
-		NodeID:      "pr-af-go",
+		NodeID:      "pr-af",
 		reviewApp:   &fakeApp{},
 		localCaller: sentinel,
 		runReview: func(_ context.Context, deps orch.Deps, _ schemas.ReviewInput, _ config.ReviewConfig) (schemas.ReviewResult, error) {
@@ -51,7 +51,7 @@ func TestBuildAgentWiresLocalCallerToApp(t *testing.T) {
 	t.Setenv("PORT", "")
 	t.Setenv("OPENROUTER_API_KEY", "")
 
-	n, err := BuildAgent("pr-af-go", "8007", "desc")
+	n, err := BuildAgent("pr-af", "8007", "desc")
 	if err != nil {
 		t.Fatalf("BuildAgent: %v", err)
 	}
