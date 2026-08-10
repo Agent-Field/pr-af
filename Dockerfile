@@ -14,7 +14,7 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 
 RUN pip install --no-cache-dir --prefix=/install \
-    "agentfield>=0.1.84" \
+    "agentfield==0.1.126" \
     "hax-sdk>=0.2.4" \
     "pydantic>=2.0" \
     "httpx>=0.27" \

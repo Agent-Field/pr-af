@@ -37,6 +37,7 @@ class ReviewInput(BaseModel):
     models: dict[str, str] | None = None
 
     # Budget overrides
+    max_concurrent_agents: int | None = None  # Review-wide leaf-agent budget
     max_concurrent_reviewers: int | None = None
     max_coverage_iterations: int | None = None
     max_review_depth: int = 2  # Max recursive sub-review depth (1=flat, 2=one sub-level, 3=max)

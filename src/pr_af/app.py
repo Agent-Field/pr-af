@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -114,6 +115,58 @@ def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
         raise ValueError(f"git checkout of PR #{pr_number} (pr-review) failed: {checkout.stderr.strip()}")
 
 
+def _workspace_mtime(path: str) -> float:
+    """Last-touched time of a review workspace.
+
+    The directory's own mtime doesn't move on re-review — but every fetch
+    rewrites ``.git/FETCH_HEAD`` — so take the freshest of the markers.
+    """
+    times: list[float] = []
+    for candidate in (
+        path,
+        os.path.join(path, ".git"),
+        os.path.join(path, ".git", "FETCH_HEAD"),
+    ):
+        try:
+            times.append(os.path.getmtime(candidate))
+        except OSError:
+            continue
+    return max(times) if times else 0.0
+
+
+def _reap_stale_workspaces(workdir: str, keep: str = "") -> None:
+    """Delete review workspaces idle for more than PR_AF_WORKSPACE_TTL_DAYS.
+
+    Clones under PR_AF_WORKDIR were never removed, so the persistent volume
+    grew one checkout per reviewed PR forever (#65). Runs lazily whenever a
+    managed workspace is resolved — no daemon. The workspace being resolved
+    for the current review (``keep``) is never touched, and an idle TTL means
+    a concurrently active workspace has a fresh ``.git/FETCH_HEAD`` and is
+    skipped. Default 7 days; <= 0 disables.
+    """
+    try:
+        ttl_days = float(os.getenv("PR_AF_WORKSPACE_TTL_DAYS", "7"))
+    except ValueError:
+        ttl_days = 7.0
+    if ttl_days <= 0 or not os.path.isdir(workdir):
+        return
+    cutoff = time.time() - ttl_days * 86400
+    keep_abs = os.path.abspath(keep) if keep else ""
+    for name in os.listdir(workdir):
+        path = os.path.join(workdir, name)
+        if not os.path.isdir(path) or os.path.islink(path):
+            continue
+        if keep_abs and os.path.abspath(path) == keep_abs:
+            continue
+        if _workspace_mtime(path) >= cutoff:
+            continue
+        print(
+            f"[PR-AF] Reaping stale workspace (idle > {ttl_days:g}d): {path}",
+            flush=True,
+        )
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
     workdir = os.getenv("PR_AF_WORKDIR", "/workspaces")
     target = repo_path
@@ -139,6 +192,7 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         workspace_name = f"{repo_name}-pr{pr_number}" if pr_number else repo_name
         target_dir = os.path.join(workdir, workspace_name)
         os.makedirs(workdir, exist_ok=True)
+        _reap_stale_workspaces(workdir, keep=target_dir)
 
         clone_url = target
         gh_token = os.getenv("GH_TOKEN", "")
@@ -202,6 +256,7 @@ async def review(
     ignore_paths: list[str] | None = None,
     hints: list[str] | None = None,
     models: dict[str, str] | None = None,
+    max_concurrent_agents: int | None = None,
     max_concurrent_reviewers: int | None = None,
     max_coverage_iterations: int | None = None,
     max_review_depth: int = 2,
@@ -232,6 +287,7 @@ async def review(
         ignore_paths=ignore_paths or [],
         hints=hints or [],
         models=models,
+        max_concurrent_agents=max_concurrent_agents,
         max_concurrent_reviewers=max_concurrent_reviewers,
         max_coverage_iterations=max_coverage_iterations,
         max_review_depth=min(max_review_depth, 3),
@@ -319,6 +375,7 @@ def _webhook_review_limits() -> dict[str, object]:
     """
     limits: dict[str, object] = {}
     for env_name, input_key, minimum in (
+        ("PR_AF_MAX_CONCURRENT_AGENTS", "max_concurrent_agents", 1),
         ("PR_AF_MAX_CONCURRENT_REVIEWERS", "max_concurrent_reviewers", 1),
         ("PR_AF_MAX_REVIEW_DEPTH", "max_review_depth", 0),
         ("PR_AF_MAX_COVERAGE_ITERATIONS", "max_coverage_iterations", 1),
