@@ -330,6 +330,13 @@ class AIIntegrationConfig(BaseModel):
     )
     max_backoff_seconds: float = Field(default_factory=lambda: float(os.getenv("PR_AF_AI_MAX_BACKOFF_SECONDS", "8.0")))
     opencode_bin: str = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_BIN", "opencode"))
+    aforge_bin: str = Field(
+        default_factory=lambda: os.getenv(
+            "PR_AF_AFORGE_BIN",
+            os.getenv("AFORGE_BIN", "aforge"),
+        )
+    )
+    harness_bin: str = Field(default_factory=lambda: os.getenv("PR_AF_HARNESS_BIN", ""))
     opencode_server: str | None = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_SERVER"))
 
     @classmethod
