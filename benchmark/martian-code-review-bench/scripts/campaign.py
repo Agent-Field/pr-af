@@ -7,16 +7,20 @@ comments (RECALL only — severity labels ignored, per the goal: a HIT = the bug
 was FOUND). Writes an incremental scoreboard. Resumable: a problem whose raw run
 already exists in runs/<id>.json is re-judged, not re-run.
 
-Concurrency-limited so we do not thrash the local runner / opencode semaphore.
-Cost is no object; quality (recall) is the metric.
+Concurrency-limited so we do not thrash the local harness provider. Quality
+(recall) is the primary metric; wall time, agent time, tokens, and cost are
+captured for speed and efficiency comparisons.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import re
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
 from dotenv import load_dotenv
@@ -27,21 +31,27 @@ BENCH_DIR = HERE.parent
 ROOT = HERE.parents[2]
 load_dotenv(ROOT / ".env")
 
-CP = "http://localhost:8080"
+CP = os.getenv("AGENTFIELD_SERVER", "http://localhost:8080").rstrip("/")
 OR_KEY = os.environ["OPENROUTER_API_KEY"]
 JUDGE_MODEL = "anthropic/claude-sonnet-4.6"
-REVIEW_MODEL = "openrouter/z-ai/glm-5.2"
+REVIEW_MODEL = os.getenv("PR_AF_MODEL", "openrouter/z-ai/glm-5.2")
+REVIEW_PROVIDER = os.getenv("PR_AF_PROVIDER", "opencode")
+
+VARIANT = os.getenv("CAMPAIGN_VARIANT", "").strip()
+if VARIANT and not re.fullmatch(r"[a-zA-Z0-9._-]+", VARIANT):
+    raise ValueError("CAMPAIGN_VARIANT may contain only letters, numbers, dot, underscore, and dash")
 
 PROBLEMS = BENCH_DIR / "problems.json"
 # raw execution details (large) — gitignored scratch under the repo root
-RUNS = ROOT / "_glm52_bench" / "runs"
+RUNS = ROOT / "_glm52_bench" / VARIANT / "runs" if VARIANT else ROOT / "_glm52_bench" / "runs"
 RUNS.mkdir(parents=True, exist_ok=True)
 
 # Curated, committed benchmark results — organized for future readers.
-RESULTS_DIR = BENCH_DIR / "results"
+RESULT_SET_DIR = BENCH_DIR / "variants" / VARIANT if VARIANT else BENCH_DIR
+RESULTS_DIR = RESULT_SET_DIR / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-SCORE_JSONL = BENCH_DIR / "scoreboard.jsonl"
-SCORE_MD = BENCH_DIR / "scoreboard.md"
+SCORE_JSONL = RESULT_SET_DIR / "scoreboard.jsonl"
+SCORE_MD = RESULT_SET_DIR / "scoreboard.md"
 
 REVIEW_CONCURRENCY = int(os.getenv("CAMPAIGN_CONCURRENCY", "3"))
 DEPTH = os.getenv("CAMPAIGN_DEPTH", "deep")
@@ -93,6 +103,59 @@ async def poll(client: httpx.AsyncClient, eid: str, label: str) -> dict:
             return data
 
 
+async def collect_workflow_metrics(client: httpx.AsyncClient, details: dict) -> dict:
+    """Sum persisted usage and active agent time across one execution DAG."""
+    execution_ids = {str(details.get("execution_id") or "")}
+    workflow_id = str(details.get("workflow_id") or "")
+    if workflow_id:
+        try:
+            response = await client.get(
+                f"{CP}/api/ui/v1/workflows/{quote(workflow_id, safe='')}/dag",
+                params={"mode": "light"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            execution_ids.update(
+                str(node.get("execution_id"))
+                for node in response.json().get("timeline", [])
+                if node.get("execution_id")
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[metrics] DAG lookup failed: {exc!r}", flush=True)
+
+    execution_ids.discard("")
+    semaphore = asyncio.Semaphore(12)
+
+    async def load(execution_id: str) -> dict | None:
+        async with semaphore:
+            try:
+                response = await client.get(
+                    f"{CP}/api/ui/v1/executions/{quote(execution_id, safe='')}/details",
+                    timeout=30,
+                )
+                response.raise_for_status()
+                return response.json()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[metrics] {execution_id} lookup failed: {exc!r}", flush=True)
+                return None
+
+    nodes = [node for node in await asyncio.gather(*(load(eid) for eid in execution_ids)) if node]
+    costs = [float(node["cost"]) for node in nodes if isinstance(node.get("cost"), (int, float))]
+    total_tokens = sum(
+        int(node.get("total_tokens") or 0) for node in nodes if isinstance(node.get("total_tokens"), (int, float))
+    )
+    agent_duration_ms = sum(
+        int(node.get("duration_ms") or 0) for node in nodes if isinstance(node.get("duration_ms"), (int, float))
+    )
+    return {
+        "cost_usd": round(sum(costs), 8) if costs else None,
+        "total_tokens": total_tokens,
+        "agent_duration_seconds": round(agent_duration_ms / 1000, 3),
+        "execution_nodes": len(nodes),
+        "usage_nodes": sum(1 for node in nodes if node.get("cost") is not None or node.get("total_tokens")),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Judge: recall of golden comments (severity-agnostic)
 # --------------------------------------------------------------------------- #
@@ -122,9 +185,7 @@ def _findings_blob(findings: list[dict]) -> str:
 
 
 def _goldens_blob(goldens: list[dict]) -> str:
-    return "\n".join(
-        f"[G{i}] ({g.get('severity')}) {g.get('comment')}" for i, g in enumerate(goldens)
-    )
+    return "\n".join(f"[G{i}] ({g.get('severity')}) {g.get('comment')}" for i, g in enumerate(goldens))
 
 
 async def judge(client: httpx.AsyncClient, goldens: list[dict], findings: list[dict]) -> dict:
@@ -226,43 +287,85 @@ async def process(client: httpx.AsyncClient, sem: asyncio.Semaphore, prob: dict)
                 print(f"[{pid}] fired {eid}", flush=True)
                 details = await poll(client, eid, pid)
             except Exception as exc:  # noqa: BLE001
-                _record({"id": pid, "repo": prob["repo"], "status": "fire_error",
-                         "error": repr(exc)[:300], "difficulty": prob.get("difficulty_score"),
-                         "n_goldens": len(prob["goldens"]), "hits": 0, "recall": 0.0})
+                _record(
+                    {
+                        "id": pid,
+                        "repo": prob["repo"],
+                        "status": "fire_error",
+                        "error": repr(exc)[:300],
+                        "difficulty": prob.get("difficulty_score"),
+                        "n_goldens": len(prob["goldens"]),
+                        "hits": 0,
+                        "recall": 0.0,
+                    }
+                )
                 return
         # Cache ONLY successful runs so a transient failure retries next time.
         if details.get("status") in ("succeeded", "completed") and isinstance(details.get("output_data"), dict):
+            details["_benchmark_metrics"] = await collect_workflow_metrics(client, details)
             run_file.write_text(json.dumps(details, default=str))
 
     status = details.get("status")
     out = details.get("output_data") or {}
     findings = out.get("findings") or []
     if status not in ("succeeded", "completed") or not isinstance(out, dict):
-        _record({"id": pid, "repo": prob["repo"], "status": f"run_{status}",
-                 "error": (details.get("error_message") or "")[:300],
-                 "difficulty": prob.get("difficulty_score"), "n_goldens": len(prob["goldens"]),
-                 "n_findings": len(findings), "hits": 0, "recall": 0.0})
+        _record(
+            {
+                "id": pid,
+                "repo": prob["repo"],
+                "status": f"run_{status}",
+                "error": (details.get("error_message") or "")[:300],
+                "difficulty": prob.get("difficulty_score"),
+                "n_goldens": len(prob["goldens"]),
+                "n_findings": len(findings),
+                "hits": 0,
+                "recall": 0.0,
+            }
+        )
         return
+
+    metrics = details.get("_benchmark_metrics") or await collect_workflow_metrics(client, details)
 
     # 2. judge (cheap, no repo lock / sem)
     try:
         verdict = await judge(client, prob["goldens"], findings)
     except Exception as exc:  # noqa: BLE001
-        _record({"id": pid, "repo": prob["repo"], "status": "judge_error",
-                 "error": repr(exc)[:300], "difficulty": prob.get("difficulty_score"),
-                 "n_goldens": len(prob["goldens"]), "n_findings": len(findings),
-                 "hits": 0, "recall": 0.0})
+        _record(
+            {
+                "id": pid,
+                "repo": prob["repo"],
+                "status": "judge_error",
+                "error": repr(exc)[:300],
+                "difficulty": prob.get("difficulty_score"),
+                "n_goldens": len(prob["goldens"]),
+                "n_findings": len(findings),
+                "hits": 0,
+                "recall": 0.0,
+            }
+        )
         return
 
     rec = {
-        "id": pid, "repo": prob["repo"], "status": "scored",
+        "id": pid,
+        "repo": prob["repo"],
+        "status": "scored",
         "difficulty": prob.get("difficulty_score"),
-        "n_goldens": verdict["total"], "n_findings": len(findings),
-        "hits": verdict["hits"], "recall": verdict["recall"],
-        "missed": [prob["goldens"][m["golden_idx"]]["comment"][:120]
-                   for m in verdict["matches"] if not m.get("hit")
-                   and 0 <= m.get("golden_idx", -1) < len(prob["goldens"])],
-        "cost_usd": (out.get("summary") or {}).get("cost_usd"),
+        "n_goldens": verdict["total"],
+        "n_findings": len(findings),
+        "hits": verdict["hits"],
+        "recall": verdict["recall"],
+        "missed": [
+            prob["goldens"][m["golden_idx"]]["comment"][:120]
+            for m in verdict["matches"]
+            if not m.get("hit") and 0 <= m.get("golden_idx", -1) < len(prob["goldens"])
+        ],
+        "cost_usd": metrics.get("cost_usd")
+        if metrics.get("cost_usd") is not None
+        else (out.get("summary") or {}).get("cost_usd"),
+        "total_tokens": metrics.get("total_tokens"),
+        "agent_duration_s": metrics.get("agent_duration_seconds"),
+        "execution_nodes": metrics.get("execution_nodes"),
+        "usage_nodes": metrics.get("usage_nodes"),
         "duration_s": (out.get("summary") or {}).get("duration_seconds"),
     }
 
@@ -286,14 +389,16 @@ async def process(client: httpx.AsyncClient, sem: asyncio.Semaphore, prob: dict)
         "n_goldens": verdict["total"],
         "duration_seconds": rec["duration_s"],
         "cost_usd": rec["cost_usd"],
+        "total_tokens": rec["total_tokens"],
+        "agent_duration_seconds": rec["agent_duration_s"],
+        "execution_nodes": rec["execution_nodes"],
+        "usage_nodes": rec["usage_nodes"],
         "goldens": prob["goldens"],
         "golden_verdicts": verdict["matches"],
         # EXACT, untrimmed findings — every field, full bodies/evidence/suggestions.
         "findings": findings,
     }
-    (RESULTS_DIR / f"{pid.replace('/', '_')}.json").write_text(
-        json.dumps(result_doc, indent=2, default=str)
-    )
+    (RESULTS_DIR / f"{pid.replace('/', '_')}.json").write_text(json.dumps(result_doc, indent=2, default=str))
     _record(rec)
     print(f"[{pid}] SCORED recall={rec['recall']} ({rec['hits']}/{rec['n_goldens']})", flush=True)
 
@@ -319,22 +424,29 @@ def _render() -> None:
     micro = round(tot_h / tot_g, 3) if tot_g else 0.0
     macro = round(sum(r["recall"] for r in scored) / len(scored), 3) if scored else 0.0
     lines = [
-        "# GLM-5.2 + PR-AF — Martian Code-Review-Bench scoreboard",
+        f"# GLM-5.2 + PR-AF ({REVIEW_PROVIDER}) — Martian Code-Review-Bench scoreboard",
         "",
         f"Scored {len(scored)} problems · micro-recall {tot_h}/{tot_g} = **{micro}** · "
         f"macro-recall **{macro}** · judge={JUDGE_MODEL} · severity-agnostic (HIT = bug found)",
         "",
-        "| problem | repo | diff | goldens | hits | recall | findings | missed |",
-        "|---|---|---|---|---|---|---|---|",
+        "| problem | repo | diff | goldens | hits | recall | findings | wall | agent time | tokens | cost | missed |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in sorted(rows, key=lambda x: -(x.get("difficulty") or 0)):
         if r.get("status") != "scored":
-            lines.append(f"| {r['id']} | {r['repo']} | {r.get('difficulty')} | "
-                         f"— | — | _{r.get('status')}_ | — | {r.get('error','')[:60]} |")
+            lines.append(
+                f"| {r['id']} | {r['repo']} | {r.get('difficulty')} | "
+                f"— | — | _{r.get('status')}_ | — | — | — | — | — | {r.get('error', '')[:60]} |"
+            )
             continue
         missed = "; ".join(r.get("missed", []))[:80] or "—"
-        lines.append(f"| {r['id']} | {r['repo']} | {r.get('difficulty')} | {r['n_goldens']} | "
-                     f"{r['hits']} | **{r['recall']}** | {r.get('n_findings')} | {missed} |")
+        lines.append(
+            f"| {r['id']} | {r['repo']} | {r.get('difficulty')} | {r['n_goldens']} | "
+            f"{r['hits']} | **{r['recall']}** | {r.get('n_findings')} | "
+            f"{r.get('duration_s') or '—'} | {r.get('agent_duration_s') or '—'} | "
+            f"{r.get('total_tokens') or '—'} | "
+            f"{r.get('cost_usd') if r.get('cost_usd') is not None else '—'} | {missed} |"
+        )
     SCORE_MD.write_text("\n".join(lines) + "\n")
 
 
@@ -349,8 +461,12 @@ async def main() -> None:
     limit = int(os.getenv("CAMPAIGN_LIMIT", "0"))
     if limit > 0:
         todo = todo[:limit]
-    print(f"[campaign] {len(problems)} runnable, {len(done)} already scored, "
-          f"running {len(todo)} this batch; concurrency={REVIEW_CONCURRENCY} depth={DEPTH}", flush=True)
+    print(
+        f"[campaign] {len(problems)} runnable, {len(done)} already scored, "
+        f"running {len(todo)} this batch; provider={REVIEW_PROVIDER} model={REVIEW_MODEL} "
+        f"variant={VARIANT or 'historical-default'} concurrency={REVIEW_CONCURRENCY} depth={DEPTH}",
+        flush=True,
+    )
     sem = asyncio.Semaphore(REVIEW_CONCURRENCY)
     async with httpx.AsyncClient() as client:
         await asyncio.gather(*(process(client, sem, p) for p in todo))

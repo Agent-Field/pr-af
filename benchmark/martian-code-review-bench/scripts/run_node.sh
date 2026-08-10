@@ -18,10 +18,18 @@ export AGENTFIELD_SERVER="${AGENTFIELD_SERVER:-http://localhost:8080}"
 export AGENT_CALLBACK_URL="${AGENT_CALLBACK_URL:-http://127.0.0.1:8004}"
 
 # --- the experiment: GLM-5.2 everywhere ---
-export PR_AF_PROVIDER=opencode
-export PR_AF_MODEL=openrouter/z-ai/glm-5.2     # .harness() -> opencode -m
+# Keep opencode as the historical default. Set PR_AF_PROVIDER=aforge to run the
+# exact same campaign through Aforge without editing this script.
+export PR_AF_PROVIDER="${PR_AF_PROVIDER:-opencode}"
+export PR_AF_MODEL="${PR_AF_MODEL:-openrouter/z-ai/glm-5.2}"  # .harness()
 export PR_AF_AI_MODEL=openrouter/z-ai/glm-5.2  # .ai()      -> litellm (needs openrouter/ prefix too)
 export PR_AF_MAX_TURNS=60
+
+if [ "$PR_AF_PROVIDER" = "aforge" ]; then
+  export AFORGE_BIN="${AFORGE_BIN:-aforge}"
+  export AFORGE_MODEL="${AFORGE_MODEL:-z-ai/glm-5.2}"
+  export AFORGE_MAX_CONCURRENT="${AFORGE_MAX_CONCURRENT:-24}"
+fi
 
 # Generous budget for the hardest Martian-bench PR (keycloak/keycloak#32918).
 export PR_AF_MAX_COST_USD=8.0
@@ -47,6 +55,6 @@ fi
 # Force HITL OFF (no human approval gate) — we want a direct dry-run.
 unset HAX_API_KEY || true
 
-echo "[run_node] PR_AF_MODEL=$PR_AF_MODEL  PR_AF_AI_MODEL=$PR_AF_AI_MODEL"
+echo "[run_node] PR_AF_PROVIDER=$PR_AF_PROVIDER  PR_AF_MODEL=$PR_AF_MODEL  PR_AF_AI_MODEL=$PR_AF_AI_MODEL"
 echo "[run_node] server=$AGENTFIELD_SERVER  budget=\$$PR_AF_MAX_COST_USD / ${PR_AF_MAX_DURATION_SECONDS}s"
 exec uv run python main.py
