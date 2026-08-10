@@ -13,10 +13,13 @@ import asyncio
 import os
 import subprocess
 import time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
 
 from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
 from .diff_engine import parse_unified_diff
@@ -130,6 +133,28 @@ class ReviewOrchestrator:
         self.adversary_confirmed_count = 0
         self.adversary_challenged_count = 0
         self.effective_depth: str = "standard"
+
+        # Review-wide agent-concurrency budget (#65): ONE semaphore for every
+        # leaf agent invocation across all phases — including phases that run
+        # concurrently (coverage loop ‖ consistency-verify), which previously
+        # each brought their own limiter (or none) and oversubscribed the
+        # process. min() keeps the deprecated max_concurrent_reviewers knob
+        # binding for callers that still set it.
+        agent_cap = min(
+            self.config.budget.max_concurrent_agents,
+            self.config.budget.max_concurrent_reviewers,
+        )
+        self._agent_semaphore = asyncio.Semaphore(max(1, agent_cap))
+
+    async def _agent_slot(self, coro: Awaitable[Any]) -> Any:
+        """Await one leaf agent call under the review-wide concurrency budget.
+
+        Only leaf calls may be wrapped: a coroutine that itself acquires the
+        budget (directly or via a child) must never run under a held slot, or
+        low caps deadlock on hold-and-wait.
+        """
+        async with self._agent_semaphore:
+            return await coro
 
     async def run(self) -> ReviewResult:
         print("[PR-AF] Starting 7-phase pipeline", flush=True)
@@ -268,7 +293,9 @@ class ReviewOrchestrator:
             kept = reviewer_findings
             if len(reviewer_findings) > 1:
                 try:
-                    pw = await post_worthiness_gate(findings=[f.model_dump() for f in reviewer_findings])
+                    pw = await self._agent_slot(
+                        post_worthiness_gate(findings=[f.model_dump() for f in reviewer_findings])
+                    )
                     sel = [f for i, f in enumerate(reviewer_findings)
                            if i in set(pw.get("keep_indices", range(len(reviewer_findings))))]
                     if sel:
@@ -425,10 +452,11 @@ class ReviewOrchestrator:
         else:
             raise ValueError("One of pr_url, diff_text, or repo_path is required")
 
-        result_raw = await intake_phase(
+        result_raw = await self._agent_slot(intake_phase(
+
             pr_data=self.pr_data.model_dump(),
             depth=self.input.depth,
-        )
+        ))
         self.agent_invocations += 1
         self._register_cost("intake", self._extract_cost(result_raw))
         intake = IntakeResult.model_validate(result_raw)
@@ -440,11 +468,11 @@ class ReviewOrchestrator:
         if self.pr_data is None:
             raise RuntimeError("PR data not initialized")
 
-        result_raw = await anatomy_phase(
+        result_raw = await self._agent_slot(anatomy_phase(
             pr_data=self.pr_data.model_dump(),
             intake=intake.model_dump(),
             repo_path=self.input.repo_path or "",
-        )
+        ))
         self.agent_invocations += 1
         self._register_cost("anatomy", self._extract_cost(result_raw))
         anatomy = AnatomyResult.model_validate(result_raw)
@@ -489,14 +517,14 @@ class ReviewOrchestrator:
 
         async def run_lens(lens_name: str) -> MetaDimensionResult:
             fn = lens_map[lens_name]
-            result_raw = await fn(
+            result_raw = await self._agent_slot(fn(
                 intake=intake.model_dump(),
                 anatomy=anatomy.model_dump(),
                 depth=review_depth,
                 repo_path=self.input.repo_path or "",
                 diff_patches=self._build_file_patches(),
                 reviewer_feedback=reviewer_feedback,
-            )
+            ))
             self.agent_invocations += 1
             self._register_cost("meta_selectors", self._extract_cost(result_raw))
             return MetaDimensionResult.model_validate(result_raw)
@@ -568,12 +596,12 @@ class ReviewOrchestrator:
 
         ev_packages = {f.title: evidence_map[f.title].model_dump() for f in high_priority if f.title in evidence_map}
 
-        verifier_raw = await evidence_verifier(
+        verifier_raw = await self._agent_slot(evidence_verifier(
             findings=[f.model_dump() for f in high_priority],
             evidence_packages=ev_packages if ev_packages else None,
             pr_context=self._build_pr_context_string(),
             repo_path=self.input.repo_path or "",
-        )
+        ))
         self.agent_invocations += 1
         self._register_cost("adversary", self._extract_cost(verifier_raw))
 
@@ -665,13 +693,13 @@ class ReviewOrchestrator:
                 if ev_entry:
                     batch_evidence[f.title] = ev_entry
 
-            adversary_raw = await adversary_phase(
+            adversary_raw = await self._agent_slot(adversary_phase(
                 findings=[f.model_dump() for f in batch],
                 ai_generated_confidence=ai_confidence,
                 pr_context=self._build_pr_context_string(),
                 repo_path=self.input.repo_path or "",
                 evidence_packages=batch_evidence if batch_evidence else None,
-            )
+            ))
             self.agent_invocations += 1
             self._register_cost("adversary", self._extract_cost(adversary_raw))
             return self._extract_adversary_results(adversary_raw)
@@ -692,7 +720,10 @@ class ReviewOrchestrator:
         reviewer_feedback: str = "",
     ) -> None:
         max_depth = self.config.budget.max_review_depth
-        semaphore = asyncio.Semaphore(self.config.budget.max_concurrent_reviewers)
+        # The shared review-wide budget, NOT a fresh local semaphore: the
+        # coverage loop calls this again while consistency-verify is running,
+        # and independent limiters oversubscribed the process (#65).
+        semaphore = self._agent_semaphore
 
         async def run_dimension(dim: ReviewDimension, depth: int) -> None:
             if self._budget_or_timeout_exhausted("review"):
@@ -706,7 +737,9 @@ class ReviewOrchestrator:
                 primed = ""
                 if self.config.budget.evidence_pack_reviewers and self.input.repo_path:
                     try:
-                        primed = build_dimension_pack(self.input.repo_path, dim.target_files, dim_patches)
+                        primed = await asyncio.to_thread(
+                            build_dimension_pack, self.input.repo_path, dim.target_files, dim_patches
+                        )
                     except Exception:  # noqa: BLE001
                         primed = ""
 
@@ -846,11 +879,11 @@ class ReviewOrchestrator:
 
             reviewed_clusters = self._reviewed_clusters(anatomy, findings)
             dimension_names = [d.name for d in plan.dimensions]
-            gate_raw = await coverage_gate(
+            gate_raw = await self._agent_slot(coverage_gate(
                 anatomy=anatomy.model_dump(),
                 reviewed_clusters=reviewed_clusters,
                 dimension_names_reviewed=dimension_names,
-            )
+            ))
             self.agent_invocations += 1
             self._register_cost("coverage", self._extract_cost(gate_raw))
             gate = gate_raw if isinstance(gate_raw, dict) else {}
@@ -919,15 +952,16 @@ class ReviewOrchestrator:
             return all_findings
         repo = self.input.repo_path or ""
         try:
-            ob_raw = await extract_obligations(
+            ob_raw = await self._agent_slot(extract_obligations(
                 diff_patches=diff_patches, repo_path=repo, pr_context=self._build_pr_context_string()
-            )
+            ))
         except Exception as exc:  # noqa: BLE001
             print(f"[PR-AF] Consistency-verify (extract) skipped: {exc}", flush=True)
             return all_findings
         self.agent_invocations += 1
         self._register_cost("review", self._extract_cost(ob_raw))
-        obligations = (ob_raw.get("obligations", []) if isinstance(ob_raw, dict) else [])[:12]
+        max_obligations = self.config.budget.max_consistency_obligations
+        obligations = (ob_raw.get("obligations", []) if isinstance(ob_raw, dict) else [])[:max_obligations]
         if not obligations:
             print("[PR-AF] Consistency-verify: 0 obligations", flush=True)
             return all_findings
@@ -935,7 +969,7 @@ class ReviewOrchestrator:
 
         async def _verify(o: dict) -> dict:
             try:
-                return await verify_obligation(obligation=o, repo_path=repo)
+                return await self._agent_slot(verify_obligation(obligation=o, repo_path=repo))
             except Exception:  # noqa: BLE001
                 return {"holds": True}
 
@@ -1416,10 +1450,10 @@ class ReviewOrchestrator:
     ) -> list[ReviewFinding]:
         individual_summary = "\n".join(f"- [{f.severity}] {f.title} ({f.file_path})" for f in individual_findings[:20])
 
-        dedup_raw = await compound_dedup_phase(
+        dedup_raw = await self._agent_slot(compound_dedup_phase(
             compound_findings=[f.model_dump() for f in compound_findings],
             individual_findings_summary=individual_summary,
-        )
+        ))
         self.agent_invocations += 1
         self._register_cost("cross_ref", self._extract_cost(dedup_raw))
 
@@ -1459,11 +1493,11 @@ class ReviewOrchestrator:
                 cluster_evidence = {
                     title: evidence_map[title].model_dump() for title in cluster_titles if title in evidence_map
                 }
-            task = compound_finder_phase(
+            task = self._agent_slot(compound_finder_phase(
                 cluster_findings=[finding.model_dump() for finding in cluster],
                 repo_path=self.input.repo_path or "",
                 evidence_map=cluster_evidence or None,
-            )
+            ))
             compound_tasks.append(task)
 
         results = await asyncio.gather(*compound_tasks, return_exceptions=True)

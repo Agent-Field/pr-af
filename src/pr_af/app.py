@@ -202,6 +202,7 @@ async def review(
     ignore_paths: list[str] | None = None,
     hints: list[str] | None = None,
     models: dict[str, str] | None = None,
+    max_concurrent_agents: int | None = None,
     max_concurrent_reviewers: int | None = None,
     max_coverage_iterations: int | None = None,
     max_review_depth: int = 2,
@@ -232,6 +233,7 @@ async def review(
         ignore_paths=ignore_paths or [],
         hints=hints or [],
         models=models,
+        max_concurrent_agents=max_concurrent_agents,
         max_concurrent_reviewers=max_concurrent_reviewers,
         max_coverage_iterations=max_coverage_iterations,
         max_review_depth=min(max_review_depth, 3),
@@ -319,6 +321,7 @@ def _webhook_review_limits() -> dict[str, object]:
     """
     limits: dict[str, object] = {}
     for env_name, input_key, minimum in (
+        ("PR_AF_MAX_CONCURRENT_AGENTS", "max_concurrent_agents", 1),
         ("PR_AF_MAX_CONCURRENT_REVIEWERS", "max_concurrent_reviewers", 1),
         ("PR_AF_MAX_REVIEW_DEPTH", "max_review_depth", 0),
         ("PR_AF_MAX_COVERAGE_ITERATIONS", "max_coverage_iterations", 1),

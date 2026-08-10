@@ -41,7 +41,22 @@ class BudgetConfig(BaseModel):
     )
 
     # Concurrency
+    # Review-wide agent budget: the total number of leaf agent invocations
+    # (reviewers, obligation verifiers, adversary batches, gates, …) allowed
+    # in flight at once, across ALL phases — including phases that run
+    # concurrently (coverage loop ‖ consistency-verify). This is the knob that
+    # bounds peak opencode-subprocess count and therefore peak memory (#65).
+    max_concurrent_agents: int = Field(
+        default_factory=lambda: int(os.getenv("PR_AF_MAX_CONCURRENT_AGENTS", "8"))
+    )
+    # Deprecated alias: historically capped only reviewer dimensions. Still
+    # honored — the effective budget is min(max_concurrent_agents, this).
     max_concurrent_reviewers: int = 8
+
+    # Cap on consistency-verify obligations (one verifier agent each).
+    max_consistency_obligations: int = Field(
+        default_factory=lambda: int(os.getenv("PR_AF_MAX_CONSISTENCY_OBLIGATIONS", "12"))
+    )
 
     # Inner loop caps (per-reviewer)
     max_reference_follows_per_reviewer: int = 3
@@ -256,6 +271,8 @@ class ReviewConfig(BaseModel):
 
         config.budget.max_cost_usd = review_input.max_cost_usd
         config.budget.max_duration_seconds = review_input.max_duration_seconds
+        if review_input.max_concurrent_agents is not None:
+            config.budget.max_concurrent_agents = review_input.max_concurrent_agents
         if review_input.max_concurrent_reviewers is not None:
             config.budget.max_concurrent_reviewers = review_input.max_concurrent_reviewers
         if review_input.max_coverage_iterations is not None:
