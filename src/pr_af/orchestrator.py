@@ -13,6 +13,7 @@ import asyncio
 import os
 import subprocess
 import time
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
@@ -82,6 +83,28 @@ def _unwrap(result: object) -> dict:
         if "result" in result:
             return cast("dict", result["result"])
     return cast("dict", result)
+
+
+def _matches_ignore_pattern(path: str, pattern: str) -> bool:
+    """Glob match for ignore_paths entries.
+
+    fnmatch's ``*`` crosses ``/``, so ``.github/**`` and ``**/*.generated.*``
+    work directly; the extra branches make ``**/name`` also match a top-level
+    ``name`` and let extension-only patterns (``*.md``) match by basename.
+    """
+    path = path.lstrip("/")
+    if fnmatch(path, pattern):
+        return True
+    if pattern.startswith("**/") and fnmatch(path, pattern[3:]):
+        return True
+    prefix = pattern[:-3]
+    if pattern.endswith("/**") and (path == prefix or path.startswith(prefix + "/")):
+        return True
+    return "/" not in pattern and fnmatch(os.path.basename(path), pattern)
+
+
+def _is_ignored_path(path: str, patterns: list[str]) -> bool:
+    return any(_matches_ignore_pattern(path, pattern) for pattern in patterns)
 
 
 class ReviewOrchestrator:
@@ -452,6 +475,8 @@ class ReviewOrchestrator:
         else:
             raise ValueError("One of pr_url, diff_text, or repo_path is required")
 
+        self.pr_data = self._apply_ignore_paths(self.pr_data)
+
         result_raw = await self._agent_slot(intake_phase(
 
             pr_data=self.pr_data.model_dump(),
@@ -461,6 +486,39 @@ class ReviewOrchestrator:
         self._register_cost("intake", self._extract_cost(result_raw))
         intake = IntakeResult.model_validate(result_raw)
         return intake
+
+    def _apply_ignore_paths(self, pr_data: GitHubPRData) -> GitHubPRData:
+        """Drop ignore_paths-matched files from the review input.
+
+        Applied before intake so every downstream consumer — depth resolution,
+        anatomy, meta-selectors, reviewers, obligation extraction — sees only
+        reviewable files. Generated churn (a lockfile regen can be a 60k-line
+        diff) otherwise inflates every prompt, trips depth escalation, and
+        drives the fan-out that OOM-killed the node in #65.
+        """
+        patterns = self.config.ignore_paths
+        if not patterns or not pr_data.changed_files:
+            return pr_data
+        kept: list[ChangedFile] = []
+        dropped: list[ChangedFile] = []
+        for cf in pr_data.changed_files:
+            (dropped if _is_ignored_path(cf.path, patterns) else kept).append(cf)
+        if not dropped:
+            return pr_data
+        dropped_lines = sum(len(cf.patch.splitlines()) for cf in dropped if cf.patch)
+        listed = ", ".join(cf.path for cf in dropped[:5])
+        suffix = f" (+{len(dropped) - 5} more)" if len(dropped) > 5 else ""
+        print(
+            f"[PR-AF] Ignoring {len(dropped)} file(s) matching ignore_paths, "
+            f"{dropped_lines} diff lines dropped: {listed}{suffix}",
+            flush=True,
+        )
+        filtered_diff = "\n".join(
+            f"diff --git a/{cf.path} b/{cf.path}\n--- a/{cf.path}\n+++ b/{cf.path}\n{cf.patch}"
+            for cf in kept
+            if cf.patch
+        )
+        return pr_data.model_copy(update={"changed_files": kept, "diff": filtered_diff})
 
     async def _run_anatomy(self, intake: IntakeResult) -> AnatomyResult:
         if self._budget_or_timeout_exhausted("anatomy"):
