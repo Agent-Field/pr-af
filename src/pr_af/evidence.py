@@ -16,10 +16,20 @@ if TYPE_CHECKING:
 # reviewers, evidence-extract/verify, adversary, compound, consistency). Cache by
 # (abspath, mtime) so a re-checkout (new mtime) invalidates — zero quality cost, just
 # eliminates redundant disk reads within a review.
+# The cache is process-lifetime and spans reviews/repos, so it is bounded by BYTES,
+# not just entry count — 2000 large files could otherwise pin multiple GB (#65).
 _FILE_CACHE: dict[tuple[str, float], list[str]] = {}
+_FILE_CACHE_BYTES = 0
+_FILE_CACHE_MAX_BYTES = 128 * 1024 * 1024
+_FILE_CACHE_MAX_ENTRIES = 2000
+
+# Each identifier mentioned by a finding costs one repo-wide `grep` child; finding
+# bodies can mention dozens, and extraction runs 10 findings at a time (#65).
+_MAX_IDENTIFIERS_PER_FINDING = 8
 
 
 def _read_file_lines(abspath: str) -> list[str]:
+    global _FILE_CACHE_BYTES
     try:
         mtime = os.path.getmtime(abspath)
     except OSError:
@@ -33,9 +43,14 @@ def _read_file_lines(abspath: str) -> list[str]:
             lines = handle.read().splitlines(keepends=True)
     except OSError:
         return []
-    if len(_FILE_CACHE) > 2000:  # bound memory across many repos/files
+    size = sum(len(line) for line in lines)
+    if size > _FILE_CACHE_MAX_BYTES:  # pathological single file: serve it uncached
+        return lines
+    if len(_FILE_CACHE) >= _FILE_CACHE_MAX_ENTRIES or _FILE_CACHE_BYTES + size > _FILE_CACHE_MAX_BYTES:
         _FILE_CACHE.clear()
+        _FILE_CACHE_BYTES = 0
     _FILE_CACHE[key] = lines
+    _FILE_CACHE_BYTES += size
     return lines
 
 
@@ -141,7 +156,7 @@ async def extract_evidence_for_findings(
         async with semaphore:
             normalized_file = _normalize_relative_path(repo_path, finding.file_path)
             text_blob = "\n".join([finding.title, finding.body, finding.evidence])
-            identifiers = _extract_mentioned_identifiers(text_blob)
+            identifiers = _extract_mentioned_identifiers(text_blob)[:_MAX_IDENTIFIERS_PER_FINDING]
 
             primary_task = asyncio.to_thread(
                 _read_code_snippet,
