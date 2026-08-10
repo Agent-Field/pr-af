@@ -41,7 +41,7 @@ user_environment:
       type: secret
       scope: global
     - name: PR_AF_PROVIDER
-      description: harness provider
+      description: harness provider (aforge | claude-code | codex | gemini | opencode)
       default: opencode
     - name: PR_AF_MODEL
       description: harness model
@@ -56,7 +56,7 @@ user_environment:
     - name: PR_AF_MAX_COVERAGE_ITERATIONS
       description: optional coverage iteration cap for webhook-triggered reviews (minimum 1)
     - name: PR_AF_HARNESS_BIN
-      description: optional executable override for every harness provider (unset uses provider defaults)
+      description: optional executable override for every harness provider (set to an aforge-v2 binary with PR_AF_PROVIDER=aforge)
     - name: PR_AF_MAX_COST_USD
       description: per-run cost ceiling
       default: "2.0"

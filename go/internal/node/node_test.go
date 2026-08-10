@@ -16,6 +16,8 @@ func TestHarnessConfigProviderAwareBinary(t *testing.T) {
 	}{
 		{"codex uses SDK default", config.AIIntegrationConfig{Provider: "codex", OpencodeBin: "C:/bin/opencode-custom"}, ""},
 		{"opencode uses configured binary", config.AIIntegrationConfig{Provider: "opencode", OpencodeBin: "C:/bin/opencode-custom"}, "C:/bin/opencode-custom"},
+		{"aforge uses SDK default", config.AIIntegrationConfig{Provider: "aforge", OpencodeBin: "C:/bin/opencode-custom"}, ""},
+		{"generic override selects aforge", config.AIIntegrationConfig{Provider: "aforge", HarnessBin: "C:/bin/aforge-custom"}, "C:/bin/aforge-custom"},
 		{"generic override wins", config.AIIntegrationConfig{Provider: "codex", OpencodeBin: "C:/bin/opencode-custom", HarnessBin: "C:/bin/provider-custom"}, "C:/bin/provider-custom"},
 		{"generic override wins for opencode", config.AIIntegrationConfig{Provider: "opencode", OpencodeBin: "C:/bin/opencode-custom", HarnessBin: "C:/bin/provider-custom"}, "C:/bin/provider-custom"},
 	}

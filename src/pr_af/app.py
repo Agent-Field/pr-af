@@ -42,7 +42,8 @@ app = Agent(
         model=_ai_config.harness_model,
         max_turns=_ai_config.max_turns,
         env=_ai_config.provider_env(),
-        opencode_bin=_ai_config.opencode_bin,
+        opencode_bin=_ai_config.harness_bin or _ai_config.opencode_bin,
+        aforge_bin=_ai_config.harness_bin or _ai_config.aforge_bin,
         permission_mode="auto",
     ),
     ai_config=AIConfig(
