@@ -61,6 +61,27 @@ func TestRunFailsBeforeOutputWhenAllDimensionsFailSchemaParsing(t *testing.T) {
 	}
 }
 
+func TestMetaSelectorsFailClosedWhenNoDimensionsAreProduced(t *testing.T) {
+	o := degradationOrchestrator(t)
+	emptyMeta := func(context.Context, reasoners.Deps, reasoners.MetaInput) (map[string]any, error) {
+		return map[string]any{"dimensions": []any{}}, nil
+	}
+	o.rfns.metaSemantic = emptyMeta
+	o.rfns.metaMechanical = emptyMeta
+	o.rfns.metaSystemic = emptyMeta
+
+	_, err := o.runMetaSelectors(
+		context.Background(),
+		schemas.IntakeResult{},
+		schemas.AnatomyResult{},
+		"standard",
+		"",
+	)
+	if err == nil || !strings.Contains(err.Error(), "no review dimensions were produced") {
+		t.Fatalf("runMetaSelectors error = %v, want fail-closed empty-plan error", err)
+	}
+}
+
 func TestMixedAndCleanDimensionsExposeOnlyActualDegradation(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

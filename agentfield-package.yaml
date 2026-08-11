@@ -70,8 +70,9 @@ user_environment:
       description: Per-run wall-clock ceiling (seconds)
       default: "3600"
     # Harness CLIs in JSON mode emit events only at completion boundaries, so a
-    # long single completion looks silent; the old 120s SDK default killed
-    # healthy runs.
+    # long single completion looks silent. Real large-PR phases can exceed ten
+    # minutes, so keep this below the review wall-clock cap but above observed
+    # healthy single-completion latency.
     - name: AGENTFIELD_HARNESS_IDLE_SECONDS
       description: harness no-output watchdog window (seconds)
-      default: "360"
+      default: "1200"

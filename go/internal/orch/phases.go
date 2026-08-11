@@ -326,6 +326,11 @@ func (o *Orchestrator) runMetaSelectors(
 		})
 		allDimensions = allDimensions[:profile.MaxDimensions]
 	}
+	if len(allDimensions) == 0 {
+		return schemas.ReviewPlan{}, fmt.Errorf(
+			"no review dimensions were produced; refusing to publish a clean verdict",
+		)
+	}
 
 	// ReviewPlan is NOT default-seeded in schemas (design §5), so seed the
 	// pydantic BudgetAllocation() default for total_budget explicitly — otherwise

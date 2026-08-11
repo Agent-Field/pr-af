@@ -164,7 +164,7 @@ The node is configured entirely through the environment.
 | `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider; unset uses provider defaults |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
-| `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
+| `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `1200`) — harness CLIs in JSON mode emit events only at completion boundaries, and large-PR phases can take more than ten minutes |
 | `HAX_API_KEY`               | Optional — enables the HITL review-approval gate when set      |
 
 Note: the code default model is `minimax/minimax-m2.5`, while the Docker image /
