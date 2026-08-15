@@ -1,3 +1,7 @@
+ARG AFORGE_IMAGE=ghcr.io/agent-field/aforge-v2:chat-v2-exec
+FROM ${AFORGE_IMAGE} AS aforge
+
+
 FROM python:3.11-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -14,7 +18,7 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 
 RUN pip install --no-cache-dir --prefix=/install \
-    "agentfield==0.1.126" \
+    "agentfield @ git+https://github.com/Agent-Field/agentfield.git@bfd34426d1bdec3cbbfa946682a22ef0a1b91503#subdirectory=sdk/python" \
     "hax-sdk>=0.2.4" \
     "pydantic>=2.0" \
     "httpx>=0.27" \
@@ -32,7 +36,8 @@ ARG OPENCODE_VERSION=1.17.15
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AGENTFIELD_SERVER=http://agentfield:8080 \
-    PR_AF_PROVIDER=opencode \
+    PR_AF_PROVIDER=aforge \
+    AGENTFIELD_AFORGE_COMMAND=exec \
     PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5 \
     PORT=8004 \
     HOME=/home/praf \
@@ -55,6 +60,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install /usr/local
+COPY --from=aforge /aforge /usr/local/bin/aforge
 COPY src/ /app/src/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

@@ -20,3 +20,19 @@ def test_generic_harness_binary_is_available_to_all_providers(monkeypatch) -> No
     config = AIIntegrationConfig.from_env()
 
     assert config.harness_bin == "/opt/harness"
+
+
+def test_aforge_exec_is_the_default(monkeypatch) -> None:
+    monkeypatch.delenv("PR_AF_PROVIDER", raising=False)
+    monkeypatch.delenv("AGENTFIELD_AFORGE_COMMAND", raising=False)
+
+    config = AIIntegrationConfig.from_env()
+
+    assert config.provider == "aforge"
+    assert config.provider_env()["AGENTFIELD_AFORGE_COMMAND"] == "exec"
+
+
+def test_opencode_remains_an_explicit_rollback(monkeypatch) -> None:
+    monkeypatch.setenv("PR_AF_PROVIDER", "opencode")
+
+    assert AIIntegrationConfig.from_env().provider == "opencode"

@@ -155,18 +155,15 @@ The node is configured entirely through the environment.
 | `AGENTFIELD_API_KEY`        | Control-plane API key (if the CP has auth enabled)             |
 | `NODE_ID`                   | Node ID (default `pr-af`)                                       |
 | `PORT`                      | Listen port (default `8007`)                                   |
-| `PR_AF_PROVIDER`            | Harness provider (default `opencode`; accepts `aforge`)        |
+| `PR_AF_PROVIDER`            | Harness provider (default `aforge`; use `opencode` to roll back) |
+| `AGENTFIELD_AFORGE_COMMAND` | AForge headless command (default `exec`; `do` is explicit)     |
 | `PR_AF_HARNESS_BIN`         | Provider executable override (set to the aforge-v2 binary)     |
-
-To benchmark unreleased aforge-v2 without changing PR-AF prompts, build
-`aforge-v2/cmd/aforge`, then set `PR_AF_PROVIDER=aforge` and
-`PR_AF_HARNESS_BIN=/absolute/path/to/aforge`. The draft pins the exact
-AgentField Go SDK commit used for benchmarking; replace that pin with the
-released SDK before merging. The current Docker image does not bundle the
-unreleased Aforge binary.
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
 | `PR_AF_LABEL`               | Pull-request label that triggers a webhook review (default `pr-af`) |
 | `PR_AF_MAX_CONCURRENT_REVIEWERS` | Optional webhook review concurrency cap (minimum `1`)     |
+
+The image includes AForge and runs `exec` by default. OpenCode remains
+installed and can be selected with `PR_AF_PROVIDER=opencode` without rebuilding.
 | `PR_AF_MAX_REVIEW_DEPTH`    | Optional webhook sub-review depth cap (minimum `0`)            |
 | `PR_AF_MAX_COVERAGE_ITERATIONS` | Optional webhook coverage iteration cap (minimum `1`)      |
 | `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider; unset uses provider defaults |

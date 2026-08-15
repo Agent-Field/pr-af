@@ -40,7 +40,8 @@ services:
       - NODE_ID=pr-af-go
       - PORT=8007
       - AGENT_CALLBACK_URL=http://pr-af-go:8007
-      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-opencode}
+      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-aforge}
+      - AGENTFIELD_AFORGE_COMMAND=${AGENTFIELD_AFORGE_COMMAND:-exec}
       - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
       # Optional generic executable override; leave unset for provider defaults.
       - PR_AF_HARNESS_BIN

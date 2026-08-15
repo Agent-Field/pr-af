@@ -263,19 +263,18 @@ The key knobs (see `.env.example` for the full list):
 |-----------------------------|----------------------------------------------------------------|
 | `OPENROUTER_API_KEY`        | LLM provider key (OpenRouter) — required                       |
 | `GH_TOKEN`                  | GitHub token (`repo` scope) for reading PRs and posting reviews |
-| `PR_AF_PROVIDER`            | Harness provider (default `opencode`; accepts `aforge`)        |
+| `PR_AF_PROVIDER`            | Harness provider (default `aforge`; use `opencode` to roll back) |
+| `AGENTFIELD_AFORGE_COMMAND` | AForge headless command (default `exec`; `do` is explicit)     |
 | `PR_AF_AFORGE_BIN`          | Path to an aforge-v2 binary (default `aforge`)                 |
 | `PR_AF_HARNESS_BIN`         | Provider-agnostic executable override                          |
-
-For an unreleased aforge-v2 source benchmark, build `./cmd/aforge`, then run
-PR-AF with `PR_AF_PROVIDER=aforge` and either `PR_AF_AFORGE_BIN` (Python node)
-or `PR_AF_HARNESS_BIN` (maintained Go node) set to the absolute binary path.
-The draft pins the exact AgentField harness commit used for benchmarking;
-replace that pin with the released SDK before merging. The current Docker
-images do not bundle the unreleased Aforge binary.
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
+
+Both Docker images include AForge and run `exec` by default. The Python node
+honors `PR_AF_AFORGE_BIN`; the maintained Go node honors
+`PR_AF_HARNESS_BIN`. OpenCode remains installed for a configuration-only
+rollback.
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `PR_AF_WORKDIR`             | Where PR checkouts live (default `/workspaces`); each PR gets its own `<repo>-pr<N>` workspace |
 

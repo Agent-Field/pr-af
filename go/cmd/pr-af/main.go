@@ -13,7 +13,7 @@
 //	AGENT_CALLBACK_URL  base URL the CP uses to reach this node (else localhost)
 //	NODE_ID             node id (default pr-af)
 //	PORT                listen port (default 8007)
-//	PR_AF_PROVIDER      harness provider (default opencode; accepts aforge)
+//	PR_AF_PROVIDER      harness provider (default aforge; accepts opencode rollback)
 //	PR_AF_MODEL         harness model (env wins over the code default)
 //	PR_AF_HARNESS_BIN   optional executable override for every harness provider
 //	OPENROUTER_API_KEY  LLM key — required for the .ai() gates; AIConfig is only

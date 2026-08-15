@@ -134,8 +134,8 @@ func TestResolveBudgetCapsCascade(t *testing.T) {
 func TestAIConfigFromEnvDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	c := mustAIConfig(t)
-	if c.Provider != "opencode" {
-		t.Errorf("Provider = %q, want opencode", c.Provider)
+	if c.Provider != "aforge" {
+		t.Errorf("Provider = %q, want aforge", c.Provider)
 	}
 	// The CODE default is minimax — NOT the manifest's kimi default. env wins,
 	// but with no env this must be minimax (design §B.6).
@@ -237,6 +237,9 @@ func TestProviderEnv(t *testing.T) {
 	}
 	if env["XDG_DATA_HOME"] != xdg {
 		t.Errorf("XDG_DATA_HOME = %q, want %q", env["XDG_DATA_HOME"], xdg)
+	}
+	if env["AGENTFIELD_AFORGE_COMMAND"] != "exec" {
+		t.Errorf("AGENTFIELD_AFORGE_COMMAND = %q, want exec", env["AGENTFIELD_AFORGE_COMMAND"])
 	}
 
 	// With XDG_DATA_HOME unset, ProviderEnv falls back to a tmp dir and creates

@@ -45,7 +45,11 @@ func TestHarnessConfigPreservesExistingFields(t *testing.T) {
 	if got.Provider != conf.Provider || got.Model != conf.HarnessModel || got.MaxTurns != conf.MaxTurns || got.PermissionMode != "auto" || got.BinPath != conf.OpencodeBin {
 		t.Errorf("harnessConfig fields = %+v", got)
 	}
-	if want := map[string]string{"OPENAI_API_KEY": "openai-key", "XDG_DATA_HOME": xdg}; !reflect.DeepEqual(got.Env, want) {
+	if want := map[string]string{
+		"OPENAI_API_KEY":            "openai-key",
+		"XDG_DATA_HOME":             xdg,
+		"AGENTFIELD_AFORGE_COMMAND": "exec",
+	}; !reflect.DeepEqual(got.Env, want) {
 		t.Errorf("Env = %#v, want %#v", got.Env, want)
 	}
 }

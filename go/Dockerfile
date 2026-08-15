@@ -13,8 +13,11 @@
 
 # ---------------------------------------------------------------------------
 # Stage 1 — builder: fetch modules from the proxy, build the static binary.
-# golang 1.23 satisfies go.mod's `go 1.21` directive.
+# Go 1.23 satisfies go.mod's `go 1.21` directive.
 # ---------------------------------------------------------------------------
+ARG AFORGE_IMAGE=ghcr.io/agent-field/aforge-v2:chat-v2-exec
+FROM ${AFORGE_IMAGE} AS aforge
+
 FROM golang:1.23-bookworm AS builder
 
 WORKDIR /src
@@ -42,7 +45,8 @@ ARG OPENCODE_VERSION=1.17.15
 # PR_AF_HARNESS_BIN remains unset by default; set it only to override every
 # provider's executable path.
 ENV AGENTFIELD_SERVER=http://agentfield:8080 \
-    PR_AF_PROVIDER=opencode \
+    PR_AF_PROVIDER=aforge \
+    AGENTFIELD_AFORGE_COMMAND=exec \
     PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5 \
     PORT=8007 \
     NODE_ID=pr-af \
@@ -67,6 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/pr-af /usr/local/bin/pr-af
+COPY --from=aforge /aforge /usr/local/bin/aforge
 COPY go/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

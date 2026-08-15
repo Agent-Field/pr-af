@@ -50,7 +50,10 @@ user_environment:
       scope: global
     - name: PR_AF_PROVIDER
       description: Coding-agent harness provider (aforge | claude-code | codex | gemini | opencode)
-      default: opencode
+      default: aforge
+    - name: AGENTFIELD_AFORGE_COMMAND
+      description: AForge headless command
+      default: exec
     - name: PR_AF_AFORGE_BIN
       description: Optional path to the aforge-v2 binary (defaults to aforge on PATH)
     - name: PR_AF_MODEL

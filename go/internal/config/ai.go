@@ -53,7 +53,7 @@ func AIConfigFromEnv() (AIIntegrationConfig, error) {
 		return AIIntegrationConfig{}, err
 	}
 	return AIIntegrationConfig{
-		Provider:     strEnv("PR_AF_PROVIDER", "opencode"),
+		Provider:     strEnv("PR_AF_PROVIDER", "aforge"),
 		HarnessModel: strEnv("PR_AF_MODEL", "minimax/minimax-m2.5"),
 		// AI_MODEL falls back to PR_AF_MODEL, then to the code default.
 		AIModel:               strEnv("PR_AF_AI_MODEL", strEnv("PR_AF_MODEL", "minimax/minimax-m2.5")),
@@ -90,6 +90,7 @@ func (c AIIntegrationConfig) ProviderEnv() map[string]string {
 	}
 	_ = os.MkdirAll(xdg, 0o755)
 	env["XDG_DATA_HOME"] = xdg
+	env["AGENTFIELD_AFORGE_COMMAND"] = strEnv("AGENTFIELD_AFORGE_COMMAND", "exec")
 	return env
 }
 

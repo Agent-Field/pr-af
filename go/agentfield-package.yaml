@@ -42,7 +42,10 @@ user_environment:
       scope: global
     - name: PR_AF_PROVIDER
       description: harness provider (aforge | claude-code | codex | gemini | opencode)
-      default: opencode
+      default: aforge
+    - name: AGENTFIELD_AFORGE_COMMAND
+      description: AForge headless command
+      default: exec
     - name: PR_AF_MODEL
       description: harness model
       default: openrouter/moonshotai/kimi-k2.5

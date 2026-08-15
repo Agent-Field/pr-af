@@ -49,7 +49,8 @@ services:
       - NODE_ID=pr-af
       - PORT=8007
       - AGENT_CALLBACK_URL=http://pr-af:8007
-      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-opencode}
+      - PR_AF_PROVIDER=${PR_AF_PROVIDER:-aforge}
+      - AGENTFIELD_AFORGE_COMMAND=${AGENTFIELD_AFORGE_COMMAND:-exec}
       - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - GH_TOKEN=${GH_TOKEN:-}

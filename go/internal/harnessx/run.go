@@ -80,7 +80,7 @@ func seedDefaults[T any]() T {
 // router.harness (system_prompt, schema, model, provider, tools, cwd, max_turns,
 // permission_mode).
 type RoleOptions struct {
-	// Provider is the harness ADAPTER string, e.g. "aforge" or "opencode" (PR-AF's default),
+	// Provider is the harness ADAPTER string, e.g. "aforge" (PR-AF's default) or "opencode",
 	// "claude-code", "codex".
 	Provider string
 

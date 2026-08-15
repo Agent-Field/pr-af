@@ -313,7 +313,7 @@ class ReviewConfig(BaseModel):
 
 
 class AIIntegrationConfig(BaseModel):
-    provider: str = Field(default_factory=lambda: os.getenv("PR_AF_PROVIDER", "opencode"))
+    provider: str = Field(default_factory=lambda: os.getenv("PR_AF_PROVIDER", "aforge"))
     harness_model: str = Field(
         default_factory=lambda: os.getenv("PR_AF_MODEL", "minimax/minimax-m2.5")
     )
@@ -352,6 +352,7 @@ class AIIntegrationConfig(BaseModel):
             "GH_TOKEN",
         )
         env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
+        env["AGENTFIELD_AFORGE_COMMAND"] = os.getenv("AGENTFIELD_AFORGE_COMMAND", "exec")
         xdg = os.getenv("XDG_DATA_HOME") or os.path.join(tempfile.gettempdir(), "opencode-shared-data")
         os.makedirs(xdg, exist_ok=True)
         env["XDG_DATA_HOME"] = xdg
