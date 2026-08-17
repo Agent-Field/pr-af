@@ -44,7 +44,7 @@ user_environment:
       description: harness provider (aforge | claude-code | codex | gemini | opencode)
       default: aforge
     - name: AGENTFIELD_AFORGE_COMMAND
-      description: AForge headless command
+      description: AForge headless command (exec | do)
       default: exec
     - name: PR_AF_MODEL
       description: harness model
