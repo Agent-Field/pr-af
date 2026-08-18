@@ -106,6 +106,11 @@ COPY go/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER praf
+# Cwd must be writable by praf: the AgentField Go SDK creates its schema
+# output dir under the process cwd when a harness call carries no Cwd
+# (planning/coverage/dedup/worthiness/intake-fallback do), and `/` is
+# root-owned. /workspaces is praf-owned and is PR_AF_WORKDIR already.
+WORKDIR /workspaces
 
 EXPOSE 8007
 
