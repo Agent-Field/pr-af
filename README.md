@@ -263,12 +263,25 @@ The key knobs (see `.env.example` for the full list):
 |-----------------------------|----------------------------------------------------------------|
 | `OPENROUTER_API_KEY`        | LLM provider key (OpenRouter) — required                       |
 | `GH_TOKEN`                  | GitHub token (`repo` scope) for reading PRs and posting reviews |
-| `PR_AF_PROVIDER`            | Harness provider (default `opencode`)                          |
+| `PR_AF_PROVIDER`            | Harness provider (default `aforge`; use `opencode` to roll back) |
+| `AGENTFIELD_AFORGE_COMMAND` | AForge headless command (default `exec`) — read by the Go node's SDK adapter; the pinned Python SDK always runs `exec` |
+| `PR_AF_AFORGE_BIN`          | Path to an aforge-v2 binary (default `aforge`)                 |
+| `PR_AF_HARNESS_BIN`         | Provider-agnostic executable override                          |
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `PR_AF_WORKDIR`             | Where PR checkouts live (default `/workspaces`); each PR gets its own `<repo>-pr<N>` workspace |
+
+Both Docker images ship the released AForge CLI (fetched and checksum-verified
+at build time from `https://agentfield.ai/downloads/aforge`) and run `exec` by
+default. The Python node resolves the binary from `PR_AF_AFORGE_BIN` (or
+`PR_AF_HARNESS_BIN`); the maintained Go node resolves it from
+`PR_AF_HARNESS_BIN`. OpenCode stays installed in both images, so
+`PR_AF_PROVIDER=opencode` is a configuration-only rollback — no rebuild.
+
+The image's AForge version is pinned by the `AFORGE_VERSION` build arg;
+`AFORGE_BASE_URL` points the fetch at a different host when needed.
 
 ## GitHub Actions Integration
 

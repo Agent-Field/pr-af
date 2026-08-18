@@ -16,6 +16,8 @@ func TestHarnessConfigProviderAwareBinary(t *testing.T) {
 	}{
 		{"codex uses SDK default", config.AIIntegrationConfig{Provider: "codex", OpencodeBin: "C:/bin/opencode-custom"}, ""},
 		{"opencode uses configured binary", config.AIIntegrationConfig{Provider: "opencode", OpencodeBin: "C:/bin/opencode-custom"}, "C:/bin/opencode-custom"},
+		{"aforge uses SDK default", config.AIIntegrationConfig{Provider: "aforge", OpencodeBin: "C:/bin/opencode-custom"}, ""},
+		{"generic override selects aforge", config.AIIntegrationConfig{Provider: "aforge", HarnessBin: "C:/bin/aforge-custom"}, "C:/bin/aforge-custom"},
 		{"generic override wins", config.AIIntegrationConfig{Provider: "codex", OpencodeBin: "C:/bin/opencode-custom", HarnessBin: "C:/bin/provider-custom"}, "C:/bin/provider-custom"},
 		{"generic override wins for opencode", config.AIIntegrationConfig{Provider: "opencode", OpencodeBin: "C:/bin/opencode-custom", HarnessBin: "C:/bin/provider-custom"}, "C:/bin/provider-custom"},
 	}
@@ -43,7 +45,11 @@ func TestHarnessConfigPreservesExistingFields(t *testing.T) {
 	if got.Provider != conf.Provider || got.Model != conf.HarnessModel || got.MaxTurns != conf.MaxTurns || got.PermissionMode != "auto" || got.BinPath != conf.OpencodeBin {
 		t.Errorf("harnessConfig fields = %+v", got)
 	}
-	if want := map[string]string{"OPENAI_API_KEY": "openai-key", "XDG_DATA_HOME": xdg}; !reflect.DeepEqual(got.Env, want) {
+	if want := map[string]string{
+		"OPENAI_API_KEY":            "openai-key",
+		"XDG_DATA_HOME":             xdg,
+		"AGENTFIELD_AFORGE_COMMAND": "exec",
+	}; !reflect.DeepEqual(got.Env, want) {
 		t.Errorf("Env = %#v, want %#v", got.Env, want)
 	}
 }

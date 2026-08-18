@@ -139,7 +139,7 @@ func resolvedHarnessBin(c config.AIIntegrationConfig) string {
 //   - PORT               default "8007" -> ListenAddress ":8007".
 //   - AGENT_CALLBACK_URL -> Config.PublicURL — the base URL the CP uses to reach
 //     this node; unset falls back to the SDK's http://localhost:<port>.
-//   - HarnessConfig / AIConfig — the harness (opencode) + LLM credentials the
+//   - HarnessConfig / AIConfig — the selected harness + LLM credentials the
 //     reasoners rely on. Every reasoner calls the harness with only Cwd set, so
 //     the agent's default HarnessConfig Provider/Model must be present, and the
 //     two .ai() gates (intake/coverage) need AIConfig. Mirrors app.py's

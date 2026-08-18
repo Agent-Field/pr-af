@@ -12,8 +12,41 @@
 # other dependency straight from the module proxy, cache-keyed on go.mod/go.sum.
 
 # ---------------------------------------------------------------------------
+# Stage 0 — aforge: fetch the released AForge CLI from the public download host
+# and verify it against the release checksums (which hash the DECOMPRESSED
+# binaries). Both ARGs are overridable so CI or a local mirror can serve the
+# assets from somewhere else:
+#
+#     docker build --build-arg AFORGE_BASE_URL=... --build-arg AFORGE_VERSION=... .
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS aforge
+
+ARG AFORGE_BASE_URL=https://agentfield.ai/downloads/aforge
+ARG AFORGE_VERSION=v0.1.0
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /out
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    curl -fsSL "${AFORGE_BASE_URL}/${AFORGE_VERSION}/aforge-linux-${arch}.gz" -o aforge.gz; \
+    gunzip -c aforge.gz > aforge; \
+    rm -f aforge.gz; \
+    curl -fsSL "${AFORGE_BASE_URL}/${AFORGE_VERSION}/checksums.txt" -o checksums.txt; \
+    grep " aforge-linux-${arch}$" checksums.txt | sed 's/  aforge-linux-.*/  aforge/' > aforge.sha256; \
+    test -s aforge.sha256; \
+    sha256sum -c aforge.sha256; \
+    rm -f checksums.txt aforge.sha256; \
+    chmod +x aforge
+
+
+# ---------------------------------------------------------------------------
 # Stage 1 — builder: fetch modules from the proxy, build the static binary.
-# golang 1.23 satisfies go.mod's `go 1.21` directive.
+# Go 1.23 satisfies go.mod's `go 1.21` directive.
 # ---------------------------------------------------------------------------
 FROM golang:1.23-bookworm AS builder
 
@@ -42,7 +75,8 @@ ARG OPENCODE_VERSION=1.17.15
 # PR_AF_HARNESS_BIN remains unset by default; set it only to override every
 # provider's executable path.
 ENV AGENTFIELD_SERVER=http://agentfield:8080 \
-    PR_AF_PROVIDER=opencode \
+    PR_AF_PROVIDER=aforge \
+    AGENTFIELD_AFORGE_COMMAND=exec \
     PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5 \
     PORT=8007 \
     NODE_ID=pr-af \
@@ -67,10 +101,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /out/pr-af /usr/local/bin/pr-af
+COPY --from=aforge /out/aforge /usr/local/bin/aforge
 COPY go/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER praf
+# Cwd must be writable by praf: the AgentField Go SDK creates its schema
+# output dir under the process cwd when a harness call carries no Cwd
+# (planning/coverage/dedup/worthiness/intake-fallback do), and `/` is
+# root-owned. /workspaces is praf-owned and is PR_AF_WORKDIR already.
+WORKDIR /workspaces
 
 EXPOSE 8007
 

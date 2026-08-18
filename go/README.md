@@ -155,17 +155,23 @@ The node is configured entirely through the environment.
 | `AGENTFIELD_API_KEY`        | Control-plane API key (if the CP has auth enabled)             |
 | `NODE_ID`                   | Node ID (default `pr-af`)                                       |
 | `PORT`                      | Listen port (default `8007`)                                   |
-| `PR_AF_PROVIDER`            | Harness provider (default `opencode`)                          |
+| `PR_AF_PROVIDER`            | Harness provider (default `aforge`; use `opencode` to roll back) |
+| `AGENTFIELD_AFORGE_COMMAND` | AForge headless command — `exec` (default) or `do`             |
 | `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
 | `PR_AF_LABEL`               | Pull-request label that triggers a webhook review (default `pr-af`) |
 | `PR_AF_MAX_CONCURRENT_REVIEWERS` | Optional webhook review concurrency cap (minimum `1`)     |
 | `PR_AF_MAX_REVIEW_DEPTH`    | Optional webhook sub-review depth cap (minimum `0`)            |
 | `PR_AF_MAX_COVERAGE_ITERATIONS` | Optional webhook coverage iteration cap (minimum `1`)      |
-| `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider; unset uses provider defaults |
+| `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider (point it at an `aforge` binary outside `PATH`); unset uses provider defaults |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `HAX_API_KEY`               | Optional — enables the HITL review-approval gate when set      |
+
+The image ships the released AForge CLI (fetched and checksum-verified at build
+time from `https://agentfield.ai/downloads/aforge`, pinned by the
+`AFORGE_VERSION` build arg) and runs `exec` by default. OpenCode remains
+installed and can be selected with `PR_AF_PROVIDER=opencode` without rebuilding.
 
 Note: the code default model is `minimax/minimax-m2.5`, while the Docker image /
 compose / manifest set `PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5`. The env

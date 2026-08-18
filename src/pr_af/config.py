@@ -313,7 +313,7 @@ class ReviewConfig(BaseModel):
 
 
 class AIIntegrationConfig(BaseModel):
-    provider: str = Field(default_factory=lambda: os.getenv("PR_AF_PROVIDER", "opencode"))
+    provider: str = Field(default_factory=lambda: os.getenv("PR_AF_PROVIDER", "aforge"))
     harness_model: str = Field(
         default_factory=lambda: os.getenv("PR_AF_MODEL", "minimax/minimax-m2.5")
     )
@@ -330,6 +330,13 @@ class AIIntegrationConfig(BaseModel):
     )
     max_backoff_seconds: float = Field(default_factory=lambda: float(os.getenv("PR_AF_AI_MAX_BACKOFF_SECONDS", "8.0")))
     opencode_bin: str = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_BIN", "opencode"))
+    aforge_bin: str = Field(
+        default_factory=lambda: os.getenv(
+            "PR_AF_AFORGE_BIN",
+            os.getenv("AFORGE_BIN", "aforge"),
+        )
+    )
+    harness_bin: str = Field(default_factory=lambda: os.getenv("PR_AF_HARNESS_BIN", ""))
     opencode_server: str | None = Field(default_factory=lambda: os.getenv("PR_AF_OPENCODE_SERVER"))
 
     @classmethod
@@ -345,6 +352,7 @@ class AIIntegrationConfig(BaseModel):
             "GH_TOKEN",
         )
         env: dict[str, str] = {key: value for key in env_keys if (value := os.getenv(key))}
+        env["AGENTFIELD_AFORGE_COMMAND"] = os.getenv("AGENTFIELD_AFORGE_COMMAND", "exec")
         xdg = os.getenv("XDG_DATA_HOME") or os.path.join(tempfile.gettempdir(), "opencode-shared-data")
         os.makedirs(xdg, exist_ok=True)
         env["XDG_DATA_HOME"] = xdg
