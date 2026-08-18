@@ -5,7 +5,7 @@ module github.com/Agent-Field/pr-af/go
 go 1.21
 
 require (
-	github.com/Agent-Field/agentfield/sdk/go v0.1.127-rc.5.0.20260815031530-bfd34426d1bd
+	github.com/Agent-Field/agentfield/sdk/go v0.1.130
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/invopop/jsonschema v0.13.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
