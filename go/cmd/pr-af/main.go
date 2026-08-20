@@ -18,7 +18,9 @@
 //	PR_AF_HARNESS_BIN   optional executable override for every harness provider
 //	OPENROUTER_API_KEY  LLM key — required for the .ai() gates; AIConfig is only
 //	                    attached when set (SDK rejects an empty key)
-//	GH_TOKEN            GitHub token for FetchPR/clone/PostReview
+//	GH_TOKEN            GitHub token for FetchPR/clone/PostReview (optional —
+//	                    public repos review anonymously; needed for private
+//	                    repos and posting reviews)
 //	GITHUB_WEBHOOK_SECRET  HMAC secret for /webhook/github (skip verify if unset)
 //	PR_AF_BOT_MENTION   webhook trigger mention (default @pr-af)
 package main
