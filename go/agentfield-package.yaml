@@ -28,11 +28,16 @@ user_environment:
       description: LLM provider key (OpenRouter)
       type: secret
       scope: global
+  optional:
+    # Optional, not required: every use is lazy and degrades cleanly without it
+    # (github.NewClient falls back to unauthenticated API calls, clones only
+    # inject the token when set) — public repos review fine anonymously. The
+    # token is needed for private repos, posting reviews back to GitHub, and
+    # unthrottled API rate limits.
     - name: GH_TOKEN
-      description: GitHub token (repo scope)
+      description: GitHub token (repo scope) — needed only for private repos and posting reviews
       type: secret
       scope: global
-  optional:
     - name: AGENTFIELD_SERVER
       description: Control-plane URL
       default: http://localhost:8080
