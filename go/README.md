@@ -157,7 +157,7 @@ The node is configured entirely through the environment.
 | `PORT`                      | Listen port (default `8007`)                                   |
 | `PR_AF_PROVIDER`            | Harness provider (default `aforge`; use `opencode` to roll back) |
 | `AGENTFIELD_AFORGE_COMMAND` | AForge headless command — `exec` (default) or `do`             |
-| `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
+| `PR_AF_MODEL`               | Harness model (default `deepseek/deepseek-v4-flash-0731`)      |
 | `PR_AF_LABEL`               | Pull-request label that triggers a webhook review (default `pr-af`) |
 | `PR_AF_MAX_CONCURRENT_REVIEWERS` | Optional webhook review concurrency cap (minimum `1`)     |
 | `PR_AF_MAX_REVIEW_DEPTH`    | Optional webhook sub-review depth cap (minimum `0`)            |
@@ -174,7 +174,7 @@ time from `https://agentfield.ai/downloads/aforge`, pinned by the
 installed and can be selected with `PR_AF_PROVIDER=opencode` without rebuilding.
 
 Note: the code default model is `minimax/minimax-m2.5`, while the Docker image /
-compose / manifest set `PR_AF_MODEL=openrouter/moonshotai/kimi-k2.5`. The env
+compose / manifest set `PR_AF_MODEL=deepseek/deepseek-v4-flash-0731`. The env
 var always wins; both defaults are intentional (they mirror the Python node).
 
 ## Deployment: `af install`

@@ -10,7 +10,7 @@
 set -e
 
 # Default matches the image ENV / benchmarked model.
-MODEL="${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}"
+MODEL="${PR_AF_MODEL:-deepseek/deepseek-v4-flash-0731}"
 
 # opencode keys models under a provider by the slug *without* the provider
 # prefix, e.g. "openrouter/z-ai/glm-5.2" -> provider "openrouter", key "z-ai/glm-5.2".

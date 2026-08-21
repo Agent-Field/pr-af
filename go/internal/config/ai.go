@@ -15,7 +15,7 @@ import (
 // AIIntegrationConfig ports config.py AIIntegrationConfig. Env precedence and
 // defaults per design §C.2. The HarnessModel/AIModel fallback is the CODE
 // default "minimax/minimax-m2.5" — deliberately different from the
-// Docker/compose/manifest default (openrouter/moonshotai/kimi-k2.5); env always
+// Docker/compose/manifest default (deepseek/deepseek-v4-flash-0731); env always
 // wins, and both facts ship intentionally (design §B.6). Do not "fix" it.
 type AIIntegrationConfig struct {
 	Provider              string  `json:"provider"`

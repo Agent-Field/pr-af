@@ -267,7 +267,7 @@ The key knobs (see `.env.example` for the full list):
 | `AGENTFIELD_AFORGE_COMMAND` | AForge headless command (default `exec`) — read by the Go node's SDK adapter; the pinned Python SDK always runs `exec` |
 | `PR_AF_AFORGE_BIN`          | Path to an aforge-v2 binary (default `aforge`)                 |
 | `PR_AF_HARNESS_BIN`         | Provider-agnostic executable override                          |
-| `PR_AF_MODEL`               | Harness model (default `openrouter/moonshotai/kimi-k2.5`)      |
+| `PR_AF_MODEL`               | Harness model (default `deepseek/deepseek-v4-flash-0731`)      |
 | `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |

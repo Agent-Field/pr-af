@@ -24,7 +24,7 @@ services:
       - AGENT_CALLBACK_URL=http://pr-af:8004
       - PR_AF_PROVIDER=${PR_AF_PROVIDER:-aforge}
       - AGENTFIELD_AFORGE_COMMAND=${AGENTFIELD_AFORGE_COMMAND:-exec}
-      - PR_AF_MODEL=${PR_AF_MODEL:-openrouter/moonshotai/kimi-k2.5}
+      - PR_AF_MODEL=${PR_AF_MODEL:-deepseek/deepseek-v4-flash-0731}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GH_TOKEN=${GH_TOKEN:-}
       - XDG_DATA_HOME=/home/praf/.local/share
