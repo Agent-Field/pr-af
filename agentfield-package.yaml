@@ -58,7 +58,7 @@ user_environment:
       description: Optional path to the aforge-v2 binary (defaults to aforge on PATH)
     - name: PR_AF_MODEL
       description: Model the harness uses
-      default: openrouter/moonshotai/kimi-k2.5
+      default: deepseek/deepseek-v4-flash-0731
     - name: PR_AF_LABEL
       description: GitHub pull-request label that triggers a webhook review
       default: pr-af
