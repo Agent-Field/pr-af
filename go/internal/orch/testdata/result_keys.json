@@ -62,7 +62,8 @@
     "degraded_dimensions",
     "intake",
     "phases_completed",
-    "plan"
+    "plan",
+    "request"
   ],
   "plan": [
     "ai_adjusted",

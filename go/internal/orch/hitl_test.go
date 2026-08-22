@@ -21,10 +21,14 @@ import (
 
 // fakeApp records notes; the harness/AI/pause surfaces panic because the stubbed
 // phases must never reach a live model in these control-flow tests.
-type fakeApp struct{ notes []string }
+type fakeApp struct {
+	notes    []string
+	noteTags [][]string
+}
 
-func (f *fakeApp) Note(_ context.Context, message string, _ ...string) {
+func (f *fakeApp) Note(_ context.Context, message string, tags ...string) {
 	f.notes = append(f.notes, message)
+	f.noteTags = append(f.noteTags, append([]string(nil), tags...))
 }
 func (f *fakeApp) Harness(context.Context, string, map[string]any, any, harness.Options) (*harness.Result, error) {
 	panic("Harness not expected in HITL control-flow test")

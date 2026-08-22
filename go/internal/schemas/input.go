@@ -43,8 +43,23 @@ type ReviewInput struct {
 	DryRun       bool   `json:"dry_run"`       // Don't post to GitHub, just return findings
 	PostPRNumber *int   `json:"post_pr_number"`
 
+	// Optional caller identity for local-repository reviews. These values are
+	// returned as result metadata and never grant publication capability.
+	PublisherJobID string               `json:"publisher_job_id"`
+	PullRequest    *PullRequestIdentity `json:"pull_request"`
+
 	// Comment formatting.
 	SuggestionMode string `json:"suggestion_mode"` // comment | code
+}
+
+// PullRequestIdentity carries display-only caller metadata for a review whose
+// source is a local repository checkout rather than a pr_url clone.
+type PullRequestIdentity struct {
+	Owner      string `json:"owner"`
+	Repository string `json:"repository"`
+	Number     int    `json:"number"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
 }
 
 // GitHubPRData is the data fetched from the GitHub API for a pull request.

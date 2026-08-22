@@ -178,6 +178,7 @@ var reviewInputSchema = json.RawMessage(`{"type":"object","additionalProperties"
 	`"pr_url":{"type":"string"},"diff_text":{"type":"string"},"repo_path":{"type":"string"},` +
 	`"base_ref":{"type":"string"},"head_ref":{"type":"string"},"depth":{"type":"string","default":"auto"},` +
 	`"max_cost_usd":{"type":"number"},"max_duration_seconds":{"type":"integer"},"focus":{"type":"string","default":"auto"},` +
+	`"publisher_job_id":{"type":"string"},"pull_request":{"type":"object","additionalProperties":false,"properties":{"owner":{"type":"string"},"repository":{"type":"string"},"number":{"type":"integer"},"title":{"type":"string"},"url":{"type":"string"}}},` +
 	`"ignore_paths":{"type":"array","items":{"type":"string"}},"hints":{"type":"array","items":{"type":"string"}},` +
 	`"models":{"type":"object"},"max_concurrent_reviewers":{"type":"integer"},"max_coverage_iterations":{"type":"integer"},` +
 	`"max_review_depth":{"type":"integer","default":2},"output_format":{"type":"string","default":"github"},` +

@@ -86,6 +86,7 @@ type ReviewMetadata struct {
 	Anatomy            map[string]any `json:"anatomy"`
 	Plan               map[string]any `json:"plan"`
 	Budget             map[string]any `json:"budget"`
+	Request            map[string]any `json:"request"`
 	AgentInvocations   int            `json:"agent_invocations"`
 	PhasesCompleted    []string       `json:"phases_completed"`
 	DegradedDimensions int            `json:"degraded_dimensions"`

@@ -315,6 +315,7 @@ func fullyPopulatedReviewResult() ReviewResult {
 			Anatomy:          map[string]any{"total_files": float64(2)},
 			Plan:             map[string]any{},
 			Budget:           map[string]any{},
+			Request:          map[string]any{"publisher_job_id": "job_7"},
 			AgentInvocations: 5,
 			PhasesCompleted:  []string{"intake", "anatomy", "output"},
 		},
@@ -366,6 +367,10 @@ func TestReviewInputRoundTripIdentical(t *testing.T) {
 		Models:                 map[string]string{"reviewer": "anthropic/claude"},
 		MaxConcurrentReviewers: &conc, MaxCoverageIterations: &cov, MaxReviewDepth: 3,
 		OutputFormat: "github", DryRun: true, PostPRNumber: &ppr, SuggestionMode: "code",
+		PublisherJobID: "job_7",
+		PullRequest: &PullRequestIdentity{
+			Owner: "o", Repository: "r", Number: 7, Title: "Title", URL: "https://github.com/o/r/pull/7",
+		},
 	}
 	b1, err := json.Marshal(in)
 	if err != nil {

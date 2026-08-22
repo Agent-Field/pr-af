@@ -27,6 +27,13 @@ af run pr-af
 af call pr-af.review --in '{"pr_url":"https://github.com/owner/repo/pull/123"}'
 ```
 
+Local-repository callers may also include `publisher_job_id` and a
+`pull_request` object with `owner`, `repository`, `number`, `title`, and `url`.
+PR-AF treats these as display-only identity: it returns them under
+`metadata.request`, uses the URL as `pr_url` when needed, and emits searchable
+progress notes with the pull-request number and title. These fields never
+enable GitHub publication or provide credentials.
+
 To install the Python node deliberately, clone the repository and run `af
 install ./pr-af`; local-path installs do not follow the redirect. `NODE_ID` /
 `PORT` still override the Go defaults if you want a different id/port.

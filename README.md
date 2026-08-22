@@ -68,6 +68,13 @@ curl -X POST http://localhost:8080/api/v1/execute/async/pr-af.review \
   -d '{"input": {"pr_url": "https://github.com/owner/repo/pull/123"}}'
 ```
 
+Local-repository callers may also include `publisher_job_id` and a
+`pull_request` object with `owner`, `repository`, `number`, `title`, and `url`.
+PR-AF treats these as display-only identity: it returns them under
+`metadata.request`, uses the URL as `pr_url` when needed, and emits searchable
+progress notes with the pull-request number and title. These fields never
+enable GitHub publication or provide credentials.
+
 Posts inline GitHub review comments with evidence-grounded findings:
 
 ```jsonc

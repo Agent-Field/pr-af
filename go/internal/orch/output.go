@@ -162,6 +162,14 @@ func (o *Orchestrator) generateOutput(
 	exhausted := o.budgetExhausted
 	o.mu.Unlock()
 	dimensionStats := o.dimensionStats()
+	requestMetadata := map[string]any{}
+	if o.input.PublisherJobID != "" {
+		requestMetadata["publisher_job_id"] = o.input.PublisherJobID
+	}
+	if o.input.PullRequest != nil {
+		pullRequest, _ := structToMap(o.input.PullRequest)
+		requestMetadata["pull_request"] = pullRequest
+	}
 	metadata := schemas.ReviewMetadata{
 		Intake:  intakeMap,
 		Anatomy: anatomyMap,
@@ -173,14 +181,19 @@ func (o *Orchestrator) generateOutput(
 			"max_cost_usd":         o.config.Budget.MaxCostUSD,
 			"max_duration_seconds": o.config.Budget.MaxDurationSeconds,
 		},
+		Request:            requestMetadata,
 		AgentInvocations:   o.invocations(),
 		PhasesCompleted:    append([]string(nil), phaseOrder...),
 		DegradedDimensions: dimensionStats.Failed,
 	}
 
+	prURL := strp(o.input.PrURL)
+	if prURL == "" && o.input.PullRequest != nil {
+		prURL = o.input.PullRequest.URL
+	}
 	return schemas.ReviewResult{
 		ReviewID: o.reviewID,
-		PrURL:    strp(o.input.PrURL),
+		PrURL:    prURL,
 		Review:   review,
 		Findings: scoredFindings,
 		Summary:  summary,

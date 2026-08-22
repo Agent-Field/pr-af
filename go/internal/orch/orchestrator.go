@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -110,6 +111,7 @@ var phaseOrder = []string{
 // Meta-selector configuration (schemas/pipeline.py MetaSelectorConfig — not
 // ported to Go config, so bound here).
 var enabledLenses = []string{"semantic", "mechanical", "systemic"}
+var progressTagValuePattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]+$`)
 
 const (
 	adversaryBatchSize = 5
@@ -379,6 +381,7 @@ func hex12() string {
 // ErrBadInput-wrapped errors map to 400 at the node; anything else to 500.
 func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 	var zero schemas.ReviewResult
+	o.noteProgress(ctx, "intake", "started", "Review intake started")
 
 	intake, err := o.runIntakeFn(ctx)
 	if err != nil {
@@ -386,12 +389,15 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 	}
 	o.intakeResult = &intake
 	reviewDepth := o.resolveDepthFn(intake)
+	o.noteProgress(ctx, "intake", "completed", "Review intake completed")
 
+	o.noteProgress(ctx, "anatomy", "started", "Repository anatomy started")
 	anatomy, err := o.runAnatomyFn(ctx, intake)
 	if err != nil {
 		return zero, err
 	}
 	o.anatomyResult = &anatomy
+	o.noteProgress(ctx, "anatomy", "completed", "Repository anatomy completed")
 
 	// HITL gate active only when there is a real PR to post to and we are not in
 	// dry-run — otherwise hax is nil and we post directly, exactly as before.
@@ -408,10 +414,12 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 
 	for revisionIter := 0; revisionIter <= maxRevisions; revisionIter++ {
 		o.resetDimensionStats()
+		o.noteProgress(ctx, "review", "started", "Review analysis started")
 		plan, scored, err := o.runReviewPhasesFn(ctx, intake, anatomy, reviewDepth, reviewerFeedback)
 		if err != nil {
 			return zero, err
 		}
+		o.noteProgress(ctx, "review", "completed", fmt.Sprintf("Review analysis completed with %d findings", len(scored)))
 
 		if haxClient == nil {
 			return o.finish(ctx, scored, intake, anatomy, plan, true)
@@ -474,6 +482,33 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 	}
 
 	return zero, errors.New("review loop exited without producing a result")
+}
+
+// noteProgress emits readable messages plus searchable stage/status tags for
+// callers and AgentField user interfaces that render execution notes.
+func (o *Orchestrator) noteProgress(ctx context.Context, stage, status, message string) {
+	tags := []string{"pr-af-progress", "stage:" + stage, "status:" + status}
+	if jobID := strings.TrimSpace(o.input.PublisherJobID); progressTagValuePattern.MatchString(jobID) {
+		tags = append(tags, "job:"+jobID)
+	}
+	if pullRequest := o.input.PullRequest; pullRequest != nil {
+		if pullRequest.Number > 0 {
+			tags = append(tags, fmt.Sprintf("pr:%d", pullRequest.Number))
+		}
+		if stage == "intake" && status == "started" {
+			identity := strings.TrimSpace(pullRequest.Title)
+			if pullRequest.Number > 0 {
+				identity = fmt.Sprintf("#%d — %s", pullRequest.Number, identity)
+			}
+			if identity != "" {
+				message += " for " + strings.TrimSpace(identity)
+			}
+			if pullRequest.URL != "" {
+				message += " (" + pullRequest.URL + ")"
+			}
+		}
+	}
+	o.deps.App.Note(ctx, message, tags...)
 }
 
 // finish generates output (optionally posting) and cleans up the context dir.
