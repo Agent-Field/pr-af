@@ -37,6 +37,9 @@ func (o *Orchestrator) generateOutput(
 	if o.prData == nil {
 		return schemas.ReviewResult{}, errPRDataNotInitialized
 	}
+	if err := o.validateReviewCompletion(plan); err != nil {
+		return schemas.ReviewResult{}, err
+	}
 
 	diffFiles := map[string]struct{}{}
 	for _, cf := range o.prData.ChangedFiles {
@@ -162,6 +165,7 @@ func (o *Orchestrator) generateOutput(
 	exhausted := o.budgetExhausted
 	o.mu.Unlock()
 	dimensionStats := o.dimensionStats()
+	evidenceEligible, evidenceAttempted, adversaryEligible, adversaryAttempted := o.conditionalPhaseStats()
 	requestMetadata := map[string]any{}
 	if o.input.PublisherJobID != "" {
 		requestMetadata["publisher_job_id"] = o.input.PublisherJobID
@@ -170,6 +174,7 @@ func (o *Orchestrator) generateOutput(
 		pullRequest, _ := structToMap(o.input.PullRequest)
 		requestMetadata["pull_request"] = pullRequest
 	}
+	o.markPhaseCompleted("output")
 	metadata := schemas.ReviewMetadata{
 		Intake:  intakeMap,
 		Anatomy: anatomyMap,
@@ -181,10 +186,17 @@ func (o *Orchestrator) generateOutput(
 			"max_cost_usd":         o.config.Budget.MaxCostUSD,
 			"max_duration_seconds": o.config.Budget.MaxDurationSeconds,
 		},
-		Request:            requestMetadata,
-		AgentInvocations:   o.invocations(),
-		PhasesCompleted:    append([]string(nil), phaseOrder...),
-		DegradedDimensions: dimensionStats.Failed,
+		Request:                    requestMetadata,
+		AgentInvocations:           o.invocations(),
+		PipelineContractVersion:    1,
+		PhasesCompleted:            o.completedPhaseNames(),
+		ReviewDimensionsAttempted:  dimensionStats.Attempted,
+		ReviewDimensionsParseable:  dimensionStats.Parseable,
+		DegradedDimensions:         dimensionStats.Failed,
+		EvidenceFindingsEligible:   evidenceEligible,
+		EvidenceFindingsAttempted:  evidenceAttempted,
+		AdversaryFindingsEligible:  adversaryEligible,
+		AdversaryFindingsAttempted: adversaryAttempted,
 	}
 
 	prURL := strp(o.input.PrURL)
@@ -199,6 +211,59 @@ func (o *Orchestrator) generateOutput(
 		Summary:  summary,
 		Metadata: metadata,
 	}, nil
+}
+
+// validateReviewCompletion prevents scoring or publication metadata from
+// representing an empty or unexecuted review plan as a clean result.
+func (o *Orchestrator) validateReviewCompletion(plan schemas.ReviewPlan) error {
+	for _, phase := range requiredPreOutputPhases {
+		if !o.hasCompletedPhase(phase) {
+			return fmt.Errorf("required review phase %q did not complete", phase)
+		}
+	}
+	if len(plan.Dimensions) == 0 {
+		return errors.New("review plan contains zero dimensions")
+	}
+	stats := o.dimensionStats()
+	if stats.Attempted == 0 {
+		return errors.New("no review dimensions were attempted")
+	}
+	if stats.Attempted < len(plan.Dimensions) {
+		return fmt.Errorf("only %d of %d planned review dimensions were attempted", stats.Attempted, len(plan.Dimensions))
+	}
+	if stats.Parseable == 0 {
+		return errors.New("no review dimensions produced schema-valid output")
+	}
+	if stats.Attempted != stats.Parseable+stats.Failed {
+		return fmt.Errorf(
+			"review dimension accounting is incomplete: attempted=%d parseable=%d failed=%d",
+			stats.Attempted,
+			stats.Parseable,
+			stats.Failed,
+		)
+	}
+	evidenceEligible, evidenceAttempted, adversaryEligible, adversaryAttempted := o.conditionalPhaseStats()
+	if evidenceEligible != evidenceAttempted {
+		return fmt.Errorf(
+			"evidence verification accounting is incomplete: eligible=%d attempted=%d",
+			evidenceEligible,
+			evidenceAttempted,
+		)
+	}
+	if evidenceEligible > 0 && !o.hasCompletedPhase("evidence_verification") {
+		return errors.New("eligible findings did not complete evidence verification")
+	}
+	if adversaryEligible != adversaryAttempted {
+		return fmt.Errorf(
+			"adversary accounting is incomplete: eligible=%d attempted=%d",
+			adversaryEligible,
+			adversaryAttempted,
+		)
+	}
+	if adversaryEligible > 0 && !o.hasCompletedPhase("adversary") {
+		return errors.New("eligible findings did not complete adversary analysis")
+	}
+	return nil
 }
 
 // postReview posts the review, downgrading a 422 "own pull request" REQUEST_

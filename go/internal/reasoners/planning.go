@@ -13,20 +13,13 @@ import (
 // PlanningPhase ports planning_phase (registered but DEAD on the live path —
 // the meta-selectors replaced it; kept for surface parity).
 //
-// Output keys (§B.2): dimensions, cross_ref_hints, ai_adjusted, total_budget —
-// or the literal {"dimensions": [], "cross_ref_hints": []} on parse failure.
+// Output keys (§B.2): dimensions, cross_ref_hints, ai_adjusted, total_budget.
+// Missing structured output fails this compatibility reasoner.
 func PlanningPhase(ctx context.Context, deps Deps, in PlanningInput) (map[string]any, error) {
 	prompt := prompts.PlanningPrompt(in.Intake, in.Anatomy, in.Depth, in.Hints)
-	parsed, res, err := harnessx.Run[schemas.ReviewPlan](ctx, deps.Harness, prompt, harness.Options{})
+	parsed, _, err := harnessx.Run[schemas.ReviewPlan](ctx, deps.Harness, prompt, harness.Options{})
 	if err != nil {
 		return nil, err
-	}
-	if res == nil || res.Parsed == nil {
-		// Python: `{"dimensions": [], "cross_ref_hints": []}` — two keys only.
-		return map[string]any{
-			"dimensions":      []any{},
-			"cross_ref_hints": []any{},
-		}, nil
 	}
 	plan := *parsed
 	if plan.Dimensions == nil {

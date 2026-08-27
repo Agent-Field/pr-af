@@ -2,6 +2,7 @@ package reasoners
 
 import (
 	"context"
+	"errors"
 	"unicode/utf8"
 
 	"github.com/Agent-Field/agentfield/sdk/go/harness"
@@ -15,7 +16,8 @@ import (
 // combined risk is real.
 //
 // Output keys (§B.2): findings. Fewer than two findings short-circuits to an
-// empty list without a harness call; parse failure degrades to an empty list.
+// empty list without a harness call; missing or unparseable structured output
+// fails the required cross-reference phase.
 func CompoundFinderPhase(ctx context.Context, deps Deps, in CompoundFinderInput) (map[string]any, error) {
 	if len(in.ClusterFindings) < 2 {
 		return map[string]any{"findings": []any{}}, nil
@@ -69,7 +71,11 @@ func CompoundDedupPhase(ctx context.Context, deps Deps, in CompoundDedupInput) (
 	prompt := prompts.CompoundDedupPrompt(in.CompoundFindings, in.IndividualFindingsSummary)
 	parsed, _, err := harnessx.Run[compoundDedupResult](ctx, deps.Harness, prompt, harness.Options{})
 	if err != nil {
-		return nil, err
+		var structuredErr *harnessx.StructuredOutputError
+		if !errors.As(err, &structuredErr) {
+			return nil, err
+		}
+		return map[string]any{"keep_indices": rangeInts(n), "reasoning": ""}, nil
 	}
 
 	valid := []int{}

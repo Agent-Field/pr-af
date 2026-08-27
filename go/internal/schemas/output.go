@@ -82,12 +82,19 @@ type ReviewResult struct {
 // intake/anatomy/plan/budget dicts and phases_completed list are collection
 // defaults in Python — construct them non-nil upstream to marshal as {} / [].
 type ReviewMetadata struct {
-	Intake             map[string]any `json:"intake"`
-	Anatomy            map[string]any `json:"anatomy"`
-	Plan               map[string]any `json:"plan"`
-	Budget             map[string]any `json:"budget"`
-	Request            map[string]any `json:"request"`
-	AgentInvocations   int            `json:"agent_invocations"`
-	PhasesCompleted    []string       `json:"phases_completed"`
-	DegradedDimensions int            `json:"degraded_dimensions"`
+	Intake                     map[string]any `json:"intake"`
+	Anatomy                    map[string]any `json:"anatomy"`
+	Plan                       map[string]any `json:"plan"`
+	Budget                     map[string]any `json:"budget"`
+	Request                    map[string]any `json:"request"`
+	AgentInvocations           int            `json:"agent_invocations"`
+	PipelineContractVersion    int            `json:"pipeline_contract_version"`
+	PhasesCompleted            []string       `json:"phases_completed"`
+	ReviewDimensionsAttempted  int            `json:"review_dimensions_attempted"`
+	ReviewDimensionsParseable  int            `json:"review_dimensions_parseable"`
+	DegradedDimensions         int            `json:"degraded_dimensions"`
+	EvidenceFindingsEligible   int            `json:"evidence_findings_eligible"`
+	EvidenceFindingsAttempted  int            `json:"evidence_findings_attempted"`
+	AdversaryFindingsEligible  int            `json:"adversary_findings_eligible"`
+	AdversaryFindingsAttempted int            `json:"adversary_findings_attempted"`
 }

@@ -2,6 +2,7 @@ package reasoners
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -64,10 +65,23 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 	})
 
 	parsed, res, err := harnessx.Run[reviewFindingsResult](ctx, deps.Harness, prompt, harness.Options{Cwd: in.RepoPath})
+	schemaParseFailed := false
 	if err != nil {
-		return nil, err
+		var structuredErr *harnessx.StructuredOutputError
+		if !errors.As(err, &structuredErr) {
+			return nil, err
+		}
+		schemaParseFailed = true
+		parsed = &reviewFindingsResult{}
 	}
-	schemaParseFailed := res == nil || res.Parsed == nil
+	if !schemaParseFailed && !parsed.hasExplicitFindings() {
+		schemaParseFailed = true
+		parsed = &reviewFindingsResult{}
+		if res == nil {
+			res = &harness.Result{}
+		}
+		res.ErrorMessage = "review result is missing an explicit findings array"
+	}
 	if schemaParseFailed {
 		// Schema parse failed entirely — don't silently report "0 findings",
 		// which is indistinguishable from a clean review. Make it visible.

@@ -18,8 +18,7 @@ import (
 //
 // Output keys (§B.2): files, clusters, blast_radius, dependency_graph, stats,
 // pr_narrative, risk_surfaces, unrelated_changes, intent_gaps, context_notes.
-// A harness parse failure degrades to empty semantic fields (Python falls back
-// to a default _AnatomySemanticResult), never an error.
+// Missing or unparseable structured output fails this required phase.
 func AnatomyPhase(ctx context.Context, deps Deps, in AnatomyInput) (map[string]any, error) {
 	pr := in.PRData
 
@@ -43,9 +42,8 @@ func AnatomyPhase(ctx context.Context, deps Deps, in AnatomyInput) (map[string]a
 	if err != nil {
 		return nil, err
 	}
-	// Run's seeded default already matches Python's `_AnatomySemanticResult()`
-	// fallback on Parsed==nil; only nil slices from explicit JSON nulls need
-	// coercion so model_dump-parity emits [] rather than null.
+	// Only nil slices from explicit JSON nulls need coercion so model_dump-parity
+	// emits [] rather than null.
 	semantic := *parsed
 
 	anatomy := schemas.AnatomyResult{

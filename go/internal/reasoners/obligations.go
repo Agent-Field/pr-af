@@ -18,7 +18,7 @@ import (
 //
 // Output keys (§B.2): obligations (each: id, where, relies_on, property). No
 // non-empty patches short-circuits to an empty list without a harness call;
-// parse failure degrades to an empty list.
+// missing or unparseable structured output fails the consistency phase.
 func ExtractObligations(ctx context.Context, deps Deps, in ExtractObligationsInput) (map[string]any, error) {
 	patches := filterPairs(in.DiffPatches)
 	if len(patches) == 0 {
@@ -50,9 +50,8 @@ func ExtractObligations(ctx context.Context, deps Deps, in ExtractObligationsInp
 // obligation and decide whether the property holds.
 //
 // Output keys (§B.2): holds, title, severity, file_path, line_start, line_end,
-// body, evidence, suggestion, confidence. Parse failure degrades to the seeded
-// verdict (holds=true, severity="important", confidence=0.7) — Python's
-// `_ObligationVerdict(holds=True)`.
+// body, evidence, suggestion, confidence. Missing or unparseable structured
+// output fails instead of assuming the obligation holds.
 func VerifyObligation(ctx context.Context, deps Deps, in VerifyObligationInput) (map[string]any, error) {
 	// Python: `_Obligation.model_validate(obligation)`.
 	var o obligation

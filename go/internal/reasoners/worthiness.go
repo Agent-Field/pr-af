@@ -2,6 +2,7 @@ package reasoners
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Agent-Field/agentfield/sdk/go/harness"
 
@@ -45,7 +46,11 @@ func PostWorthinessGate(ctx context.Context, deps Deps, in PostWorthinessInput) 
 
 	parsed, _, err := harnessx.Run[postWorthinessResult](ctx, deps.Harness, prompt, harness.Options{})
 	if err != nil {
-		return nil, err
+		var structuredErr *harnessx.StructuredOutputError
+		if !errors.As(err, &structuredErr) {
+			return nil, err
+		}
+		return map[string]any{"keep_indices": rangeInts(n), "reasoning": ""}, nil
 	}
 
 	keep := []int{}

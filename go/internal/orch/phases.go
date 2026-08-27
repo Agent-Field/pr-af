@@ -10,12 +10,12 @@ package orch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -154,12 +154,14 @@ func (o *Orchestrator) runReviewPhases(
 			return schemas.ReviewPlan{}, nil, err
 		}
 	}
+	o.markPhaseCompleted("review")
 
 	// Phase 6 (coverage) ‖ Phase 6.7 (consistency) — independent, run concurrently.
 	covFindings, covAdversary, cvFindings, err := o.runCoverageAndConsistency(ctx, plan, anatomy, allFindings, adversaryResults)
 	if err != nil {
 		return schemas.ReviewPlan{}, nil, err
 	}
+	o.markPhaseCompleted("coverage")
 	adversaryResults = covAdversary
 
 	challenged, confirmed := 0, 0
@@ -183,6 +185,7 @@ func (o *Orchestrator) runReviewPhases(
 	merged := append(append([]schemas.ReviewFinding(nil), covFindings...), consistencyNew...)
 
 	scored := o.synthesize(merged, adversaryResults)
+	o.markPhaseCompleted("synthesis")
 
 	if o.config.Comments.MergeGateEnabled {
 		scored = gates.ClassifyFindings(ctx, o.deps.App, scored)
@@ -326,6 +329,10 @@ func (o *Orchestrator) runMetaSelectors(
 		})
 		allDimensions = allDimensions[:profile.MaxDimensions]
 	}
+	if len(allDimensions) == 0 {
+		return schemas.ReviewPlan{}, errors.New("meta selectors selected zero review dimensions")
+	}
+	o.markPhaseCompleted("meta_selectors")
 
 	// ReviewPlan is NOT default-seeded in schemas (design §5), so seed the
 	// pydantic BudgetAllocation() default for total_budget explicitly — otherwise
@@ -406,6 +413,9 @@ func (o *Orchestrator) collectParallelReview(ctx context.Context, plan schemas.R
 }
 
 func allDimensionsSchemaFailed(stats dimensionParseSnapshot) error {
+	if stats.Attempted == 0 {
+		return errors.New("no review dimensions were attempted")
+	}
 	if stats.Attempted > 0 && stats.Parseable == 0 && stats.Failed > 0 {
 		return fmt.Errorf("all review dimensions failed schema parsing (failed dimensions: %d)", stats.Failed)
 	}
@@ -657,7 +667,10 @@ func (o *Orchestrator) runReviewLayer(
 	}
 
 	verificationMap := map[string]map[string]any{}
-	if hasHighPriority(allFindings) && len(evidenceMap) > 0 && !o.budgetOrTimeoutExhausted("adversary") {
+	if hasHighPriority(allFindings) && len(evidenceMap) > 0 {
+		if o.budgetOrTimeoutExhausted("adversary") {
+			return nil, nil, budgetExhaustedErr(o.budgetExhaustedMessage("evidence verification"))
+		}
 		updated, vmap, err := o.runEvidenceVerification(ctx, allFindings, evidenceMap)
 		if err != nil {
 			return nil, nil, err
@@ -667,7 +680,10 @@ func (o *Orchestrator) runReviewLayer(
 	}
 
 	var adversaryResults []schemas.AdversaryResult
-	if len(allFindings) > 0 && !o.budgetOrTimeoutExhausted("adversary") {
+	if len(allFindings) > 0 {
+		if o.budgetOrTimeoutExhausted("adversary") {
+			return nil, nil, budgetExhaustedErr(o.budgetExhaustedMessage("adversary analysis"))
+		}
 		ar, err := o.runParallelAdversary(ctx, allFindings, evidenceMap, verificationMap)
 		if err != nil {
 			return nil, nil, err
@@ -687,6 +703,7 @@ func (o *Orchestrator) runReviewLayer(
 	if err != nil {
 		return nil, nil, err
 	}
+	o.markPhaseCompleted("cross_ref")
 	allFindings = append(allFindings, compound...)
 	return allFindings, adversaryResults, nil
 }
@@ -706,6 +723,9 @@ func (o *Orchestrator) runEvidenceVerification(
 	if len(highPriority) == 0 {
 		return findings, map[string]map[string]any{}, nil
 	}
+	if title, duplicate := duplicateFindingTitle(highPriority); duplicate {
+		return nil, nil, fmt.Errorf("evidence verification received duplicate finding title %q", title)
+	}
 
 	evPackages := map[string]map[string]any{}
 	for _, f := range highPriority {
@@ -717,6 +737,7 @@ func (o *Orchestrator) runEvidenceVerification(
 	if len(evPackages) > 0 {
 		evArg = evPackages
 	}
+	o.recordEvidenceVerification(len(highPriority), len(highPriority))
 
 	raw, err := o.rfns.evidenceVerify(ctx, o.reasonerDeps(), reasoners.EvidenceVerifierInput{
 		Findings:         highPriority,
@@ -728,16 +749,25 @@ func (o *Orchestrator) runEvidenceVerification(
 		return nil, nil, err
 	}
 	o.incInvocations(1)
-	o.registerCost("adversary", raw)
+	o.registerCost("evidence_verification", raw)
 
 	verificationMap := map[string]map[string]any{}
+	verificationCounts := map[string]int{}
 	for _, vf := range asObjListStrict(raw, "verified_findings") {
 		title := getStr(vf, "title", "")
 		if title == "" {
 			continue
 		}
+		verificationCounts[title]++
 		verificationMap[title] = vf
 	}
+	for _, finding := range highPriority {
+		if verificationCounts[finding.Title] == 0 {
+			return nil, nil, fmt.Errorf("evidence verification omitted finding %q", finding.Title)
+		}
+		verificationCounts[finding.Title]--
+	}
+	o.markPhaseCompleted("evidence_verification")
 
 	updated := make([]schemas.ReviewFinding, 0, len(findings))
 	for _, f := range findings {
@@ -786,8 +816,22 @@ func (o *Orchestrator) runParallelAdversary(
 	verificationMap map[string]map[string]any,
 ) ([]schemas.AdversaryResult, error) {
 	if len(findings) == 0 || o.budgetOrTimeoutExhausted("adversary") {
-		return nil, nil
+		if len(findings) == 0 {
+			return nil, nil
+		}
+		return nil, budgetExhaustedErr(o.budgetExhaustedMessage("adversary analysis"))
 	}
+	if title, duplicate := duplicateFindingTitle(findings); duplicate {
+		return nil, fmt.Errorf("adversary analysis received duplicate finding title %q", title)
+	}
+	if len(findings) > adversaryBatchSize*maxAdversaryBatch {
+		return nil, fmt.Errorf(
+			"adversary analysis received %d findings, exceeding the fail-closed limit of %d",
+			len(findings),
+			adversaryBatchSize*maxAdversaryBatch,
+		)
+	}
+	o.recordAdversaryEligibility(len(findings))
 	aiConfidence := 0.0
 	if o.intakeResult != nil {
 		aiConfidence = o.intakeResult.AIGenerated
@@ -800,9 +844,6 @@ func (o *Orchestrator) runParallelAdversary(
 			end = len(findings)
 		}
 		batches = append(batches, findings[i:end])
-		if len(batches) >= maxAdversaryBatch {
-			break
-		}
 	}
 
 	results := make([][]schemas.AdversaryResult, len(batches))
@@ -811,9 +852,10 @@ func (o *Orchestrator) runParallelAdversary(
 		i := i
 		g.Go(func() error {
 			if o.budgetOrTimeoutExhausted("adversary") {
-				return nil
+				return budgetExhaustedErr(o.budgetExhaustedMessage("adversary analysis"))
 			}
 			batch := batches[i]
+			o.recordAdversaryAttempt(len(batch))
 			batchEvidence := map[string]map[string]any{}
 			for _, f := range batch {
 				entry := map[string]any{}
@@ -847,18 +889,43 @@ func (o *Orchestrator) runParallelAdversary(
 			}
 			o.incInvocations(1)
 			o.registerCost("adversary", raw)
-			results[i] = extractAdversaryResults(raw)
+			batchResults := extractAdversaryResults(raw)
+			resultTitleCounts := make(map[string]int, len(batchResults))
+			for _, result := range batchResults {
+				resultTitleCounts[result.FindingTitle]++
+			}
+			for _, finding := range batch {
+				if resultTitleCounts[finding.Title] == 0 {
+					return fmt.Errorf("adversary analysis omitted finding %q", finding.Title)
+				}
+				resultTitleCounts[finding.Title]--
+			}
+			results[i] = batchResults
 			return nil
 		})
 	}
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+	o.markPhaseCompleted("adversary")
 	var all []schemas.AdversaryResult
 	for _, br := range results {
 		all = append(all, br...)
 	}
 	return all, nil
+}
+
+// duplicateFindingTitle detects ambiguous title-based identities before phases
+// whose evidence and verdict contracts key results by title.
+func duplicateFindingTitle(findings []schemas.ReviewFinding) (string, bool) {
+	seen := make(map[string]struct{}, len(findings))
+	for _, finding := range findings {
+		if _, exists := seen[finding.Title]; exists {
+			return finding.Title, true
+		}
+		seen[finding.Title] = struct{}{}
+	}
+	return "", false
 }
 
 // extractAdversaryResults ports _extract_adversary_results.
@@ -889,9 +956,10 @@ func (o *Orchestrator) runCoverageLoop(
 	findings []schemas.ReviewFinding,
 	adversaryResults []schemas.AdversaryResult,
 ) ([]schemas.ReviewFinding, []schemas.AdversaryResult, error) {
+	attempted := false
 	for iter := 0; iter < o.config.Budget.MaxCoverageIterations; iter++ {
 		if o.budgetOrTimeoutExhausted("coverage") {
-			break
+			return nil, nil, budgetExhaustedErr(o.budgetExhaustedMessage("coverage"))
 		}
 		reviewedClusters := reviewedClusters(anatomy, findings)
 		dimensionNames := make([]string, 0, len(plan.Dimensions))
@@ -906,6 +974,7 @@ func (o *Orchestrator) runCoverageLoop(
 		if err != nil {
 			return nil, nil, err
 		}
+		attempted = true
 		o.incInvocations(1)
 		o.registerCost("coverage", gateRaw)
 
@@ -939,7 +1008,10 @@ func (o *Orchestrator) runCoverageLoop(
 			}
 			gapEvidence = em
 		}
-		if len(findings) > 0 && !o.budgetOrTimeoutExhausted("adversary") {
+		if len(findings) > 0 {
+			if o.budgetOrTimeoutExhausted("adversary") {
+				return nil, nil, budgetExhaustedErr(o.budgetExhaustedMessage("coverage adversary analysis"))
+			}
 			ar, err := o.runParallelAdversary(ctx, findings, gapEvidence, map[string]map[string]any{})
 			if err != nil {
 				return nil, nil, err
@@ -954,6 +1026,9 @@ func (o *Orchestrator) runCoverageLoop(
 			}
 		}
 		findings = kept
+	}
+	if !attempted {
+		return nil, nil, errors.New("coverage phase completed without an attempt")
 	}
 	return findings, adversaryResults, nil
 }
@@ -1016,12 +1091,12 @@ func buildGapDimensions(anatomy schemas.AnatomyResult, gapDescriptions, reviewed
 // ---- Phase 6.7: CONSISTENCY VERIFY ----
 
 func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []schemas.ReviewFinding) ([]schemas.ReviewFinding, error) {
-	if o.budgetOrTimeoutExhausted("review") {
-		return allFindings, nil
-	}
 	diffPatches := reasoners.OrderedPatches(o.filePatches())
 	if len(diffPatches) == 0 {
 		return allFindings, nil
+	}
+	if o.budgetOrTimeoutExhausted("review") {
+		return nil, budgetExhaustedErr(o.budgetExhaustedMessage("consistency verification"))
 	}
 	repo := strp(o.input.RepoPath)
 
@@ -1031,8 +1106,7 @@ func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []s
 		PrContext:   o.buildPRContextString(),
 	})
 	if err != nil {
-		// Python: except → skip, return existing findings unchanged.
-		return allFindings, nil
+		return nil, err
 	}
 	o.incInvocations(1)
 	o.registerCost("review", obRaw)
@@ -1047,25 +1121,25 @@ func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []s
 
 	// Order-preserving fan-out: one verify_obligation per obligation.
 	verdicts := make([]map[string]any, len(obligations))
-	var wg sync.WaitGroup
+	g, gctx := errgroup.WithContext(ctx)
 	for i := range obligations {
 		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			raw, err := o.rfns.verifyOblig(ctx, o.reasonerDeps(), reasoners.VerifyObligationInput{
+		g.Go(func() error {
+			raw, err := o.rfns.verifyOblig(gctx, o.reasonerDeps(), reasoners.VerifyObligationInput{
 				Obligation: obligations[i],
 				RepoPath:   repo,
 			})
 			if err != nil {
-				verdicts[i] = map[string]any{"holds": true}
-				return
+				return err
 			}
 			verdicts[i] = raw
-		}()
+			o.incInvocations(1)
+			return nil
+		})
 	}
-	wg.Wait()
-	o.incInvocations(len(verdicts))
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 
 	var newFindings []schemas.ReviewFinding
 	for _, v := range verdicts {

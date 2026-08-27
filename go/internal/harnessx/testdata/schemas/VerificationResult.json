@@ -46,6 +46,9 @@
       "type": "array"
     }
   },
+  "required": [
+    "verified_findings"
+  ],
   "title": "_VerificationResult",
   "type": "object"
 }

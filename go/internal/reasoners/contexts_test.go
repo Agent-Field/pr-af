@@ -125,9 +125,8 @@ func TestMetaSelectorWritesContextFile(t *testing.T) {
 		DiffPatches: OrderedPatches{{Key: "a.go", Val: bigPatch}},
 	}
 	h := &mockHarness{parseFail: true}
-	if _, err := MetaSemantic(context.Background(), Deps{Harness: h}, in); err != nil {
-		t.Fatal(err)
-	}
+	_, err := MetaSemantic(context.Background(), Deps{Harness: h}, in)
+	requireStructuredOutputError(t, err)
 	path := filepath.Join(repo, ".pr-af-context", "meta_semantic_context.json")
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -196,11 +195,10 @@ func TestDeepenAndObligationsWriteDiffFiles(t *testing.T) {
 	want := renderPatches(filterPairs(patches))
 
 	h := &mockHarness{parseFail: true}
-	if _, err := DeepenFindings(context.Background(), Deps{Harness: h}, DeepenInput{
+	_, err := DeepenFindings(context.Background(), Deps{Harness: h}, DeepenInput{
 		DiffPatches: patches, RepoPath: repo,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	requireStructuredOutputError(t, err)
 	b, err := os.ReadFile(filepath.Join(repo, ".pr-af-context", "deepen_diff.md"))
 	if err != nil {
 		t.Fatalf("deepen_diff.md not written: %v", err)
@@ -213,11 +211,10 @@ func TestDeepenAndObligationsWriteDiffFiles(t *testing.T) {
 	}
 
 	h = &mockHarness{parseFail: true}
-	if _, err := ExtractObligations(context.Background(), Deps{Harness: h}, ExtractObligationsInput{
+	_, err = ExtractObligations(context.Background(), Deps{Harness: h}, ExtractObligationsInput{
 		DiffPatches: patches, RepoPath: repo,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	requireStructuredOutputError(t, err)
 	b, err = os.ReadFile(filepath.Join(repo, ".pr-af-context", "obligations_diff.md"))
 	if err != nil {
 		t.Fatalf("obligations_diff.md not written: %v", err)
@@ -240,11 +237,10 @@ func TestCompoundFinderWritesContextFile(t *testing.T) {
 	want := compoundFinderContext(findings, evMap)
 
 	h := &mockHarness{parseFail: true}
-	if _, err := CompoundFinderPhase(context.Background(), Deps{Harness: h}, CompoundFinderInput{
+	_, err := CompoundFinderPhase(context.Background(), Deps{Harness: h}, CompoundFinderInput{
 		ClusterFindings: findings, RepoPath: repo, EvidenceMap: ev,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	})
+	requireStructuredOutputError(t, err)
 	path := filepath.Join(repo, ".pr-af-context", "compound_cluster_findings.json")
 	b, err := os.ReadFile(path)
 	if err != nil {

@@ -4,9 +4,10 @@
 This script is the SINGLE SOURCE OF TRUTH for the JSON-schema fixtures under
 ``go/internal/harnessx/testdata/schemas/``. It imports the REAL Python pydantic
 models that every PR-AF reasoner hands to ``router.app.harness(..., schema=...)``
-and emits, for each one, EXACTLY the JSON schema the Python SDK would build from
-it — i.e. ``model_json_schema()`` — so the Go harness can embed that schema
-instead of reflecting its Go destination struct with invopop.
+and emits, for each one, the JSON schema the Go harness uses instead of
+reflecting its destination struct with invopop. It begins with
+``model_json_schema()`` and applies the two documented runtime-safety
+adjustments below.
 
 WHY THIS EXISTS
 ---------------
@@ -23,8 +24,8 @@ ignores extra keys — so Python-valid model output (omitting
 keys) was REJECTED by the Go node: wasted retries, fallback outputs, lost
 findings. Embedding the pydantic schema restores real parity on those three axes.
 
-THE ONE DELIBERATE DEVIATION: SEVERITY
---------------------------------------
+DELIBERATE DEVIATION 1: SEVERITY
+--------------------------------
 ``schemas/severity.py`` types finding-severity as
 ``Annotated[Literal[...], BeforeValidator(normalize_severity)]``.
 ``model_json_schema()`` therefore advertises a strict 4-value ``enum``, but the
@@ -37,9 +38,16 @@ enum there would REJECT ``"high"`` (the exact "swallowed review" incident
 the prior invopop schema (Go's ``type Severity string`` advertised no enum at
 all). So we strip the ``enum`` keyword from Severity nodes, leaving
 ``type: string``; Go's ``schemas.Severity.UnmarshalJSON`` then normalizes exactly
-like the BeforeValidator. This is the only place the emitted schema diverges
-from raw ``model_json_schema()``, and it is a divergence toward Python's true
-runtime behaviour, not away from it.
+like the BeforeValidator. This divergence follows Python's true runtime
+behaviour rather than its static schema.
+
+DELIBERATE DEVIATION 2: EXPLICIT RESULT COLLECTIONS
+---------------------------------------------------
+Several pydantic result models default their top-level collection to an empty
+list, making ``{}`` schema-valid even though it is indistinguishable from a
+provider or parser no-op. The Go review contract requires those collection keys
+to be present while still allowing explicit empty arrays. This preserves clean
+results such as ``{"findings": []}`` and rejects ambiguous empty objects.
 
 REPRODUCE (from the pr-af repo root):
   /tmp/claude-1000/-home-abir-gb/e0447ca2-28f4-49fe-ae8a-ead45bdad68c/scratchpad/praf-venv/bin/python go/scripts/gen_schemas.py
@@ -101,6 +109,17 @@ MODELS: dict[str, Any] = {
 
 _SEVERITY_ENUM = list(VALID_SEVERITIES)
 
+# These collection fields may be empty, but they must be explicit. Without the
+# requirement, `{}` is schema-valid and is indistinguishable from a reasoner
+# that intentionally returned an empty analysis.
+_REQUIRED_COLLECTION_OUTPUTS: dict[str, list[str]] = {
+    "AdversaryPhaseResult": ["results"],
+    "CompoundResult": ["findings"],
+    "ObligationsResult": ["obligations"],
+    "ReviewFindingsResult": ["findings"],
+    "VerificationResult": ["verified_findings"],
+}
+
 
 def _relax_severity_enums(node: Any) -> Any:
     """Strip the strict Severity ``enum`` while leaving every other keyword intact.
@@ -124,6 +143,8 @@ def _relax_severity_enums(node: Any) -> Any:
 
 def emit(name: str, model: Any) -> None:
     schema = _relax_severity_enums(model.model_json_schema())
+    if required := _REQUIRED_COLLECTION_OUTPUTS.get(name):
+        schema["required"] = required
     # sort_keys makes the committed fixture diff-stable; the Go SDK re-marshals
     # the map (json.MarshalIndent sorts map keys anyway) so on-disk key order has
     # no runtime effect. Trailing newline keeps gofmt/editors happy.

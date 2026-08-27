@@ -82,6 +82,9 @@
       "type": "array"
     }
   },
+  "required": [
+    "findings"
+  ],
   "title": "_CompoundResult",
   "type": "object"
 }

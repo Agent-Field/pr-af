@@ -14,7 +14,8 @@ import (
 // the literal ground-truth verification pass over the changed code.
 //
 // Output keys (§B.2): findings. No non-empty patches short-circuits to an
-// empty list without a harness call; parse failure degrades to an empty list.
+// empty list without a harness call; missing structured output fails this
+// compatibility reasoner.
 func DeepenFindings(ctx context.Context, deps Deps, in DeepenInput) (map[string]any, error) {
 	patches := filterPairs(in.DiffPatches)
 	if len(patches) == 0 {

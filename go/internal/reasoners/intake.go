@@ -15,8 +15,8 @@ import (
 // IntakeResult; otherwise it escalates to a full .harness() classification.
 //
 // Output keys (§B.2): pr_type, complexity, languages, areas_touched,
-// risk_signals, ai_generated, review_depth, pr_summary — or {} when the
-// harness fallback fails to parse (Python returns a literal empty dict).
+// risk_signals, ai_generated, review_depth, pr_summary. A missing structured
+// harness result fails the phase instead of becoming an empty intake.
 func IntakePhase(ctx context.Context, deps Deps, in IntakeInput) (map[string]any, error) {
 	pr := in.PRData
 	filesChanged := len(pr.ChangedFiles)
@@ -61,13 +61,9 @@ func IntakePhase(ctx context.Context, deps Deps, in IntakeInput) (map[string]any
 	}
 
 	fallbackPrompt := prompts.IntakeFallbackPrompt(pr.Title, pr.Description, in.Depth, languages, filesChanged)
-	parsed, res, err := harnessx.Run[schemas.IntakeResult](ctx, deps.Harness, fallbackPrompt, harness.Options{})
+	parsed, _, err := harnessx.Run[schemas.IntakeResult](ctx, deps.Harness, fallbackPrompt, harness.Options{})
 	if err != nil {
 		return nil, err
-	}
-	if res == nil || res.Parsed == nil {
-		// Python: `fallback_result.parsed.model_dump() if fallback_result.parsed else {}`.
-		return map[string]any{}, nil
 	}
 	out := *parsed
 	out.Languages = orEmptyStrs(out.Languages)

@@ -51,6 +51,9 @@
       "type": "array"
     }
   },
+  "required": [
+    "results"
+  ],
   "title": "_AdversaryPhaseResult",
   "type": "object"
 }

@@ -17,19 +17,16 @@ import (
 //
 // Output keys (§B.2): fully_covered, gap_descriptions, confident. Absent
 // response keys land on the pydantic defaults through CoverageGate's seeded
-// UnmarshalJSON (confident=true, gap_descriptions=[]); a harness fallback that
-// fails to parse returns {} (Python returns a literal empty dict).
+// UnmarshalJSON (confident=true, gap_descriptions=[]). A missing structured
+// harness fallback fails the phase.
 func CoverageGate(ctx context.Context, deps Deps, in CoverageGateInput) (map[string]any, error) {
 	prompt := prompts.CoverageGatePrompt(in.Anatomy, in.ReviewedClusters, in.DimensionNamesReviewed)
 
 	var gate schemas.CoverageGate
 	if err := aiStructured(ctx, deps.AI, prompt, prompts.CoverageGateSystem, strictAISchemas[strictAISchemaCoverageGate], &gate); err != nil {
-		parsed, res, harnessErr := harnessx.Run[schemas.CoverageGate](ctx, deps.Harness, prompt, harness.Options{})
+		parsed, _, harnessErr := harnessx.Run[schemas.CoverageGate](ctx, deps.Harness, prompt, harness.Options{})
 		if harnessErr != nil {
 			return nil, harnessErr
-		}
-		if res == nil || res.Parsed == nil {
-			return map[string]any{}, nil
 		}
 		gate = *parsed
 	}

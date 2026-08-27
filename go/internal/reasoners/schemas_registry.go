@@ -11,9 +11,10 @@ import (
 // committed pydantic-generated schema fixture (go/internal/harnessx/testdata/
 // schemas/<Name>.json, produced by go/scripts/gen_schemas.py). harnessx.Run's
 // schemaFor[T] consults this registry so the Go SDK validates parsed harness
-// output against the SAME schema the Python SDK builds from the corresponding
-// pydantic model — restoring parity on the required/nullable/additionalProperties
-// axes that invopop reflection broke (design §C.3 HIGH-severity fix).
+// output against the generated Python schema plus the documented Severity and
+// explicit-collection safety adjustments in gen_schemas.py. This preserves
+// pydantic parity on nullable/default/extra-key behavior without allowing an
+// empty object to impersonate an intentional clean result.
 //
 // Registration lives HERE, not in harnessx, because the reasoners package owns
 // the destination types (the private harness-result structs below plus the

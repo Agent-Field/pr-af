@@ -30,8 +30,8 @@ func (m *mockHarness) Harness(ctx context.Context, prompt string, schema map[str
 }
 
 // seededResult carries non-zero pydantic-parity defaults via UnmarshalJSON,
-// exactly like the real schemas structs (schemas §C.1). Used to prove the
-// Parsed==nil path returns seeded defaults, not the Go zero value.
+// exactly like the real schemas structs (schemas §C.1). It proves successful
+// decoding still preserves those defaults while missing parsed output fails.
 type seededResult struct {
 	Complete bool   `json:"complete"`
 	Scope    string `json:"estimated_scope"`
@@ -161,11 +161,10 @@ func TestRunPassesOptsEnvThrough(t *testing.T) {
 	}
 }
 
-// --- Run: Parsed==nil fallback path -----------------------------------------
+// --- Run: Parsed==nil failure path ------------------------------------------
 
-// Contract: on Result.Parsed == nil (schema parse failure), Run returns the
-// default-seeded value plus the Result, NOT an error.
-func TestRunParsedNilReturnsSeededDefaults(t *testing.T) {
+// Contract: a schema parse failure is never a successful structured result.
+func TestRunParsedNilReturnsStructuredOutputError(t *testing.T) {
 	mh := &mockHarness{
 		fn: func(_ context.Context, _ string, _ map[string]any, _ any, _ harness.Options) (*harness.Result, error) {
 			// Non-fatal error result with no parsed output.
@@ -174,17 +173,35 @@ func TestRunParsedNilReturnsSeededDefaults(t *testing.T) {
 	}
 
 	out, res, err := Run[seededResult](context.Background(), mh, "prompt", harness.Options{})
-	if err != nil {
-		t.Fatalf("expected no error on Parsed==nil, got %v", err)
+	var structuredErr *StructuredOutputError
+	if !errors.As(err, &structuredErr) {
+		t.Fatalf("expected *StructuredOutputError, got %T: %v", err, err)
 	}
-	if out == nil {
-		t.Fatal("expected a seeded default value, got nil")
-	}
-	if !out.Complete || out.Scope != "medium" {
-		t.Fatalf("expected seeded defaults (Complete=true, Scope=medium), got %+v", *out)
+	if out != nil {
+		t.Fatalf("expected nil value on schema failure, got %+v", out)
 	}
 	if res == nil || !res.IsError {
-		t.Fatal("expected the failing Result returned so the caller can inspect IsError")
+		t.Fatal("expected the failing Result alongside the structured-output error")
+	}
+	if structuredErr.Diagnostic != "schema validation failed after retries" {
+		t.Fatalf("diagnostic = %q", structuredErr.Diagnostic)
+	}
+}
+
+func TestRunNilResultReturnsStructuredOutputError(t *testing.T) {
+	mh := &mockHarness{
+		fn: func(_ context.Context, _ string, _ map[string]any, _ any, _ harness.Options) (*harness.Result, error) {
+			return nil, nil
+		},
+	}
+
+	out, res, err := Run[seededResult](context.Background(), mh, "prompt", harness.Options{})
+	var structuredErr *StructuredOutputError
+	if !errors.As(err, &structuredErr) {
+		t.Fatalf("expected *StructuredOutputError, got %T: %v", err, err)
+	}
+	if out != nil || res != nil {
+		t.Fatalf("out, result = %+v, %+v; want nil, nil", out, res)
 	}
 }
 

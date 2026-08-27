@@ -101,11 +101,21 @@ type Deps struct {
 	Local LocalCaller
 }
 
-// phaseOrder ports ReviewOrchestrator.PHASE_ORDER — the cost-breakdown /
-// phases_completed key list.
+// phaseOrder extends ReviewOrchestrator.PHASE_ORDER with the explicit evidence
+// verification phase required by the versioned successful-review contract. It
+// defines stable cost-breakdown and phases_completed ordering.
 var phaseOrder = []string{
 	"intake", "anatomy", "meta_selectors", "review",
-	"adversary", "cross_ref", "coverage", "synthesis", "output",
+	"evidence_verification", "adversary", "cross_ref", "coverage", "synthesis", "output",
+}
+
+// requiredPreOutputPhases are the core stages that must finish before a review
+// can be scored or rendered. Evidence verification and adversary analysis are
+// conditional; their separate eligible/attempted counters prove whether a
+// valid no-input skip occurred.
+var requiredPreOutputPhases = []string{
+	"intake", "anatomy", "meta_selectors", "review",
+	"cross_ref", "coverage", "synthesis",
 }
 
 // Meta-selector configuration (schemas/pipeline.py MetaSelectorConfig — not
@@ -128,15 +138,20 @@ type Orchestrator struct {
 	reviewID  string
 	startedAt time.Time
 
-	mu                        sync.Mutex // guards the counters below (mutated from fan-out goroutines)
-	totalCostUSD              float64
-	costBreakdown             map[string]float64
-	agentInvocations          int
-	budgetExhausted           bool
-	durationCapTripped        bool // the wall-clock cap (not the cost cap) exhausted the budget
-	reviewDimensionsAttempted int
-	reviewDimensionsParseable int
-	degradedDimensions        int
+	mu                         sync.Mutex // guards the counters below (mutated from fan-out goroutines)
+	totalCostUSD               float64
+	costBreakdown              map[string]float64
+	agentInvocations           int
+	budgetExhausted            bool
+	durationCapTripped         bool // the wall-clock cap (not the cost cap) exhausted the budget
+	reviewDimensionsAttempted  int
+	reviewDimensionsParseable  int
+	degradedDimensions         int
+	evidenceFindingsEligible   int
+	evidenceFindingsAttempted  int
+	adversaryFindingsEligible  int
+	adversaryFindingsAttempted int
+	completedPhases            map[string]struct{}
 
 	// Single-threaded-written state (set before/after fan-outs, read after joins).
 	prData                   *schemas.GitHubPRData
@@ -215,7 +230,42 @@ func (o *Orchestrator) resetDimensionStats() {
 	o.reviewDimensionsAttempted = 0
 	o.reviewDimensionsParseable = 0
 	o.degradedDimensions = 0
+	o.evidenceFindingsEligible = 0
+	o.evidenceFindingsAttempted = 0
+	o.adversaryFindingsEligible = 0
+	o.adversaryFindingsAttempted = 0
 	o.mu.Unlock()
+}
+
+// recordEvidenceVerification tracks findings eligible for and sent to the
+// evidence verifier during the current review revision.
+func (o *Orchestrator) recordEvidenceVerification(eligible, attempted int) {
+	o.mu.Lock()
+	o.evidenceFindingsEligible += eligible
+	o.evidenceFindingsAttempted += attempted
+	o.mu.Unlock()
+}
+
+// recordAdversaryEligibility tracks findings scheduled for adversarial review.
+func (o *Orchestrator) recordAdversaryEligibility(count int) {
+	o.mu.Lock()
+	o.adversaryFindingsEligible += count
+	o.mu.Unlock()
+}
+
+// recordAdversaryAttempt tracks findings passed into an adversary harness call.
+func (o *Orchestrator) recordAdversaryAttempt(count int) {
+	o.mu.Lock()
+	o.adversaryFindingsAttempted += count
+	o.mu.Unlock()
+}
+
+// conditionalPhaseStats returns the conditional phase accounting for output.
+func (o *Orchestrator) conditionalPhaseStats() (int, int, int, int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.evidenceFindingsEligible, o.evidenceFindingsAttempted,
+		o.adversaryFindingsEligible, o.adversaryFindingsAttempted
 }
 
 func (o *Orchestrator) recordDimensionAttempt() {
@@ -238,6 +288,35 @@ func (o *Orchestrator) dimensionStats() dimensionParseSnapshot {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return dimensionParseSnapshot{Attempted: o.reviewDimensionsAttempted, Parseable: o.reviewDimensionsParseable, Failed: o.degradedDimensions}
+}
+
+// markPhaseCompleted records a phase only after its production work returns
+// successfully.
+func (o *Orchestrator) markPhaseCompleted(phase string) {
+	o.mu.Lock()
+	o.completedPhases[phase] = struct{}{}
+	o.mu.Unlock()
+}
+
+// completedPhaseNames returns completed phases in the stable public order.
+func (o *Orchestrator) completedPhaseNames() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	phases := make([]string, 0, len(o.completedPhases))
+	for _, phase := range phaseOrder {
+		if _, ok := o.completedPhases[phase]; ok {
+			phases = append(phases, phase)
+		}
+	}
+	return phases
+}
+
+// hasCompletedPhase reports whether one phase reached its successful boundary.
+func (o *Orchestrator) hasCompletedPhase(phase string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, ok := o.completedPhases[phase]
+	return ok
 }
 
 // reasonerSeams bundles the reasoner entry points the pipeline invokes so tests
@@ -336,14 +415,15 @@ func viaLocal[T any](local LocalCaller, name string) func(context.Context, reaso
 // time.monotonic() in __init__).
 func New(d Deps, in schemas.ReviewInput, cfg config.ReviewConfig) *Orchestrator {
 	o := &Orchestrator{
-		deps:           d,
-		input:          in,
-		config:         cfg,
-		reviewID:       "rev_" + hex12(),
-		startedAt:      time.Now(),
-		costBreakdown:  make(map[string]float64, len(phaseOrder)),
-		effectiveDepth: "standard",
-		rfns:           defaultReasonerSeams(),
+		deps:            d,
+		input:           in,
+		config:          cfg,
+		reviewID:        "rev_" + hex12(),
+		startedAt:       time.Now(),
+		costBreakdown:   make(map[string]float64, len(phaseOrder)),
+		effectiveDepth:  "standard",
+		rfns:            defaultReasonerSeams(),
+		completedPhases: make(map[string]struct{}, len(phaseOrder)),
 	}
 	for _, p := range phaseOrder {
 		o.costBreakdown[p] = 0.0
@@ -389,6 +469,7 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 	}
 	o.intakeResult = &intake
 	reviewDepth := o.resolveDepthFn(intake)
+	o.markPhaseCompleted("intake")
 	o.noteProgress(ctx, "intake", "completed", "Review intake completed")
 
 	o.noteProgress(ctx, "anatomy", "started", "Repository anatomy started")
@@ -397,6 +478,7 @@ func (o *Orchestrator) Run(ctx context.Context) (schemas.ReviewResult, error) {
 		return zero, err
 	}
 	o.anatomyResult = &anatomy
+	o.markPhaseCompleted("anatomy")
 	o.noteProgress(ctx, "anatomy", "completed", "Repository anatomy completed")
 
 	// HITL gate active only when there is a real PR to post to and we are not in

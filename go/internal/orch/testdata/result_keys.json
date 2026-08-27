@@ -56,14 +56,21 @@
     "risk_signals"
   ],
   "metadata": [
-    "agent_invocations",
+      "adversary_findings_attempted",
+      "adversary_findings_eligible",
+      "agent_invocations",
     "anatomy",
     "budget",
-    "degraded_dimensions",
-    "intake",
+      "degraded_dimensions",
+      "evidence_findings_attempted",
+      "evidence_findings_eligible",
+      "intake",
+    "pipeline_contract_version",
     "phases_completed",
     "plan",
-    "request"
+    "request",
+    "review_dimensions_attempted",
+    "review_dimensions_parseable"
   ],
   "plan": [
     "ai_adjusted",

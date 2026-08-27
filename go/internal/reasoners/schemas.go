@@ -13,9 +13,9 @@ import (
 //
 // Every struct with at least one non-zero pydantic default (or a
 // default_factory=list field) gets an UnmarshalJSON that seeds the default
-// before decoding (the seed-then-`type alias` idiom from schemas/defaults.go),
-// so harnessx.Run's seeded parse-failure fallback and absent-key decoding both
-// match pydantic exactly. Note _SubReviewRequest is structurally identical to
+// before decoding (the seed-then-`type alias` idiom from schemas/defaults.go).
+// Missing or unparseable harness output is rejected before these values are
+// consumed. Note _SubReviewRequest is structurally identical to
 // schemas.SubReviewRequest (same fields, defaults, and json tags), so the
 // committed schemas struct is reused instead of duplicated.
 
@@ -41,8 +41,9 @@ func (a *anatomySemanticResult) UnmarshalJSON(b []byte) error {
 // reviewFindingsResult ports _ReviewFindingsResult. The sub_reviews element
 // type reuses schemas.SubReviewRequest (identical to _SubReviewRequest).
 type reviewFindingsResult struct {
-	Findings   []schemas.ReviewFinding    `json:"findings"`
-	SubReviews []schemas.SubReviewRequest `json:"sub_reviews"`
+	Findings        []schemas.ReviewFinding    `json:"findings"`
+	SubReviews      []schemas.SubReviewRequest `json:"sub_reviews"`
+	findingsPresent bool                       `json:"-"`
 }
 
 func (r *reviewFindingsResult) UnmarshalJSON(b []byte) error {
@@ -50,8 +51,19 @@ func (r *reviewFindingsResult) UnmarshalJSON(b []byte) error {
 		Findings:   []schemas.ReviewFinding{},
 		SubReviews: []schemas.SubReviewRequest{},
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return err
+	}
+	_, r.findingsPresent = fields["findings"]
 	type alias reviewFindingsResult
 	return json.Unmarshal(b, (*alias)(r))
+}
+
+// hasExplicitFindings distinguishes an intentional clean review from a missing
+// or null collection even if schema validation is accidentally bypassed.
+func (r reviewFindingsResult) hasExplicitFindings() bool {
+	return r.findingsPresent && r.Findings != nil
 }
 
 // compoundFinding ports _CompoundFinding.

@@ -15,7 +15,8 @@ import (
 // evidence. Skepticism escalates to "high" when the AI-generated confidence
 // exceeds 0.5 (handled inside the prompt builder).
 //
-// Output keys (§B.2): results. Parse failure degrades to an empty list.
+// Output keys (§B.2): results. Missing or unparseable structured output fails
+// the adversarial phase.
 func AdversaryPhase(ctx context.Context, deps Deps, in AdversaryInput) (map[string]any, error) {
 	evMap := evidenceOMaps(in.EvidencePackages)
 

@@ -14,8 +14,8 @@ import (
 // critical/important findings against programmatically extracted ground-truth
 // code, before the adversarial phase.
 //
-// Output keys (§B.2): verified_findings. Parse failure degrades to an empty
-// list.
+// Output keys (§B.2): verified_findings. Missing or unparseable structured
+// output fails verification rather than erasing evidence.
 func EvidenceVerifier(ctx context.Context, deps Deps, in EvidenceVerifierInput) (map[string]any, error) {
 	evMap := evidenceOMaps(in.EvidencePackages)
 

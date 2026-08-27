@@ -40,8 +40,16 @@ func TestStreamingLayerConsumesWhileReviewersRun(t *testing.T) {
 			"current_depth": 0,
 		}, nil
 	}
-	o.rfns.adversary = func(context.Context, reasoners.Deps, reasoners.AdversaryInput) (map[string]any, error) {
-		return map[string]any{"results": []any{}}, nil
+	o.rfns.adversary = func(_ context.Context, _ reasoners.Deps, in reasoners.AdversaryInput) (map[string]any, error) {
+		results := make([]any, len(in.Findings))
+		for i, finding := range in.Findings {
+			results[i] = map[string]any{
+				"finding_title": finding.Title,
+				"verdict":       "confirmed",
+				"reason":        "verified in streaming test",
+			}
+		}
+		return map[string]any{"results": results}, nil
 	}
 	o.layerBatchHook = func([]schemas.ReviewFinding) {
 		once.Do(func() { close(release) })

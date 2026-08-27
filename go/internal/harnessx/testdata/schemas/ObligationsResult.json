@@ -36,6 +36,9 @@
       "type": "array"
     }
   },
+  "required": [
+    "obligations"
+  ],
   "title": "_ObligationsResult",
   "type": "object"
 }

@@ -2,7 +2,7 @@ package harnessx
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 
 	"github.com/Agent-Field/agentfield/sdk/go/harness"
 
@@ -26,15 +26,12 @@ type HarnessCaller interface {
 //  2. Call app.Harness with a fresh *T dest. PR-AF has no scout-credential
 //     store, so — unlike the SWE-AF harness this is adapted from — Run does NOT
 //     inject run-scoped credentials into opts.Env; opts is passed through as-is.
-//  3. Classify fatal (non-retryable) API errors FIRST, before the Parsed==nil
-//     fallback, so the real billing/auth message surfaces past every retry layer
-//     as a *fatal.FatalHarnessError (callers must propagate it, not swallow it).
-//  4. On Result.Parsed == nil (the harness could not parse valid JSON into T),
-//     return a default-seeded T plus the Result — NOT an error — so the caller
-//     inspects Result.IsError and applies its role-specific deterministic
-//     fallback. The seed comes from unmarshaling "{}" into T, which triggers
-//     T's UnmarshalJSON default-seeding (schemas §C.1) when present, and yields
-//     the Go zero value otherwise.
+//  3. Classify fatal (non-retryable) API errors FIRST, before the structured-
+//     output error check, so the real billing/auth message surfaces past every
+//     retry layer as a *fatal.FatalHarnessError.
+//  4. Reject a nil, error, or unparsed Result as StructuredOutputError. A caller
+//     may deliberately classify that error as an explicit degraded result, but
+//     it cannot mistake a missing structured response for a successful value.
 //
 // Returns (*T, *harness.Result, error). The Result is returned even alongside a
 // non-nil error so callers can inspect diagnostics.
@@ -47,30 +44,35 @@ func Run[T any](ctx context.Context, app HarnessCaller, prompt string, opts harn
 		return nil, result, err
 	}
 
-	// Fatal-error classification comes before the Parsed==nil fallback so the
-	// real non-retryable message is not masked by a generic fallback struct.
+	// Fatal-error classification comes before the structured-output check so the
+	// real non-retryable message is not masked by a generic parse diagnostic.
 	if fErr := fatal.CheckFatalHarnessError(result); fErr != nil {
 		return nil, result, fErr
 	}
 
-	// Schema parse failure: hand the caller a default-seeded value plus the
-	// Result so it can apply its own deterministic fallback. Not an error.
-	if result == nil || result.Parsed == nil {
-		seeded := seedDefaults[T]()
-		return &seeded, result, nil
+	if result == nil {
+		return nil, nil, &StructuredOutputError{}
+	}
+	if result.IsError || result.Parsed == nil {
+		return nil, result, &StructuredOutputError{Diagnostic: result.ErrorMessage}
 	}
 
 	return &dest, result, nil
 }
 
-// seedDefaults returns a T seeded with its pydantic-parity defaults. Unmarshaling
-// an empty JSON object invokes T's UnmarshalJSON (which seeds non-zero defaults,
-// schemas §C.1) when T implements it; for a plain struct it leaves the Go zero
-// value. Any unmarshal error is ignored — the zero value is an acceptable floor.
-func seedDefaults[T any]() T {
-	var v T
-	_ = json.Unmarshal([]byte("{}"), &v)
-	return v
+// StructuredOutputError identifies a harness call that completed without a
+// usable schema-validated result.
+type StructuredOutputError struct {
+	Diagnostic string
+}
+
+// Error returns a stable message while retaining the harness diagnostic for
+// logs and tests.
+func (e *StructuredOutputError) Error() string {
+	if e.Diagnostic == "" {
+		return "harness returned no schema-validated structured output"
+	}
+	return fmt.Sprintf("harness returned no schema-validated structured output: %s", e.Diagnostic)
 }
 
 // RoleOptions is the role→harness parameter mapping (design §C.3). Each reasoner

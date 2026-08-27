@@ -17,37 +17,35 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/Agent-Field/pr-af/go/internal/evidence"
 	"github.com/Agent-Field/pr-af/go/internal/reasoners"
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
 )
 
-// runCompoundAnalysis ports _run_compound_analysis. Uses return_exceptions=True
-// semantics (WaitGroup, per-goroutine error captured and skipped, siblings not
-// cancelled) with order-preserving pre-indexed results.
+// runCompoundAnalysis ports _run_compound_analysis with order-preserving
+// pre-indexed results. A failed cluster now fails the required cross-reference
+// phase instead of silently erasing a possible compound finding.
 func (o *Orchestrator) runCompoundAnalysis(
 	ctx context.Context,
 	confirmedFindings []schemas.ReviewFinding,
 	evidenceMap map[string]evidence.EvidencePackage,
 ) ([]schemas.ReviewFinding, error) {
 	clusters := selectCompoundClusters(confirmedFindings, evidenceMap, o.config.Budget.MaxCrossRefDeepDives)
-	if len(clusters) == 0 || o.budgetOrTimeoutExhausted("cross_ref") {
+	if len(clusters) == 0 {
 		return nil, nil
 	}
-
-	type compoundOut struct {
-		raw map[string]any
-		err bool
+	if o.budgetOrTimeoutExhausted("cross_ref") {
+		return nil, budgetExhaustedErr(o.budgetExhaustedMessage("cross-reference analysis"))
 	}
-	results := make([]compoundOut, len(clusters))
-	var wg sync.WaitGroup
+
+	results := make([]map[string]any, len(clusters))
+	g, gctx := errgroup.WithContext(ctx)
 	for i := range clusters {
 		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		g.Go(func() error {
 			cluster := clusters[i]
 			clusterEvidence := map[string]map[string]any{}
 			if len(evidenceMap) > 0 {
@@ -61,28 +59,27 @@ func (o *Orchestrator) runCompoundAnalysis(
 			if len(clusterEvidence) > 0 {
 				evArg = clusterEvidence
 			}
-			raw, err := o.rfns.compoundFinder(ctx, o.reasonerDeps(), reasoners.CompoundFinderInput{
+			raw, err := o.rfns.compoundFinder(gctx, o.reasonerDeps(), reasoners.CompoundFinderInput{
 				ClusterFindings: cluster,
 				RepoPath:        strp(o.input.RepoPath),
 				EvidenceMap:     evArg,
 			})
 			if err != nil {
-				results[i] = compoundOut{err: true}
-				return
+				return err
 			}
-			results[i] = compoundOut{raw: raw}
-		}()
+			results[i] = raw
+			return nil
+		})
 	}
-	wg.Wait()
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
 
 	var compoundFindings []schemas.ReviewFinding
-	for _, r := range results {
-		if r.err {
-			continue
-		}
+	for _, raw := range results {
 		o.incInvocations(1)
-		o.registerCost("cross_ref", r.raw)
-		compoundFindings = append(compoundFindings, extractCompoundFindings(r.raw)...)
+		o.registerCost("cross_ref", raw)
+		compoundFindings = append(compoundFindings, extractCompoundFindings(raw)...)
 	}
 
 	if len(compoundFindings) > 1 {

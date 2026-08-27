@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -191,7 +192,16 @@ func TestReviewResultKeySetParity(t *testing.T) {
 		BlastRadius: []string{}, DependencyGraph: map[string][]string{},
 		RiskSurfaces: []string{}, UnrelatedChanges: []string{}, IntentGaps: []string{},
 	}
-	plan := schemas.ReviewPlan{Dimensions: []schemas.ReviewDimension{}, CrossRefHints: []string{}, TotalBudget: defaultBudgetAllocation()}
+	plan := schemas.ReviewPlan{
+		Dimensions:    []schemas.ReviewDimension{{ID: "d1", Name: "Dim"}},
+		CrossRefHints: []string{},
+		TotalBudget:   defaultBudgetAllocation(),
+	}
+	o.recordDimensionAttempt()
+	o.recordDimensionResult(false)
+	for _, phase := range requiredPreOutputPhases {
+		o.markPhaseCompleted(phase)
+	}
 
 	result, err := o.generateOutput(context.Background(), scored, intake, anatomy, plan, true)
 	if err != nil {
@@ -240,13 +250,19 @@ func TestLocalPullRequestIdentityIsReturnedAsRequestMetadata(t *testing.T) {
 	}
 	o := New(Deps{App: app}, in, config.DefaultReviewConfig())
 	o.prData = &schemas.GitHubPRData{ChangedFiles: []schemas.ChangedFile{}}
+	o.recordDimensionAttempt()
+	o.recordDimensionResult(false)
+	for _, phase := range requiredPreOutputPhases {
+		o.markPhaseCompleted(phase)
+	}
+	plan := schemas.ReviewPlan{Dimensions: []schemas.ReviewDimension{{ID: "d1", Name: "Identity"}}}
 
 	result, err := o.generateOutput(
 		context.Background(),
 		[]schemas.ScoredFinding{},
 		schemas.IntakeResult{},
 		schemas.AnatomyResult{},
-		schemas.ReviewPlan{},
+		plan,
 		false,
 	)
 	if err != nil {
@@ -258,6 +274,15 @@ func TestLocalPullRequestIdentityIsReturnedAsRequestMetadata(t *testing.T) {
 	}
 	if result.Metadata.Request["publisher_job_id"] != in.PublisherJobID {
 		t.Errorf("publisher_job_id = %#v, want %q", result.Metadata.Request["publisher_job_id"], in.PublisherJobID)
+	}
+	if result.Metadata.PipelineContractVersion != 1 ||
+		result.Metadata.ReviewDimensionsAttempted != 1 ||
+		result.Metadata.ReviewDimensionsParseable != 1 {
+		t.Errorf("pipeline contract metadata = %#v", result.Metadata)
+	}
+	wantPhases := []string{"intake", "anatomy", "meta_selectors", "review", "cross_ref", "coverage", "synthesis", "output"}
+	if !reflect.DeepEqual(result.Metadata.PhasesCompleted, wantPhases) {
+		t.Errorf("phases_completed = %#v, want %#v", result.Metadata.PhasesCompleted, wantPhases)
 	}
 	pullRequest, ok := result.Metadata.Request["pull_request"].(map[string]any)
 	if !ok || pullRequest["title"] != in.PullRequest.Title {

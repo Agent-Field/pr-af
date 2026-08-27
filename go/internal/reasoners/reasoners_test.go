@@ -12,6 +12,7 @@ import (
 	"github.com/Agent-Field/agentfield/sdk/go/ai"
 	"github.com/Agent-Field/agentfield/sdk/go/harness"
 
+	"github.com/Agent-Field/pr-af/go/internal/harnessx"
 	"github.com/Agent-Field/pr-af/go/internal/prompts"
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
 )
@@ -20,8 +21,8 @@ import (
 
 // mockHarness scripts one harness response: on ok, the JSON payload is decoded
 // into dest and returned as Parsed (what the SDK does after schema validation);
-// on parseFail, a Result with Parsed==nil comes back — the path harnessx.Run
-// turns into a seeded default.
+// on parseFail, a Result with Parsed==nil comes back and harnessx.Run returns a
+// typed structured-output error.
 type mockHarness struct {
 	payload   string
 	parseFail bool
@@ -86,6 +87,14 @@ func keySet(m map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func requireStructuredOutputError(t *testing.T, err error) {
+	t.Helper()
+	var structuredErr *harnessx.StructuredOutputError
+	if !errors.As(err, &structuredErr) {
+		t.Fatalf("expected *harnessx.StructuredOutputError, got %T: %v", err, err)
+	}
 }
 
 func wantKeys(t *testing.T, m map[string]any, want ...string) {
@@ -241,18 +250,16 @@ func TestIntakePhaseAIUnavailableFallsBackToHarness(t *testing.T) {
 	}
 }
 
-// Contract: fallback parse failure returns Python's literal empty dict.
-func TestIntakePhaseFallbackParseFailReturnsEmpty(t *testing.T) {
+// Contract: fallback parse failure cannot become a successful empty intake.
+func TestIntakePhaseFallbackParseFailReturnsError(t *testing.T) {
 	aiSeam := &fakeAI{text: `{"pr_type":"","complexity":"","confident":false}`}
 	h := &mockHarness{parseFail: true}
 	out, err := IntakePhase(context.Background(), Deps{Harness: h, AI: aiSeam}, IntakeInput{
 		PRData: fixturePR(), Depth: "standard",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out) != 0 {
-		t.Fatalf("want {}, got %v", out)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -291,22 +298,15 @@ func TestAnatomyPhaseHappyPath(t *testing.T) {
 	}
 }
 
-// Contract: semantic parse failure degrades to empty narrative fields with the
-// full key set intact (never an error).
-func TestAnatomyPhaseParseFailSeedsEmptySemantics(t *testing.T) {
+// Contract: semantic parse failure cannot become successful empty semantics.
+func TestAnatomyPhaseParseFailReturnsError(t *testing.T) {
 	h := &mockHarness{parseFail: true}
 	out, err := AnatomyPhase(context.Background(), Deps{Harness: h}, AnatomyInput{
 		PRData: fixturePR(), Intake: schemas.IntakeResult{},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantKeys(t, out, anatomyKeys...)
-	if out["pr_narrative"] != "" || out["context_notes"] != "" {
-		t.Fatalf("want empty semantics, got %v / %v", out["pr_narrative"], out["context_notes"])
-	}
-	if rs := out["risk_surfaces"].([]any); len(rs) != 0 {
-		t.Fatalf("risk_surfaces = %v, want []", rs)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -334,16 +334,13 @@ func TestPlanningPhaseHappyPath(t *testing.T) {
 	}
 }
 
-// Contract: parse failure returns Python's literal two-key fallback.
-func TestPlanningPhaseParseFailFallback(t *testing.T) {
+// Contract: parse failure cannot become an empty review plan.
+func TestPlanningPhaseParseFailReturnsError(t *testing.T) {
 	h := &mockHarness{parseFail: true}
 	out, err := PlanningPhase(context.Background(), Deps{Harness: h}, PlanningInput{Depth: "deep"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantKeys(t, out, "dimensions", "cross_ref_hints")
-	if len(out["dimensions"].([]any)) != 0 || len(out["cross_ref_hints"].([]any)) != 0 {
-		t.Fatalf("want empty lists, got %v", out)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -386,26 +383,13 @@ func TestMetaSelectorsForceLens(t *testing.T) {
 	}
 }
 
-// Contract: parse failure yields lens + empty dimensions + the seeded 0.7
-// confidence (Python's MetaDimensionResult(lens=..., dimensions=[])).
-func TestMetaSelectorParseFail(t *testing.T) {
+// Contract: parse failure cannot masquerade as an intentional empty lens.
+func TestMetaSelectorParseFailReturnsError(t *testing.T) {
 	h := &mockHarness{parseFail: true}
 	out, err := MetaMechanical(context.Background(), Deps{Harness: h}, MetaInput{Depth: "quick"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantKeys(t, out, metaKeys...)
-	if out["lens"] != "mechanical" {
-		t.Fatalf("lens = %v", out["lens"])
-	}
-	if len(out["dimensions"].([]any)) != 0 {
-		t.Fatalf("dimensions = %v, want []", out["dimensions"])
-	}
-	if out["confidence"] != 0.7 {
-		t.Fatalf("confidence = %v, want seeded 0.7", out["confidence"])
-	}
-	if out["rationale"] != "" {
-		t.Fatalf("rationale = %v", out["rationale"])
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -466,6 +450,22 @@ func TestReviewDimensionHappyPath(t *testing.T) {
 	wantKeys(t, sub, "reason", "review_prompt", "target_files", "context_files", "priority")
 	if sub["priority"] != 1 { // seeded default
 		t.Fatalf("priority = %v", sub["priority"])
+	}
+}
+
+func TestReviewDimensionTreatsMissingFindingsAsDegraded(t *testing.T) {
+	h := &mockHarness{payload: `{}`}
+	out, err := ReviewDimension(context.Background(), Deps{Harness: h}, ReviewDimensionInput{
+		ReviewPrompt: "Investigate X", TargetFiles: []string{"a.go"}, MaxDepth: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["schema_parse_failed"] != true {
+		t.Fatalf("schema_parse_failed = %v, want true", out["schema_parse_failed"])
+	}
+	if len(out["findings"].([]any)) != 0 {
+		t.Fatalf("findings = %v, want []", out["findings"])
 	}
 }
 
@@ -568,17 +568,15 @@ func TestCompoundFinderHappyPath(t *testing.T) {
 	}
 }
 
-// Contract: compound parse failure degrades to an empty findings list.
-func TestCompoundFinderParseFail(t *testing.T) {
+// Contract: compound parse failure cannot silently omit compound analysis.
+func TestCompoundFinderParseFailReturnsError(t *testing.T) {
 	h := &mockHarness{parseFail: true}
 	out, err := CompoundFinderPhase(context.Background(), Deps{Harness: h}, CompoundFinderInput{
 		ClusterFindings: []schemas.ReviewFinding{{Title: "a"}, {Title: "b"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out["findings"].([]any)) != 0 {
-		t.Fatalf("want [], got %v", out["findings"])
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -704,17 +702,15 @@ func TestEvidenceVerifierHappyPath(t *testing.T) {
 	}
 }
 
-// Contract: parse failure degrades to an empty verified_findings list.
-func TestEvidenceVerifierParseFail(t *testing.T) {
+// Contract: parse failure cannot silently omit evidence verification.
+func TestEvidenceVerifierParseFailReturnsError(t *testing.T) {
 	h := &mockHarness{parseFail: true}
 	out, err := EvidenceVerifier(context.Background(), Deps{Harness: h}, EvidenceVerifierInput{
 		Findings: []schemas.ReviewFinding{{Title: "T"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out["verified_findings"].([]any)) != 0 {
-		t.Fatalf("got %v", out)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -753,17 +749,15 @@ func TestAdversaryPhaseHappyPath(t *testing.T) {
 	}
 }
 
-// Contract: parse failure degrades to an empty results list.
-func TestAdversaryPhaseParseFail(t *testing.T) {
+// Contract: parse failure cannot silently omit adversarial verification.
+func TestAdversaryPhaseParseFailReturnsError(t *testing.T) {
 	h := &mockHarness{parseFail: true}
 	out, err := AdversaryPhase(context.Background(), Deps{Harness: h}, AdversaryInput{
 		Findings: []schemas.ReviewFinding{{Title: "T"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out["results"].([]any)) != 0 {
-		t.Fatalf("got %v", out)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -808,18 +802,16 @@ func TestDeepenFindings(t *testing.T) {
 	out, err = DeepenFindings(context.Background(), Deps{Harness: h}, DeepenInput{
 		DiffPatches: OrderedPatches{{Key: "a.go", Val: "+x"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out["findings"].([]any)) != 0 {
-		t.Fatalf("want [], got %v", out["findings"])
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
 // --- extract_obligations / verify_obligation -------------------------------------------------------------
 
 // Contract: obligations dump {id, where, relies_on, property}; empty patches
-// short-circuit; parse failure degrades to an empty list.
+// short-circuit; parse failure returns a typed error.
 func TestExtractObligations(t *testing.T) {
 	h := &mockHarness{}
 	out, err := ExtractObligations(context.Background(), Deps{Harness: h}, ExtractObligationsInput{})
@@ -845,11 +837,9 @@ func TestExtractObligations(t *testing.T) {
 	out, err = ExtractObligations(context.Background(), Deps{Harness: h}, ExtractObligationsInput{
 		DiffPatches: OrderedPatches{{Key: "a.go", Val: "+x"}},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out["obligations"].([]any)) != 0 {
-		t.Fatalf("want [], got %v", out)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -858,8 +848,8 @@ var verdictKeys = []string{
 	"body", "evidence", "suggestion", "confidence",
 }
 
-// Contract: a parsed verdict dumps all ten keys; parse failure returns the
-// seeded holds=true verdict (severity="important", confidence=0.7).
+// Contract: a parsed verdict dumps all ten keys; parse failure returns a typed
+// error instead of assuming the obligation holds.
 func TestVerifyObligation(t *testing.T) {
 	h := &mockHarness{payload: `{
 		"holds":false,"title":"key mismatch","severity":"critical","file_path":"a.go",
@@ -882,15 +872,9 @@ func TestVerifyObligation(t *testing.T) {
 	out, err = VerifyObligation(context.Background(), Deps{Harness: h}, VerifyObligationInput{
 		Obligation: map[string]any{"where": "w", "relies_on": "r", "property": "p"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantKeys(t, out, verdictKeys...)
-	if out["holds"] != true || out["severity"] != "important" || out["confidence"] != 0.7 {
-		t.Fatalf("seeded verdict wrong: %v", out)
-	}
-	if out["suggestion"] != nil {
-		t.Fatalf("suggestion = %v, want null", out["suggestion"])
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 
@@ -968,11 +952,9 @@ func TestCoverageGateAIUnavailableFallsBackToHarness(t *testing.T) {
 
 	h = &mockHarness{parseFail: true}
 	out, err = CoverageGate(context.Background(), Deps{Harness: h, AI: nil}, in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out) != 0 {
-		t.Fatalf("want {}, got %v", out)
+	requireStructuredOutputError(t, err)
+	if out != nil {
+		t.Fatalf("want nil output, got %v", out)
 	}
 }
 

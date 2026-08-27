@@ -12,13 +12,11 @@
 // orchestrator (T4.1) calls these in-process; node/register.go (T4.2) wraps
 // them in afx.Bind adapters for control-plane registration.
 //
-// Parse-failure behavior mirrors Python per reasoner: when the harness could
-// not produce a schema-valid result (Result.Parsed == nil), each reasoner
-// applies the same deterministic fallback its Python counterpart does — a
-// seeded default struct, an empty key set, or a keep-everything index list —
-// never an error (design §C.3 step 4). Harness transport errors and fatal
-// (non-retryable) API errors propagate as Go errors, exactly as Python lets
-// the exception escape the reasoner.
+// Missing schema-valid harness output propagates as a typed error. The review
+// dimension reasoner is the sole exception: it converts that error into an
+// explicit degraded-dimension marker so the orchestrator can allow partial
+// coverage while still rejecting zero parseable dimensions. Optional filters
+// may retain their existing inputs when doing so cannot erase review evidence.
 package reasoners
 
 import (

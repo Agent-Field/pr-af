@@ -7,9 +7,8 @@
 //     (design §C.3). For destination types registered by RegisterSchema it
 //     returns the committed pydantic-generated schema (parity with the Python
 //     SDK); for unknown types it falls back to invopop reflection.
-//   - Run[T] calls the harness, classifies fatal API errors, and on a schema
-//     parse-failure hands the caller a default-seeded value so it can apply its
-//     deterministic fallback (design §C.3).
+//   - Run[T] calls the harness, classifies fatal API errors, and returns a typed
+//     error when the harness does not produce schema-validated output.
 //
 // Unlike the SWE-AF harness this is adapted from, PR-AF has no scout-credential
 // store, so Run does NOT inject run-scoped credentials into the subprocess env —
@@ -30,9 +29,11 @@ import (
 // destination type that flows through Run[T]. They are produced by
 // go/scripts/gen_schemas.py from the exact pydantic models the Python reasoners
 // pass to router.app.harness(schema=...), so the schema the Go SDK validates
-// against matches Python's own model_json_schema() rendering (defaulted fields
-// optional, X|None nullable, extra keys allowed). See that script for the one
-// deliberate deviation (the Severity enum is relaxed to a plain string).
+// against starts from Python's own model_json_schema() rendering (defaulted
+// fields optional, X|None nullable, extra keys allowed). See that script for
+// the two deliberate fail-safe deviations: the Severity enum is relaxed to a
+// plain string to preserve runtime normalization, and result collection keys
+// are required so `{}` cannot masquerade as an intentional empty analysis.
 //
 // go:embed skips files whose names begin with "_" or "." unless the pattern
 // uses the all: prefix, so every fixture basename is plain (no leading

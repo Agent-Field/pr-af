@@ -135,6 +135,9 @@
       "type": "array"
     }
   },
+  "required": [
+    "findings"
+  ],
   "title": "_ReviewFindingsResult",
   "type": "object"
 }

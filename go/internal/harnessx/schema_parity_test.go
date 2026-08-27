@@ -144,6 +144,22 @@ func TestPythonValidOutputAcceptedByEmbeddedSchema(t *testing.T) {
 	}
 }
 
+// Contract: a clean review must be explicit. An empty object cannot be
+// interpreted as a reviewer that intentionally found no issues.
+func TestReviewFindingsSchemaRequiresExplicitFindings(t *testing.T) {
+	schema, err := loadEmbeddedSchema("ReviewFindingsResult")
+	if err != nil {
+		t.Fatalf("load embedded schema: %v", err)
+	}
+	compiled := compileSchema(t, schema)
+	if err := validateDoc(t, compiled, `{}`); err == nil {
+		t.Fatal("empty review object must fail schema validation")
+	}
+	if err := validateDoc(t, compiled, `{"findings": []}`); err != nil {
+		t.Fatalf("explicit clean review must remain valid: %v", err)
+	}
+}
+
 // mirrorFinding / mirrorFindingsResult reproduce the Go destination shape of
 // reviewFindingsResult so the invopop fallback (unregistered types) emits the
 // exact schema the port shipped BEFORE this fix — all fields required, the

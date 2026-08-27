@@ -17,8 +17,9 @@ import (
 // when it exceeds 8000 characters (code points), run the lens prompt, then
 // FORCE the lens field regardless of what the model returned.
 //
-// Output keys (§B.2): lens, dimensions, confidence, rationale. Parse failure
-// degrades to lens + empty dimensions + the seeded confidence (0.7).
+// Output keys (§B.2): lens, dimensions, confidence, rationale. Missing or
+// unparseable structured output fails the required selector phase. An explicit
+// dimensions: [] remains valid for one lens; the aggregate must be nonempty.
 
 // MetaSemantic ports meta_semantic.
 func MetaSemantic(ctx context.Context, deps Deps, in MetaInput) (map[string]any, error) {
@@ -57,7 +58,7 @@ func runMetaLens(
 		return nil, err
 	}
 	result := *parsed
-	// Python forces the lens on both the parsed and the fallback result.
+	// The orchestrator owns lens identity regardless of model wording.
 	result.Lens = lens
 	if result.Dimensions == nil {
 		result.Dimensions = []schemas.ReviewDimension{}
