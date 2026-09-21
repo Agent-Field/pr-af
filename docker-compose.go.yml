@@ -34,6 +34,8 @@ services:
     build:
       context: .
       dockerfile: go/Dockerfile
+    # Reap timed-out Git process-group members if they are reparented to PID 1.
+    init: true
     environment:
       - AGENTFIELD_SERVER=http://agentfield:8080   # CP service name in pr-af's compose is "agentfield"
       - AGENTFIELD_API_KEY=${AGENTFIELD_API_KEY:-}
@@ -47,6 +49,14 @@ services:
       - PR_AF_HARNESS_BIN
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - GH_TOKEN=${GH_TOKEN:-}
+      - PR_AF_MAX_COST_USD
+      - PR_AF_MAX_DURATION_SECONDS
+      - PR_AF_GIT_TIMEOUT_SECONDS
+      - PR_AF_GIT_CLONE_TIMEOUT_SECONDS
+      - PR_AF_GIT_FETCH_TIMEOUT_SECONDS
+      - PR_AF_GIT_CHECKOUT_TIMEOUT_SECONDS
+      - PR_AF_GIT_DIFF_TIMEOUT_SECONDS
+      - GIT_LFS_SKIP_SMUDGE
       - XDG_DATA_HOME=/home/praf/.local/share
       - PR_AF_WORKDIR=/workspaces
     ports:

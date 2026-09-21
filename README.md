@@ -272,6 +272,21 @@ The key knobs (see `.env.example` for the full list):
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `PR_AF_WORKDIR`             | Where PR checkouts live (default `/workspaces`); each PR gets its own `<repo>-pr<N>` workspace |
+| `PR_AF_GIT_TIMEOUT_SECONDS` | Fallback ceiling for every Git operation when its operation-specific variable is unset |
+| `PR_AF_GIT_CLONE_TIMEOUT_SECONDS` | `git clone` ceiling in seconds (default `600`)           |
+| `PR_AF_GIT_FETCH_TIMEOUT_SECONDS` | Reused-workspace and PR-head fetch ceiling in seconds (default `600`) |
+| `PR_AF_GIT_CHECKOUT_TIMEOUT_SECONDS` | PR working-tree checkout ceiling in seconds (default `600`) |
+| `PR_AF_GIT_DIFF_TIMEOUT_SECONDS` | Repository diff ceiling in seconds (Python: no timeout by default; Go: `120`) |
+| `GIT_LFS_SKIP_SMUDGE`       | Skip Git LFS downloads during Git commands (default `1`)       |
+
+**Large repositories and Git LFS.** The review workspace is a shallow
+(`--depth 1 --no-tags`) clone. pr-af sets `GIT_LFS_SKIP_SMUDGE=1` for every Git
+command it runs, so LFS-tracked files are checked out as pointer files and no
+LFS content is downloaded during a review. The runtime image ships `git`
+without `git-lfs`, so LFS content would not be fetched in any case. To use real
+LFS content, install `git-lfs` in a derived image, set
+`GIT_LFS_SKIP_SMUDGE=0`, and raise `PR_AF_GIT_CHECKOUT_TIMEOUT_SECONDS` as
+needed. Reviews read diffs and source text, so pointer files are sufficient.
 
 Both Docker images ship the released AForge CLI (fetched and checksum-verified
 at build time from `https://agentfield.ai/downloads/aforge`) and run `exec` by

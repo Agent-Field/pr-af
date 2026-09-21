@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import subprocess
 import time
 from typing import TYPE_CHECKING
 
 import httpx
 import jwt
 
+from ..gitconfig import git_timeout_seconds, run_git
 from ..schemas.input import ChangedFile, GitHubPRData
 
 if TYPE_CHECKING:
@@ -312,5 +312,10 @@ class GitHubClient:
             command.extend(["--depth", "1"])
         command.extend([repo_url, target_dir])
 
-        subprocess.run(command, check=True, capture_output=True, text=True)
+        result = await asyncio.to_thread(
+            run_git,
+            command,
+            timeout=git_timeout_seconds("clone"),
+        )
+        result.check_returncode()
         return target_dir

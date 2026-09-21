@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false
+import asyncio
 import hashlib
 import hmac
 import json
@@ -10,6 +11,7 @@ import subprocess
 import threading
 import time
 from collections import OrderedDict
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -20,6 +22,7 @@ from dotenv import load_dotenv
 from fastapi import HTTPException, Request
 
 from .config import AIIntegrationConfig, ReviewConfig
+from .gitconfig import git_timeout_seconds, run_git
 from .orchestrator import ReviewOrchestrator
 from .reasoners import router as reasoner_router
 from .schemas.input import ReviewInput  # noqa: TC001
@@ -85,7 +88,6 @@ def _resolve_budget_caps(
 
 
 def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
-    git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
     # Fetch the PR head into FETCH_HEAD rather than directly into a local
     # ``pr-review`` branch. When the workspace is reused across reviews, the
     # previous run leaves ``pr-review`` checked out, and
@@ -96,24 +98,34 @@ def _checkout_pr_branch(target_dir: str, pr_number: int) -> None:
     # first PR's tree — producing silent "no findings" reviews. Fetching to
     # FETCH_HEAD always succeeds, and ``checkout -B`` then (re)points
     # ``pr-review`` at it even when it is the currently checked-out branch.
-    fetch = subprocess.run(
-        ["git", "-C", target_dir, "fetch", "--depth", "1", "origin", f"pull/{pr_number}/head"],
-        env=git_env,
-        timeout=300,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        fetch = run_git(
+            ["git", "-C", target_dir, "fetch", "--depth", "1", "origin", f"pull/{pr_number}/head"],
+            timeout=git_timeout_seconds("fetch"),
+        )
+    except subprocess.TimeoutExpired:
+        _remove_timed_out_git_locks(target_dir)
+        raise
     if fetch.returncode != 0:
         raise ValueError(f"git fetch of PR #{pr_number} head failed: {fetch.stderr.strip()}")
-    checkout = subprocess.run(
-        ["git", "-C", target_dir, "checkout", "-B", "pr-review", "FETCH_HEAD"],
-        env=git_env,
-        timeout=30,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        checkout = run_git(
+            ["git", "-C", target_dir, "checkout", "-B", "pr-review", "FETCH_HEAD"],
+            timeout=git_timeout_seconds("checkout"),
+        )
+    except subprocess.TimeoutExpired:
+        _remove_timed_out_git_locks(target_dir)
+        raise
     if checkout.returncode != 0:
         raise ValueError(f"git checkout of PR #{pr_number} (pr-review) failed: {checkout.stderr.strip()}")
+
+
+def _remove_timed_out_git_locks(target_dir: str) -> None:
+    """Remove only lock files a timed-out Git command may leave in its workspace."""
+    git_dir = os.path.join(target_dir, ".git")
+    for lock_name in ("index.lock", "shallow.lock"):
+        with suppress(OSError):
+            os.remove(os.path.join(git_dir, lock_name))
 
 
 def _workspace_mtime(path: str) -> float:
@@ -200,16 +212,15 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
         if gh_token and clone_url.startswith("https://github.com/"):
             clone_url = clone_url.replace("https://github.com/", f"https://{gh_token}@github.com/")
 
-        git_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo"}
-        clone_timeout = 600  # Large repos (e.g. TrueNAS middleware) need time
-
         if os.path.isdir(target_dir) and os.path.isdir(os.path.join(target_dir, ".git")):
-            subprocess.run(
-                ["git", "-C", target_dir, "fetch", "--all"],
-                env=git_env,
-                timeout=clone_timeout,
-                capture_output=True,
-            )
+            try:
+                run_git(
+                    ["git", "-C", target_dir, "fetch", "--all"],
+                    timeout=git_timeout_seconds("fetch"),
+                )
+            except subprocess.TimeoutExpired:
+                _remove_timed_out_git_locks(target_dir)
+                raise
         else:
             # Shallow clone: only need enough history to read files, not full history
             clone_cmd = ["git", "clone", "--depth", "1", "--no-tags", clone_url, target_dir]
@@ -225,13 +236,14 @@ def _resolve_repo(repo_path: str | None, pr_url: str | None) -> str:
                     clone_url,
                     target_dir,
                 ]
-            result = subprocess.run(
-                clone_cmd,
-                env=git_env,
-                timeout=clone_timeout,
-                capture_output=True,
-                text=True,
-            )
+            try:
+                result = run_git(
+                    clone_cmd,
+                    timeout=git_timeout_seconds("clone"),
+                )
+            except subprocess.TimeoutExpired:
+                _remove_timed_out_git_locks(target_dir)
+                raise
             if result.returncode != 0:
                 raise ValueError(f"git clone failed: {result.stderr.strip()}")
 
@@ -297,7 +309,9 @@ async def review(
         post_pr_number=post_pr_number,
         suggestion_mode=suggestion_mode,
     )
-    resolved_repo_path = _resolve_repo(review_input.repo_path, review_input.pr_url)
+    resolved_repo_path = await asyncio.to_thread(
+        _resolve_repo, review_input.repo_path, review_input.pr_url
+    )
     if not review_input.repo_path:
         review_input = review_input.model_copy(update={"repo_path": resolved_repo_path})
     config = ReviewConfig.from_input(review_input)

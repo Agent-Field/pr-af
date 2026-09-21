@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 from .config import AUTO_DEPTH_THRESHOLDS, DEPTH_PROFILES, ReviewConfig
 from .diff_engine import parse_unified_diff
 from .evidence import EvidencePackage, build_dimension_pack, extract_evidence_for_findings
+from .gitconfig import GIT_TIMEOUT_ENV, GIT_TIMEOUT_ENV_VARS, git_timeout_seconds, run_git
 from .github.client import GitHubClient
 from .hitl import (
     approval_webhook_url,
@@ -2146,7 +2147,16 @@ class ReviewOrchestrator:
             revision = "HEAD~1...HEAD"
 
         cmd = ["git", "-C", repo_path, "diff", "--no-color", revision]
-        result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        try:
+            result = run_git(
+                cmd,
+                timeout=git_timeout_seconds("diff"),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                f"git diff timed out after {exc.timeout}s; raise "
+                f"{GIT_TIMEOUT_ENV_VARS['diff']} or {GIT_TIMEOUT_ENV}"
+            ) from exc
         if result.returncode != 0:
             raise ValueError(result.stderr.strip() or "Failed to compute git diff")
         return result.stdout

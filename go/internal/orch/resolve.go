@@ -12,7 +12,9 @@ package orch
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,12 +23,19 @@ import (
 	"time"
 )
 
-// git subprocess timeouts, matching app.py's subprocess.run(..., timeout=…).
+// Git timeout names and defaults mirror src/pr_af/gitconfig.py. Keep them in
+// sync; tests in both implementations pin this shared contract.
 const (
+	gitTimeoutEnv      = "PR_AF_GIT_TIMEOUT_SECONDS"
+	cloneTimeoutEnv    = "PR_AF_GIT_CLONE_TIMEOUT_SECONDS"
+	fetchTimeoutEnv    = "PR_AF_GIT_FETCH_TIMEOUT_SECONDS"
+	checkoutTimeoutEnv = "PR_AF_GIT_CHECKOUT_TIMEOUT_SECONDS"
+	diffTimeoutEnv     = "PR_AF_GIT_DIFF_TIMEOUT_SECONDS"
+
 	cloneTimeout    = 600 * time.Second // large repos need time
 	fetchAllTimeout = 600 * time.Second // reused workspace refresh
-	prFetchTimeout  = 300 * time.Second // fetch of the PR head
-	checkoutTimeout = 30 * time.Second
+	prFetchTimeout  = 600 * time.Second // fetch of the PR head
+	checkoutTimeout = 600 * time.Second
 	diffTimeout     = 120 * time.Second
 )
 
@@ -34,7 +43,48 @@ const (
 // GIT_TERMINAL_PROMPT=0 and GIT_ASKPASS=echo so a missing credential fails fast
 // instead of blocking on an interactive prompt.
 func gitEnv() []string {
-	return append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=echo")
+	env := os.Environ()
+	env = setEnvValue(env, "GIT_TERMINAL_PROMPT", "0")
+	env = setEnvValue(env, "GIT_ASKPASS", "echo")
+	// The runtime image installs git without git-lfs, so smudge could not run
+	// there anyway. Set this explicitly so behavior is independent of the
+	// image/base distro, while preserving an operator-provided value such as 0.
+	if value := os.Getenv("GIT_LFS_SKIP_SMUDGE"); value == "" {
+		env = setEnvValue(env, "GIT_LFS_SKIP_SMUDGE", "1")
+	}
+	return env
+}
+
+func setEnvValue(env []string, name, value string) []string {
+	prefix := name + "="
+	for index, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			env[index] = prefix + value
+			return env
+		}
+	}
+	return append(env, prefix+value)
+}
+
+func gitTimeout(operationEnv string, defaultTimeout time.Duration) time.Duration {
+	envName := operationEnv
+	raw, set := os.LookupEnv(operationEnv)
+	if !set || raw == "" {
+		envName = gitTimeoutEnv
+		raw, set = os.LookupEnv(gitTimeoutEnv)
+	}
+	if !set || raw == "" {
+		return defaultTimeout
+	}
+
+	seconds, err := strconv.ParseFloat(raw, 64)
+	duration := time.Duration(seconds * float64(time.Second))
+	if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || duration <= 0 {
+		fmt.Fprintf(os.Stderr, "[PR-AF] Ignoring invalid %s=%s; using %gs\n",
+			envName, raw, defaultTimeout.Seconds())
+		return defaultTimeout
+	}
+	return duration
 }
 
 // runGit executes a git command with a hard timeout and returns stdout, stderr,
@@ -44,12 +94,24 @@ func runGit(parent context.Context, timeout time.Duration, args ...string) (stdo
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
+	configureGitProcess(cmd)
 	cmd.Env = gitEnv()
+	cmd.WaitDelay = time.Second
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	err = cmd.Run()
+	if err != nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
 	return outBuf.String(), errBuf.String(), err
+}
+
+func removeTimedOutGitLocks(targetDir string) {
+	gitDir := filepath.Join(targetDir, ".git")
+	for _, lockName := range []string{"index.lock", "shallow.lock"} {
+		_ = os.Remove(filepath.Join(gitDir, lockName))
+	}
 }
 
 // ExtractPRNumber ports app.py::_extract_pr_number: the integer following
@@ -78,14 +140,22 @@ func ExtractPRNumber(prURL string) (int, bool) {
 // it — the fix for the silent "reused workspace reviews the first PR forever"
 // bug. The two failure strings are the §B.4 verbatim contracts.
 func checkoutPRBranch(ctx context.Context, targetDir string, prNumber int) error {
-	_, stderr, err := runGit(ctx, prFetchTimeout,
+	_, stderr, err := runGit(ctx, gitTimeout(fetchTimeoutEnv, prFetchTimeout),
 		"-C", targetDir, "fetch", "--depth", "1", "origin", fmt.Sprintf("pull/%d/head", prNumber))
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			removeTimedOutGitLocks(targetDir)
+			return err
+		}
 		return fmt.Errorf("git fetch of PR #%d head failed: %s", prNumber, strings.TrimSpace(stderr))
 	}
-	_, stderr, err = runGit(ctx, checkoutTimeout,
+	_, stderr, err = runGit(ctx, gitTimeout(checkoutTimeoutEnv, checkoutTimeout),
 		"-C", targetDir, "checkout", "-B", "pr-review", "FETCH_HEAD")
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			removeTimedOutGitLocks(targetDir)
+			return err
+		}
 		return fmt.Errorf("git checkout of PR #%d (pr-review) failed: %s", prNumber, strings.TrimSpace(stderr))
 	}
 	return nil
@@ -160,16 +230,26 @@ func ResolveRepo(ctx context.Context, repoPath, prURL string) (string, error) {
 		}
 
 		if isDir(targetDir) && isDir(filepath.Join(targetDir, ".git")) {
-			// Reused workspace: refresh all refs (errors swallowed, as Python does).
-			_, _, _ = runGit(ctx, fetchAllTimeout, "-C", targetDir, "fetch", "--all")
+			// Reused workspace: refresh all refs. Non-timeout errors are swallowed,
+			// as Python does; timeouts are propagated after lock cleanup.
+			_, _, err := runGit(ctx, gitTimeout(fetchTimeoutEnv, fetchAllTimeout),
+				"-C", targetDir, "fetch", "--all")
+			if errors.Is(err, context.DeadlineExceeded) {
+				removeTimedOutGitLocks(targetDir)
+				return "", err
+			}
 		} else {
 			cloneCmd := []string{"clone", "--depth", "1", "--no-tags", cloneURL, targetDir}
 			if hasPR && prNumber != 0 {
 				// Skip default-branch checkout; the PR ref is fetched next.
 				cloneCmd = []string{"clone", "--depth", "1", "--no-tags", "--no-checkout", cloneURL, targetDir}
 			}
-			_, stderr, err := runGit(ctx, cloneTimeout, cloneCmd...)
+			_, stderr, err := runGit(ctx, gitTimeout(cloneTimeoutEnv, cloneTimeout), cloneCmd...)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					removeTimedOutGitLocks(targetDir)
+					return "", err
+				}
 				return "", fmt.Errorf("git clone failed: %s", strings.TrimSpace(stderr))
 			}
 		}
@@ -212,7 +292,8 @@ func computeRepoDiff(ctx context.Context, repoPath, baseRef, headRef string) (st
 	default:
 		revision = "HEAD~1...HEAD"
 	}
-	stdout, stderr, err := runGit(ctx, diffTimeout, "-C", repoPath, "diff", "--no-color", revision)
+	stdout, stderr, err := runGit(ctx, gitTimeout(diffTimeoutEnv, diffTimeout),
+		"-C", repoPath, "diff", "--no-color", revision)
 	if err != nil {
 		msg := strings.TrimSpace(stderr)
 		if msg == "" {
