@@ -74,6 +74,19 @@ user_environment:
     - name: PR_AF_MAX_DURATION_SECONDS
       description: Per-run wall-clock ceiling (seconds)
       default: "3600"
+    - name: PR_AF_GIT_TIMEOUT_SECONDS
+      description: Optional fallback Git subprocess timeout when no operation-specific timeout is set (seconds)
+    - name: PR_AF_GIT_CLONE_TIMEOUT_SECONDS
+      description: Git clone timeout (seconds; built-in default 600)
+    - name: PR_AF_GIT_FETCH_TIMEOUT_SECONDS
+      description: Git fetch timeout for workspace refreshes and PR heads (seconds; built-in default 600)
+    - name: PR_AF_GIT_CHECKOUT_TIMEOUT_SECONDS
+      description: Git checkout timeout for PR working-tree materialization (seconds; built-in default 600)
+    - name: PR_AF_GIT_DIFF_TIMEOUT_SECONDS
+      description: Optional Git diff timeout (Python default none; Go default 120 seconds)
+    - name: GIT_LFS_SKIP_SMUDGE
+      description: Skip Git LFS downloads during review Git commands (set 0 to allow smudge)
+      default: "1"
     # Harness CLIs in JSON mode emit events only at completion boundaries, so a
     # long single completion looks silent; the old 120s SDK default killed
     # healthy runs.
