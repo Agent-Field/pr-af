@@ -47,7 +47,7 @@ COPY pyproject.toml README.md ./
 COPY src/ src/
 
 RUN pip install --no-cache-dir --prefix=/install \
-    "agentfield>=0.1.130" \
+    "agentfield>=0.1.145" \
     "hax-sdk>=0.2.4" \
     "pydantic>=2.0" \
     "httpx>=0.27" \
@@ -90,6 +90,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /install /usr/local
 COPY --from=aforge /out/aforge /usr/local/bin/aforge
+# Stay on aforge on purpose until this product's separate CodeAF migration.
+ENV AFORGE_BIN=/usr/local/bin/aforge
 COPY src/ /app/src/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
