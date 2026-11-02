@@ -90,6 +90,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /install /usr/local
 COPY --from=aforge /out/aforge /usr/local/bin/aforge
+# Stay on aforge on purpose until this product's separate CodeAF migration.
+ENV AFORGE_BIN=/usr/local/bin/aforge
 COPY src/ /app/src/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
