@@ -21,6 +21,7 @@ import (
 	"github.com/Agent-Field/pr-af/go/internal/github"
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
 	"github.com/Agent-Field/pr-af/go/internal/scoring"
+	"github.com/Agent-Field/pr-af/go/internal/usagex"
 )
 
 // severityRank ports the comment-eligibility rank map.
@@ -82,7 +83,9 @@ func (o *Orchestrator) generateOutput(
 		comments = comments[:o.config.Comments.MaxComments]
 	}
 	if o.config.Comments.PolishEnabled && len(comments) > 0 {
-		comments = gates.PolishComments(ctx, o.deps.App, comments)
+		meter := &usagex.Meter{}
+		comments = gates.PolishComments(ctx, meter.AI(o.deps.App), comments)
+		o.registerCost("output", meter.Result())
 	}
 
 	// Decorate each comment with the blocking/advisory callout for its finding.

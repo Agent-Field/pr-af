@@ -27,6 +27,7 @@ import (
 	"github.com/Agent-Field/pr-af/go/internal/prompts"
 	"github.com/Agent-Field/pr-af/go/internal/reasoners"
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
+	"github.com/Agent-Field/pr-af/go/internal/usagex"
 )
 
 // ---- Phase 1: INTAKE ----
@@ -185,7 +186,9 @@ func (o *Orchestrator) runReviewPhases(
 	scored := o.synthesize(merged, adversaryResults)
 
 	if o.config.Comments.MergeGateEnabled {
-		scored = gates.ClassifyFindings(ctx, o.deps.App, scored)
+		meter := &usagex.Meter{}
+		scored = gates.ClassifyFindings(ctx, meter.AI(o.deps.App), scored)
+		o.registerCost("synthesis", meter.Result())
 	}
 	return plan, scored, nil
 }
@@ -229,6 +232,8 @@ func (o *Orchestrator) postWorthinessSelect(ctx context.Context, findings []sche
 	if err != nil {
 		return nil, false
 	}
+	o.incInvocations(1)
+	o.registerCost("review", raw)
 	// Default keep set = all indices (pw.get("keep_indices", range(len))).
 	keep := make(map[int]struct{})
 	if v, present := raw["keep_indices"]; present {
@@ -1065,6 +1070,7 @@ func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []s
 				verdicts[i] = map[string]any{"holds": true}
 				return
 			}
+			o.registerCost("review", raw)
 			verdicts[i] = raw
 		}()
 	}

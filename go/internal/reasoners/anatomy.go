@@ -20,7 +20,9 @@ import (
 // pr_narrative, risk_surfaces, unrelated_changes, intent_gaps, context_notes.
 // A harness parse failure degrades to empty semantic fields (Python falls back
 // to a default _AnatomySemanticResult), never an error.
-func AnatomyPhase(ctx context.Context, deps Deps, in AnatomyInput) (map[string]any, error) {
+func AnatomyPhase(ctx context.Context, deps Deps, in AnatomyInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	pr := in.PRData
 
 	files := diffengine.ParseUnifiedDiff(pr.Diff)

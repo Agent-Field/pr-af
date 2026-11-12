@@ -19,7 +19,9 @@ import (
 // response keys land on the pydantic defaults through CoverageGate's seeded
 // UnmarshalJSON (confident=true, gap_descriptions=[]); a harness fallback that
 // fails to parse returns {} (Python returns a literal empty dict).
-func CoverageGate(ctx context.Context, deps Deps, in CoverageGateInput) (map[string]any, error) {
+func CoverageGate(ctx context.Context, deps Deps, in CoverageGateInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	prompt := prompts.CoverageGatePrompt(in.Anatomy, in.ReviewedClusters, in.DimensionNamesReviewed)
 
 	var gate schemas.CoverageGate

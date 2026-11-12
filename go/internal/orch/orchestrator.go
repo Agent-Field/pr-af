@@ -616,7 +616,7 @@ func (o *Orchestrator) budgetExhaustedMessage(phase string) string {
 }
 
 // registerCost ports _register_cost∘_extract_cost. extractCost reads "cost_usd"
-// off the reasoner return (always absent), so total stays 0.0.
+// off the reasoner return, including spend from paid fallback attempts.
 func (o *Orchestrator) registerCost(phase string, resultRaw map[string]any) {
 	cost, ok := extractCost(resultRaw)
 	if !ok {
@@ -653,7 +653,7 @@ func (o *Orchestrator) totalCost() float64 {
 }
 
 // extractCost ports _extract_cost: reads cost_usd off the raw map or its
-// unwrapped payload. Always returns (0, false) in practice.
+// unwrapped payload. Older peers may omit the optional cost field.
 func extractCost(resultRaw map[string]any) (float64, bool) {
 	if resultRaw == nil {
 		return 0, false

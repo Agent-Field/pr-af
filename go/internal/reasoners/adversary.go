@@ -16,7 +16,9 @@ import (
 // exceeds 0.5 (handled inside the prompt builder).
 //
 // Output keys (§B.2): results. Parse failure degrades to an empty list.
-func AdversaryPhase(ctx context.Context, deps Deps, in AdversaryInput) (map[string]any, error) {
+func AdversaryPhase(ctx context.Context, deps Deps, in AdversaryInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	evMap := evidenceOMaps(in.EvidencePackages)
 
 	// The builder embeds a file reference when the findings JSON (first 20

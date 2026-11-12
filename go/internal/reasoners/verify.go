@@ -16,7 +16,9 @@ import (
 //
 // Output keys (§B.2): verified_findings. Parse failure degrades to an empty
 // list.
-func EvidenceVerifier(ctx context.Context, deps Deps, in EvidenceVerifierInput) (map[string]any, error) {
+func EvidenceVerifier(ctx context.Context, deps Deps, in EvidenceVerifierInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	evMap := evidenceOMaps(in.EvidencePackages)
 
 	// The builder embeds a file reference when the findings JSON exceeds 12000

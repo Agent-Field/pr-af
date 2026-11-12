@@ -19,7 +19,9 @@ import (
 // failure logs loudly (indistinguishable from a clean review otherwise) and
 // reports zero findings — Python prints and substitutes an empty
 // _ReviewFindingsResult.
-func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (map[string]any, error) {
+func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	canSpawn := in.CurrentDepth < in.MaxDepth
 
 	// The prompt builder embeds file references for oversized diff/primed

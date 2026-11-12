@@ -17,7 +17,9 @@ import (
 // Output keys (§B.2): pr_type, complexity, languages, areas_touched,
 // risk_signals, ai_generated, review_depth, pr_summary — or {} when the
 // harness fallback fails to parse (Python returns a literal empty dict).
-func IntakePhase(ctx context.Context, deps Deps, in IntakeInput) (map[string]any, error) {
+func IntakePhase(ctx context.Context, deps Deps, in IntakeInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	pr := in.PRData
 	filesChanged := len(pr.ChangedFiles)
 	languages := extractLanguages(pr)
