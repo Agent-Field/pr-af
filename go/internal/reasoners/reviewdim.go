@@ -67,7 +67,7 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 	if err != nil {
 		return nil, err
 	}
-	schemaParseFailed := res == nil || res.Parsed == nil
+	schemaParseFailed := res == nil || res.Parsed == nil || res.IsError
 	if schemaParseFailed {
 		// Schema parse failed entirely — don't silently report "0 findings",
 		// which is indistinguishable from a clean review. Make it visible.

@@ -135,6 +135,7 @@ type Orchestrator struct {
 	reviewDimensionsAttempted int
 	reviewDimensionsParseable int
 	degradedDimensions        int
+	incomplete                map[string]bool
 
 	// Single-threaded-written state (set before/after fan-outs, read after joins).
 	prData                   *schemas.GitHubPRData

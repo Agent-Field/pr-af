@@ -109,6 +109,9 @@ func (o *Orchestrator) generateOutput(
 	comments = decorated
 
 	reviewEvent := scoring.DetermineReviewEvent(filteredForComments)
+	if len(o.incompleteWork()) > 0 && reviewEvent == "APPROVE" {
+		reviewEvent = "COMMENT"
+	}
 	summaryBody := o.formatSummary(filteredForComments, reviewEvent, &intake, &plan)
 
 	review := schemas.GitHubReview{
@@ -176,6 +179,7 @@ func (o *Orchestrator) generateOutput(
 		AgentInvocations:   o.invocations(),
 		PhasesCompleted:    append([]string(nil), phaseOrder...),
 		DegradedDimensions: dimensionStats.Failed,
+		IncompleteWork:     o.incompleteWork(),
 	}
 
 	return schemas.ReviewResult{
@@ -350,6 +354,9 @@ func (o *Orchestrator) formatSummary(
 
 	var verdictLine string
 	switch {
+	case len(o.incompleteWork()) > 0:
+		emoji, label = "⚠️", "Review Incomplete"
+		verdictLine = "> ⚠️ **Review incomplete.** Automated review could not establish whether this PR is safe to merge."
 	case blockingCount == 0 && advisoryCount == 0:
 		verdictLine = "> ✅ **Safe to merge.** No findings from automated review."
 	case blockingCount == 0:
@@ -376,6 +383,9 @@ func (o *Orchestrator) formatSummary(
 			emojis["nitpick"], bySeverity["nitpick"]),
 		"",
 	)
+	if missing := o.incompleteWork(); len(missing) > 0 {
+		lines = append(lines, "> Work not completed: "+strings.Join(missing, ", "), "")
+	}
 	if degraded := o.dimensionStats().Failed; degraded > 0 {
 		lines = append(lines, fmt.Sprintf("> Degraded dimensions: %d", degraded), "")
 	}
@@ -447,6 +457,9 @@ func computeRatingV2(blocking, advisory, total int) (emoji, label string) {
 
 func (o *Orchestrator) buildKeyFindings(findings []schemas.ScoredFinding) []string {
 	if len(findings) == 0 {
+		if len(o.incompleteWork()) > 0 {
+			return []string{"**No findings available from the completed review work.** Missing checks must be completed before relying on this review.", ""}
+		}
 		return []string{"**No issues found.** This PR looks clean across all review dimensions.", ""}
 	}
 	var lines []string
