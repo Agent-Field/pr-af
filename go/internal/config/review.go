@@ -122,7 +122,8 @@ func DefaultReviewConfig() ReviewConfig {
 // default is dead — the per-call value is 3600 by default). The Go ReviewInput
 // carries these as *float64 / *int, so FromInput runs the same
 // ResolveBudgetCaps cascade (explicit > env > 2.0/3600) to reproduce that
-// effective value exactly.
+// effective value exactly. Cost caps are enforced only when the caller or
+// environment supplies a ceiling; the built-in cost default is reporting only.
 func (ReviewConfig) FromInput(in schemas.ReviewInput) (ReviewConfig, error) {
 	c := DefaultReviewConfig()
 
@@ -132,6 +133,7 @@ func (ReviewConfig) FromInput(in schemas.ReviewInput) (ReviewConfig, error) {
 	}
 	c.Budget.MaxCostUSD = cost
 	c.Budget.MaxDurationSeconds = dur
+	c.Budget.EnforceCostCaps = in.MaxCostUSD != nil || lookupPtr("PR_AF_MAX_COST_USD") != nil
 
 	if in.MaxConcurrentReviewers != nil {
 		c.Budget.MaxConcurrentReviewers = *in.MaxConcurrentReviewers

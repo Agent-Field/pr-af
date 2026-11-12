@@ -268,7 +268,7 @@ The key knobs (see `.env.example` for the full list):
 | `PR_AF_AFORGE_BIN`          | Path to an aforge-v2 binary (default `aforge`)                 |
 | `PR_AF_HARNESS_BIN`         | Provider-agnostic executable override                          |
 | `PR_AF_MODEL`               | Harness model (default `deepseek/deepseek-v4-flash-0731`)      |
-| `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
+| `PR_AF_MAX_COST_USD`        | Opt-in Go per-run cost ceiling in USD                         |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `PR_AF_WORKDIR`             | Where PR checkouts live (default `/workspaces`); each PR gets its own `<repo>-pr<N>` workspace |
@@ -278,6 +278,11 @@ The key knobs (see `.env.example` for the full list):
 | `PR_AF_GIT_CHECKOUT_TIMEOUT_SECONDS` | PR working-tree checkout ceiling in seconds (default `600`) |
 | `PR_AF_GIT_DIFF_TIMEOUT_SECONDS` | Repository diff ceiling in seconds (Python: no timeout by default; Go: `120`) |
 | `GIT_LFS_SKIP_SMUDGE`       | Skip Git LFS downloads during Git commands (default `1`)       |
+
+For the Go node, pass the review input field `max_cost_usd` or set
+`PR_AF_MAX_COST_USD` to enforce cost limits; the input takes precedence over the
+environment. The built-in default of `$2.00` is reported against but not enforced.
+Actual spend is always reported, and the duration cap remains enforced by default.
 
 **Large repositories and Git LFS.** The review workspace is a shallow
 (`--depth 1 --no-tags`) clone. pr-af sets `GIT_LFS_SKIP_SMUDGE=1` for every Git
