@@ -941,7 +941,12 @@ func TestFetchPR_UsesAppInstallationToken(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	c := testAppClient(srv.URL, "42", privPEM)
+	t.Setenv("GH_TOKEN", "dummy-pat-fallback")
+	t.Setenv("GITHUB_APP_ID", "42")
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", privPEM)
+	c := NewClient("")
+	c.baseURL = srv.URL
+	c.httpClient = srv.Client()
 	data, err := c.FetchPR(context.Background(), "o", "r", 7)
 	if err != nil {
 		t.Fatalf("FetchPR (app auth): %v", err)

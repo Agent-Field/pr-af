@@ -4,14 +4,15 @@ package orch
 // src/pr_af/app.py (_resolve_repo, _checkout_pr_branch, _extract_pr_number) plus
 // the orchestrator's _compute_repo_diff. Python's github/client.py::clone_repo
 // was deliberately NOT ported into internal/github, so the clone + checkout
-// semantics live here and shell out to git directly, tokenizing the remote with
-// GH_TOKEN exactly as Python does.
+// semantics live here and shell out to git directly, supplying GitHub
+// authentication through process-only configuration.
 //
 // The verbatim error strings (design §B.4) are reproduced for the fetch/checkout
 // failures so callers (and tests) see byte-identical messages.
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
@@ -52,7 +53,33 @@ func gitEnv() []string {
 	if value := os.Getenv("GIT_LFS_SKIP_SMUDGE"); value == "" {
 		env = setEnvValue(env, "GIT_LFS_SKIP_SMUDGE", "1")
 	}
+
+	if token := os.Getenv("GH_TOKEN"); token != "" {
+		count, _ := strconv.Atoi(os.Getenv("GIT_CONFIG_COUNT"))
+		if count < 0 {
+			count = 0
+		}
+		// Append to existing process configuration, never repository/global config.
+		// Git's URL-scoped header is used only for HTTPS requests to GitHub.
+		env = setEnvValue(env, "GIT_CONFIG_KEY_"+strconv.Itoa(count), "http.https://github.com/.extraheader")
+		env = setEnvValue(env, "GIT_CONFIG_VALUE_"+strconv.Itoa(count), "")
+		env = setEnvValue(env, "GIT_CONFIG_KEY_"+strconv.Itoa(count+1), "http.https://github.com/.extraheader")
+		env = setEnvValue(env, "GIT_CONFIG_VALUE_"+strconv.Itoa(count+1), "Authorization: Basic "+gitAuthValue(token))
+		env = setEnvValue(env, "GIT_CONFIG_COUNT", strconv.Itoa(count+2))
+	}
 	return env
+}
+
+func gitAuthValue(token string) string {
+	return base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+}
+
+func redactGitOutput(output string) string {
+	if token := os.Getenv("GH_TOKEN"); token != "" {
+		output = strings.ReplaceAll(output, gitAuthValue(token), "[REDACTED]")
+		output = strings.ReplaceAll(output, token, "[REDACTED]")
+	}
+	return output
 }
 
 func setEnvValue(env []string, name, value string) []string {
@@ -104,7 +131,7 @@ func runGit(parent context.Context, timeout time.Duration, args ...string) (stdo
 	if err != nil && ctx.Err() != nil {
 		err = ctx.Err()
 	}
-	return outBuf.String(), errBuf.String(), err
+	return redactGitOutput(outBuf.String()), redactGitOutput(errBuf.String()), err
 }
 
 func removeTimedOutGitLocks(targetDir string) {
@@ -164,7 +191,7 @@ func checkoutPRBranch(ctx context.Context, targetDir string, prNumber int) error
 // ResolveRepo ports app.py::_resolve_repo. It resolves repoPath / prURL to a
 // local directory: an existing dir is returned as-is (resolved absolute), an
 // http(s)/git@ URL is (shallow) cloned into $PR_AF_WORKDIR (with GH_TOKEN
-// injected into a github.com HTTPS remote) and the PR branch checked out when a
+// supplied through process-only Git configuration) and the PR branch checked out when a
 // PR number is known, and anything else falls back to $PR_AF_REPO_PATH / cwd.
 //
 // The workspace is keyed by repo AND PR number when one is known
@@ -223,11 +250,6 @@ func ResolveRepo(ctx context.Context, repoPath, prURL string) (string, error) {
 		}
 
 		cloneURL := target
-		ghToken := os.Getenv("GH_TOKEN")
-		if ghToken != "" && strings.HasPrefix(cloneURL, "https://github.com/") {
-			cloneURL = strings.Replace(cloneURL, "https://github.com/",
-				fmt.Sprintf("https://%s@github.com/", ghToken), 1)
-		}
 
 		if isDir(targetDir) && isDir(filepath.Join(targetDir, ".git")) {
 			// Reused workspace: refresh all refs. Non-timeout errors are swallowed,
