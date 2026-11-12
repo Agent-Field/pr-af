@@ -3,7 +3,7 @@
 // intake → anatomy → meta-selectors → review+layer (streaming) → coverage ‖
 // consistency → synthesis → merge-gate → output. It owns the HITL revision loop,
 // the streaming producer/consumer channel, the order-preserving fan-outs, the
-// (inert) wall-clock budget gate, and the byte-exact Markdown output builders.
+// duration and opt-in cost budget gates, and the byte-exact Markdown output builders.
 //
 // Concurrency parity: Python's asyncio is cooperative single-threaded, so its
 // shared orchestrator state needs no locking. Go runs the fan-outs on real
@@ -135,6 +135,7 @@ type Orchestrator struct {
 	reviewDimensionsAttempted int
 	reviewDimensionsParseable int
 	degradedDimensions        int
+	incomplete                map[string]bool
 
 	// Single-threaded-written state (set before/after fan-outs, read after joins).
 	prData                   *schemas.GitHubPRData
@@ -572,10 +573,10 @@ func (o *Orchestrator) hitlMetadata(ctx context.Context) map[string]any {
 	}
 }
 
-// ---- budget / cost (inert cost, live wall-clock) ----
+// ---- budget / cost ----
 
-// budgetOrTimeoutExhausted ports _budget_or_timeout_exhausted. Cost stays 0
-// (reasoner returns never carry cost_usd), so only the wall-clock check trips.
+// budgetOrTimeoutExhausted always checks wall-clock duration. Total and phase
+// spend caps apply only when the caller or environment opts into a cost ceiling.
 // Which cap tripped is recorded so budgetExhaustedMessage can word the failure
 // honestly (§B.4 pair with Python's _budget_exhausted_message).
 func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
@@ -586,6 +587,9 @@ func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
 		o.budgetExhausted = true
 		o.durationCapTripped = true
 		return true
+	}
+	if !o.config.Budget.EnforceCostCaps {
+		return false
 	}
 	if o.totalCostUSD >= o.config.Budget.MaxCostUSD {
 		o.budgetExhausted = true
@@ -600,8 +604,7 @@ func (o *Orchestrator) budgetOrTimeoutExhausted(phase string) bool {
 }
 
 // budgetExhaustedMessage words the exhaustion by cause: the wall-clock cap gets
-// an explicit timeout message (in the Go port cost never accrues, so this is
-// the only cap that actually trips), the cost cap keeps the historical
+// an explicit timeout message, the cost cap keeps the historical
 // "Budget exhausted before <phase>" wording. Byte-identical to Python's
 // _budget_exhausted_message (§B.4).
 func (o *Orchestrator) budgetExhaustedMessage(phase string) string {
@@ -615,7 +618,7 @@ func (o *Orchestrator) budgetExhaustedMessage(phase string) string {
 }
 
 // registerCost ports _register_cost∘_extract_cost. extractCost reads "cost_usd"
-// off the reasoner return (always absent), so total stays 0.0.
+// off the reasoner return, including spend from paid fallback attempts.
 func (o *Orchestrator) registerCost(phase string, resultRaw map[string]any) {
 	cost, ok := extractCost(resultRaw)
 	if !ok {
@@ -652,7 +655,7 @@ func (o *Orchestrator) totalCost() float64 {
 }
 
 // extractCost ports _extract_cost: reads cost_usd off the raw map or its
-// unwrapped payload. Always returns (0, false) in practice.
+// unwrapped payload. Older peers may omit the optional cost field.
 func extractCost(resultRaw map[string]any) (float64, bool) {
 	if resultRaw == nil {
 		return 0, false

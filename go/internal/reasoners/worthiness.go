@@ -18,7 +18,9 @@ import (
 // short-circuit, which Python returns as {"keep_indices": [...]} with no
 // reasoning key. Empty/invalid harness indices (including parse failure)
 // degrade to keep-everything, never silencing all findings.
-func PostWorthinessGate(ctx context.Context, deps Deps, in PostWorthinessInput) (map[string]any, error) {
+func PostWorthinessGate(ctx context.Context, deps Deps, in PostWorthinessInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	n := len(in.Findings)
 	if n <= 1 {
 		// Python: `return {"keep_indices": list(range(len(findings)))}` — no

@@ -163,10 +163,18 @@ The node is configured entirely through the environment.
 | `PR_AF_MAX_REVIEW_DEPTH`    | Optional webhook sub-review depth cap (minimum `0`)            |
 | `PR_AF_MAX_COVERAGE_ITERATIONS` | Optional webhook coverage iteration cap (minimum `1`)      |
 | `PR_AF_HARNESS_BIN`         | Optional harness executable override for every provider (point it at an `aforge` binary outside `PATH`); unset uses provider defaults |
-| `PR_AF_MAX_COST_USD`        | Per-run cost ceiling in USD (default `2.0`)                    |
+| `PR_AF_MAX_COST_USD`        | Opt-in per-run cost ceiling in USD                            |
 | `PR_AF_MAX_DURATION_SECONDS`| Per-run wall-clock ceiling in seconds (default `3600`)         |
 | `AGENTFIELD_HARNESS_IDLE_SECONDS` | Harness no-output watchdog window in seconds (default `360`) — harness CLIs in JSON mode emit events only at completion boundaries, so long single completions look silent |
 | `HAX_API_KEY`               | Optional — enables the HITL review-approval gate when set      |
+
+Pass the review input field `max_cost_usd` or set `PR_AF_MAX_COST_USD` to enforce
+the overall ceiling and per-phase cost limits; the input takes precedence over
+the environment. The built-in default of `$2.00` is reported against but not enforced.
+Without either setting, spend never stops a review, and actual spend is still
+reported in the budget totals, phase breakdown and summary. The duration cap
+(`max_duration_seconds` / `PR_AF_MAX_DURATION_SECONDS`, default `3600`) remains
+enforced independently.
 
 The image ships the released AForge CLI (fetched and checksum-verified at build
 time from `https://agentfield.ai/downloads/aforge`, pinned by the

@@ -15,7 +15,9 @@ import (
 //
 // Output keys (§B.2): findings. No non-empty patches short-circuits to an
 // empty list without a harness call; parse failure degrades to an empty list.
-func DeepenFindings(ctx context.Context, deps Deps, in DeepenInput) (map[string]any, error) {
+func DeepenFindings(ctx context.Context, deps Deps, in DeepenInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	patches := filterPairs(in.DiffPatches)
 	if len(patches) == 0 {
 		return map[string]any{"findings": []any{}}, nil

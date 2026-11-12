@@ -19,7 +19,9 @@ import (
 // failure logs loudly (indistinguishable from a clean review otherwise) and
 // reports zero findings — Python prints and substitutes an empty
 // _ReviewFindingsResult.
-func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (map[string]any, error) {
+func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	canSpawn := in.CurrentDepth < in.MaxDepth
 
 	// The prompt builder embeds file references for oversized diff/primed
@@ -67,7 +69,7 @@ func ReviewDimension(ctx context.Context, deps Deps, in ReviewDimensionInput) (m
 	if err != nil {
 		return nil, err
 	}
-	schemaParseFailed := res == nil || res.Parsed == nil
+	schemaParseFailed := res == nil || res.Parsed == nil || res.IsError
 	if schemaParseFailed {
 		// Schema parse failed entirely — don't silently report "0 findings",
 		// which is indistinguishable from a clean review. Make it visible.

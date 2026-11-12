@@ -15,7 +15,9 @@ import (
 //
 // Output keys (§B.2): dimensions, cross_ref_hints, ai_adjusted, total_budget —
 // or the literal {"dimensions": [], "cross_ref_hints": []} on parse failure.
-func PlanningPhase(ctx context.Context, deps Deps, in PlanningInput) (map[string]any, error) {
+func PlanningPhase(ctx context.Context, deps Deps, in PlanningInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	prompt := prompts.PlanningPrompt(in.Intake, in.Anatomy, in.Depth, in.Hints)
 	parsed, res, err := harnessx.Run[schemas.ReviewPlan](ctx, deps.Harness, prompt, harness.Options{})
 	if err != nil {

@@ -19,7 +19,9 @@ import (
 // Output keys (§B.2): obligations (each: id, where, relies_on, property). No
 // non-empty patches short-circuits to an empty list without a harness call;
 // parse failure degrades to an empty list.
-func ExtractObligations(ctx context.Context, deps Deps, in ExtractObligationsInput) (map[string]any, error) {
+func ExtractObligations(ctx context.Context, deps Deps, in ExtractObligationsInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	patches := filterPairs(in.DiffPatches)
 	if len(patches) == 0 {
 		return map[string]any{"obligations": []any{}}, nil
@@ -53,7 +55,9 @@ func ExtractObligations(ctx context.Context, deps Deps, in ExtractObligationsInp
 // body, evidence, suggestion, confidence. Parse failure degrades to the seeded
 // verdict (holds=true, severity="important", confidence=0.7) — Python's
 // `_ObligationVerdict(holds=True)`.
-func VerifyObligation(ctx context.Context, deps Deps, in VerifyObligationInput) (map[string]any, error) {
+func VerifyObligation(ctx context.Context, deps Deps, in VerifyObligationInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	// Python: `_Obligation.model_validate(obligation)`.
 	var o obligation
 	b, err := json.Marshal(in.Obligation)

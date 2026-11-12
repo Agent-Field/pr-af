@@ -21,17 +21,23 @@ import (
 // degrades to lens + empty dimensions + the seeded confidence (0.7).
 
 // MetaSemantic ports meta_semantic.
-func MetaSemantic(ctx context.Context, deps Deps, in MetaInput) (map[string]any, error) {
+func MetaSemantic(ctx context.Context, deps Deps, in MetaInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	return runMetaLens(ctx, deps, in, "semantic", prompts.MetaSemanticPrompt)
 }
 
 // MetaMechanical ports meta_mechanical.
-func MetaMechanical(ctx context.Context, deps Deps, in MetaInput) (map[string]any, error) {
+func MetaMechanical(ctx context.Context, deps Deps, in MetaInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	return runMetaLens(ctx, deps, in, "mechanical", prompts.MetaMechanicalPrompt)
 }
 
 // MetaSystemic ports meta_systemic.
-func MetaSystemic(ctx context.Context, deps Deps, in MetaInput) (map[string]any, error) {
+func MetaSystemic(ctx context.Context, deps Deps, in MetaInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	return runMetaLens(ctx, deps, in, "systemic", prompts.MetaSystemicPrompt)
 }
 

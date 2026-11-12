@@ -27,6 +27,7 @@ import (
 	"github.com/Agent-Field/pr-af/go/internal/prompts"
 	"github.com/Agent-Field/pr-af/go/internal/reasoners"
 	"github.com/Agent-Field/pr-af/go/internal/schemas"
+	"github.com/Agent-Field/pr-af/go/internal/usagex"
 )
 
 // ---- Phase 1: INTAKE ----
@@ -75,7 +76,7 @@ func (o *Orchestrator) runIntake(ctx context.Context) (schemas.IntakeResult, err
 		return schemas.IntakeResult{}, badInput("One of pr_url, diff_text, or repo_path is required")
 	}
 
-	resultRaw, err := o.rfns.intake(ctx, o.reasonerDeps(), reasoners.IntakeInput{
+	resultRaw, err := o.rfns.intake(o.phaseContext(ctx, "intake_phase"), o.reasonerDeps(), reasoners.IntakeInput{
 		PRData: *o.prData,
 		Depth:  o.input.Depth,
 	})
@@ -96,7 +97,7 @@ func (o *Orchestrator) runAnatomy(ctx context.Context, intake schemas.IntakeResu
 	if o.prData == nil {
 		return schemas.AnatomyResult{}, errPRDataNotInitialized
 	}
-	resultRaw, err := o.rfns.anatomy(ctx, o.reasonerDeps(), reasoners.AnatomyInput{
+	resultRaw, err := o.rfns.anatomy(o.phaseContext(ctx, "anatomy_phase"), o.reasonerDeps(), reasoners.AnatomyInput{
 		PRData:   *o.prData,
 		Intake:   intake,
 		RepoPath: strp(o.input.RepoPath),
@@ -185,7 +186,9 @@ func (o *Orchestrator) runReviewPhases(
 	scored := o.synthesize(merged, adversaryResults)
 
 	if o.config.Comments.MergeGateEnabled {
-		scored = gates.ClassifyFindings(ctx, o.deps.App, scored)
+		meter := &usagex.Meter{}
+		scored = gates.ClassifyFindings(ctx, meter.AI(o.deps.App), scored)
+		o.registerCost("synthesis", meter.Result())
 	}
 	return plan, scored, nil
 }
@@ -225,10 +228,12 @@ func (o *Orchestrator) runCoverageAndConsistency(
 // postWorthinessSelect runs the pre-layer post-worthiness gate. Returns the kept
 // subset and ok=false when the gate errored (Python's try/except → keep all).
 func (o *Orchestrator) postWorthinessSelect(ctx context.Context, findings []schemas.ReviewFinding) ([]schemas.ReviewFinding, bool) {
-	raw, err := o.rfns.postWorthiness(ctx, o.reasonerDeps(), reasoners.PostWorthinessInput{Findings: findings})
+	raw, err := o.rfns.postWorthiness(o.phaseContext(ctx, "post_worthiness_gate"), o.reasonerDeps(), reasoners.PostWorthinessInput{Findings: findings})
 	if err != nil {
 		return nil, false
 	}
+	o.incInvocations(1)
+	o.registerCost("review", raw)
 	// Default keep set = all indices (pw.get("keep_indices", range(len))).
 	keep := make(map[int]struct{})
 	if v, present := raw["keep_indices"]; present {
@@ -285,7 +290,7 @@ func (o *Orchestrator) runMetaSelectors(
 	for i := range jobs {
 		i := i
 		g.Go(func() error {
-			raw, err := jobs[i].fn(gctx, o.reasonerDeps(), reasoners.MetaInput{
+			raw, err := jobs[i].fn(o.phaseContext(gctx, "meta_"+jobs[i].lens), o.reasonerDeps(), reasoners.MetaInput{
 				Intake:           intake,
 				Anatomy:          anatomy,
 				Depth:            reviewDepth,
@@ -406,6 +411,9 @@ func (o *Orchestrator) collectParallelReview(ctx context.Context, plan schemas.R
 }
 
 func allDimensionsSchemaFailed(stats dimensionParseSnapshot) error {
+	if stats.Attempted == 0 {
+		return fmt.Errorf("review incomplete: no review dimensions ran")
+	}
 	if stats.Attempted > 0 && stats.Parseable == 0 && stats.Failed > 0 {
 		return fmt.Errorf("all review dimensions failed schema parsing (failed dimensions: %d)", stats.Failed)
 	}
@@ -479,7 +487,7 @@ func (o *Orchestrator) runParallelReview(
 
 			stats.recordAttempt()
 			o.recordDimensionAttempt()
-			resultRaw, err := o.rfns.reviewDim(gctx, o.reasonerDeps(), reasoners.ReviewDimensionInput{
+			resultRaw, err := o.rfns.reviewDim(o.phaseContext(gctx, dim.ID+" ("+dim.Name+")"), o.reasonerDeps(), reasoners.ReviewDimensionInput{
 				ReviewPrompt:      dim.ReviewPrompt,
 				TargetFiles:       dim.TargetFiles,
 				ContextFiles:      dim.ContextFiles,
@@ -504,6 +512,7 @@ func (o *Orchestrator) runParallelReview(
 			stats.recordResult(schemaParseFailed)
 			o.recordDimensionResult(schemaParseFailed)
 			if schemaParseFailed {
+				o.markIncomplete(dim.ID + " (" + dim.Name + ")")
 				select {
 				case ch <- []schemas.ReviewFinding{}:
 				case <-gctx.Done():
@@ -718,7 +727,7 @@ func (o *Orchestrator) runEvidenceVerification(
 		evArg = evPackages
 	}
 
-	raw, err := o.rfns.evidenceVerify(ctx, o.reasonerDeps(), reasoners.EvidenceVerifierInput{
+	raw, err := o.rfns.evidenceVerify(o.phaseContext(ctx, "evidence_verifier"), o.reasonerDeps(), reasoners.EvidenceVerifierInput{
 		Findings:         highPriority,
 		EvidencePackages: evArg,
 		PrContext:        o.buildPRContextString(),
@@ -835,7 +844,7 @@ func (o *Orchestrator) runParallelAdversary(
 			if len(batchEvidence) > 0 {
 				evArg = batchEvidence
 			}
-			raw, err := o.rfns.adversary(gctx, o.reasonerDeps(), reasoners.AdversaryInput{
+			raw, err := o.rfns.adversary(o.phaseContext(gctx, "adversary_phase"), o.reasonerDeps(), reasoners.AdversaryInput{
 				Findings:              batch,
 				AIGeneratedConfidence: aiConfidence,
 				PrContext:             o.buildPRContextString(),
@@ -898,7 +907,7 @@ func (o *Orchestrator) runCoverageLoop(
 		for _, d := range plan.Dimensions {
 			dimensionNames = append(dimensionNames, d.Name)
 		}
-		gateRaw, err := o.rfns.coverageGate(ctx, o.reasonerDeps(), reasoners.CoverageGateInput{
+		gateRaw, err := o.rfns.coverageGate(o.phaseContext(ctx, "coverage_gate"), o.reasonerDeps(), reasoners.CoverageGateInput{
 			Anatomy:                anatomy,
 			ReviewedClusters:       reviewedClusters,
 			DimensionNamesReviewed: dimensionNames,
@@ -1025,7 +1034,7 @@ func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []s
 	}
 	repo := strp(o.input.RepoPath)
 
-	obRaw, err := o.rfns.extractOblig(ctx, o.reasonerDeps(), reasoners.ExtractObligationsInput{
+	obRaw, err := o.rfns.extractOblig(o.phaseContext(ctx, "extract_obligations"), o.reasonerDeps(), reasoners.ExtractObligationsInput{
 		DiffPatches: diffPatches,
 		RepoPath:    repo,
 		PrContext:   o.buildPRContextString(),
@@ -1053,7 +1062,7 @@ func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []s
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			raw, err := o.rfns.verifyOblig(ctx, o.reasonerDeps(), reasoners.VerifyObligationInput{
+			raw, err := o.rfns.verifyOblig(o.phaseContext(ctx, "verify_obligation"), o.reasonerDeps(), reasoners.VerifyObligationInput{
 				Obligation: obligations[i],
 				RepoPath:   repo,
 			})
@@ -1061,6 +1070,7 @@ func (o *Orchestrator) runConsistencyVerify(ctx context.Context, allFindings []s
 				verdicts[i] = map[string]any{"holds": true}
 				return
 			}
+			o.registerCost("review", raw)
 			verdicts[i] = raw
 		}()
 	}

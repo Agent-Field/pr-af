@@ -43,6 +43,7 @@ func Run[T any](ctx context.Context, app HarnessCaller, prompt string, opts harn
 
 	var dest T
 	result, err := app.Harness(ctx, prompt, schema, &dest, opts)
+	observeResult(ctx, result, err)
 	if err != nil {
 		return nil, result, err
 	}

@@ -61,7 +61,7 @@ func (o *Orchestrator) runCompoundAnalysis(
 			if len(clusterEvidence) > 0 {
 				evArg = clusterEvidence
 			}
-			raw, err := o.rfns.compoundFinder(ctx, o.reasonerDeps(), reasoners.CompoundFinderInput{
+			raw, err := o.rfns.compoundFinder(o.phaseContext(ctx, "compound_finder_phase"), o.reasonerDeps(), reasoners.CompoundFinderInput{
 				ClusterFindings: cluster,
 				RepoPath:        strp(o.input.RepoPath),
 				EvidenceMap:     evArg,
@@ -114,7 +114,7 @@ func (o *Orchestrator) dedupCompoundFindings(
 	}
 	individualSummary := strings.Join(summaryLines, "\n")
 
-	raw, err := o.rfns.compoundDedup(ctx, o.reasonerDeps(), reasoners.CompoundDedupInput{
+	raw, err := o.rfns.compoundDedup(o.phaseContext(ctx, "compound_dedup_phase"), o.reasonerDeps(), reasoners.CompoundDedupInput{
 		CompoundFindings:          compoundFindings,
 		IndividualFindingsSummary: individualSummary,
 	})

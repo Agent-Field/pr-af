@@ -63,7 +63,8 @@ func TestWallClockBudgetTrips(t *testing.T) {
 func TestCostCapKeepsBudgetExhaustedWording(t *testing.T) {
 	// When the COST cap trips (duration cap untouched), the historical
 	// "Budget exhausted before <phase>" wording is preserved (§B.4).
-	cfg, cfgErr := config.ReviewConfig{}.FromInput(schemas.ReviewInput{})
+	cap := 2.0
+	cfg, cfgErr := config.ReviewConfig{}.FromInput(schemas.ReviewInput{MaxCostUSD: &cap})
 	if cfgErr != nil {
 		t.Fatalf("FromInput: %v", cfgErr)
 	}

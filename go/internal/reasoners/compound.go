@@ -16,7 +16,9 @@ import (
 //
 // Output keys (§B.2): findings. Fewer than two findings short-circuits to an
 // empty list without a harness call; parse failure degrades to an empty list.
-func CompoundFinderPhase(ctx context.Context, deps Deps, in CompoundFinderInput) (map[string]any, error) {
+func CompoundFinderPhase(ctx context.Context, deps Deps, in CompoundFinderInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	if len(in.ClusterFindings) < 2 {
 		return map[string]any{"findings": []any{}}, nil
 	}
@@ -57,7 +59,9 @@ func CompoundFinderPhase(ctx context.Context, deps Deps, in CompoundFinderInput)
 // Output keys (§B.2): keep_indices, reasoning. One-or-fewer findings
 // short-circuits to keep-everything; an empty/invalid index list (including
 // the parse-failure fallback) also degrades to keep-everything.
-func CompoundDedupPhase(ctx context.Context, deps Deps, in CompoundDedupInput) (map[string]any, error) {
+func CompoundDedupPhase(ctx context.Context, deps Deps, in CompoundDedupInput) (output map[string]any, err error) {
+	deps, meter := meteredDeps(deps)
+	defer func() { meter.Apply(output) }()
 	n := len(in.CompoundFindings)
 	if n <= 1 {
 		return map[string]any{

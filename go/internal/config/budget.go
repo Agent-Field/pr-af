@@ -11,6 +11,10 @@ type BudgetConfig struct {
 	MaxDurationSeconds int                `json:"max_duration_seconds"`
 	PhaseBudgets       map[string]float64 `json:"phase_budgets"`
 
+	// EnforceCostCaps is set only by an explicit input or environment ceiling.
+	// The numeric default remains available for reporting without stopping work.
+	EnforceCostCaps bool `json:"-"`
+
 	MaxConcurrentReviewers int `json:"max_concurrent_reviewers"`
 
 	MaxReferenceFollowsPerReviewer int `json:"max_reference_follows_per_reviewer"`
