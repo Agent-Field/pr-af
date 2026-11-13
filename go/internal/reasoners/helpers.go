@@ -92,11 +92,32 @@ func extractLanguages(pr schemas.GitHubPRData) []string {
 // the file path. Errors propagate (Python lets the OSError escape).
 func writeContextFile(content, name, repoPath string) (string, error) {
 	ctxDir := filepath.Join(repoPath, ".pr-af-context")
-	if err := os.MkdirAll(ctxDir, 0o777); err != nil {
+	if err := os.MkdirAll(ctxDir, 0o700); err != nil {
+		return "", err
+	}
+	// Tighten a directory left by an older process before writing any context.
+	// Chmod follows an existing directory link, preserving that workspace layout
+	// while protecting the directory that actually contains the artifacts.
+	if err := os.Chmod(ctxDir, 0o700); err != nil {
 		return "", err
 	}
 	path := filepath.Join(ctxDir, name)
-	if err := os.WriteFile(path, []byte(content), 0o666); err != nil {
+	file, err := os.CreateTemp(ctxDir, ".context-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
+	if err := file.Chmod(0o600); err != nil {
+		return "", err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	// Replacement also repairs an old permissive file without following links.
+	if err := os.Rename(file.Name(), path); err != nil {
 		return "", err
 	}
 	return path, nil
